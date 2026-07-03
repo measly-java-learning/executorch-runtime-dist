@@ -1,0 +1,83 @@
+name: release
+on:
+  push:
+    tags: ['v*-*']          # v<etver>-<pkgrev>, e.g. v1.3.1-1 (C9). Only trigger.
+permissions:
+  contents: write           # create release + upload assets
+  id-token: write           # attestations (C7)
+  attestations: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64   # caller owns the container boundary (C8)
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [bare, logging, devtools]
+        platform: [linux-x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Derive versions from tag
+        id: ver
+        run: |
+          tag="${GITHUB_REF_NAME}"; pkgver="${tag#v}"; etver="${pkgver%-*}"
+          { echo "pkgver=$pkgver"; echo "etver=$etver"; echo "ettag=v$etver"; } >> "$GITHUB_OUTPUT"
+      - name: Checkout ExecuTorch source (caller-owned per C8; the recipe does not clone)
+        uses: actions/checkout@v4
+        with:
+          repository: pytorch/executorch
+          ref: ${{ steps.ver.outputs.ettag }}
+          submodules: recursive
+          path: executorch
+      - name: Build runtime
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          ./build-runtime.sh --variant "${{ matrix.variant }}" \
+            --prefix "$PWD/out" --et-src "$PWD/executorch" \
+            --et-tag "${{ steps.ver.outputs.ettag }}"
+      - name: Package
+        run: |
+          ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
+            --variant "${{ matrix.variant }}" --platform "${{ matrix.platform }}" \
+            --package-tag "${GITHUB_REF_NAME}" --outdir "$PWD/dist"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.variant }}-${{ matrix.platform }}
+          path: dist/*
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate EtRuntimePin.cmake
+        run: |
+          tag="${GITHUB_REF_NAME}"; pkgver="${tag#v}"; etver="${pkgver%-*}"
+          base="${{ github.server_url }}/${{ github.repository }}/releases/download/${tag}"
+          args=(--version "$pkgver" --etver "$etver" --base-url "$base")
+          for variant in bare logging devtools; do
+            sha="$(cut -d' ' -f1 "dist/executorch-runtime-${etver}-${variant}-linux-x86_64.tar.gz.sha256")"
+            args+=(--row "$variant" linux-x86_64 "$sha")
+          done
+          ./scripts/gen-pin.sh "${args[@]}" > dist/EtRuntimePin.cmake
+          {
+            echo '```cmake'
+            cat dist/EtRuntimePin.cmake
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Create/Update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "ExecuTorch runtime ${GITHUB_REF_NAME} (torch 2.12.0+cpu, manylinux_2_28)." \
+          || gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
