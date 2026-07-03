@@ -114,9 +114,11 @@ mkdir -p "$PREFIX"
 cmake --install "$ET_BUILD" --prefix "$PREFIX"
 
 echo ">> measuring relocatability"
-if grep -rl "$PREFIX" "$PREFIX/lib/cmake" >/dev/null 2>&1; then
+# capture once (`|| true`: grep exits 1 on no match, which must not abort under set -e/pipefail)
+leaked="$(grep -rl "$PREFIX" "$PREFIX/lib/cmake" 2>/dev/null || true)"
+if [ -n "$leaked" ]; then
   echo ">> WARNING: absolute build-prefix leaked into cmake configs; rewriting to \${PACKAGE_PREFIX_DIR}"
-  grep -rl "$PREFIX" "$PREFIX/lib/cmake" | while read -r f; do
+  printf '%s\n' "$leaked" | while read -r f; do
     sed -i "s#$PREFIX#\${PACKAGE_PREFIX_DIR}#g" "$f"
   done
 fi
@@ -124,9 +126,14 @@ fi
 echo ">> license passthrough (C2)"
 install -m 0644 "$ET_SRC/LICENSE" "$PREFIX/LICENSE"
 mkdir -p "$PREFIX/THIRD-PARTY-NOTICES"
-find "$ET_SRC/third-party" "$ET_SRC/backends" -iname 'LICENSE*' -type f 2>/dev/null | while read -r lf; do
-  rel="${lf#"$ET_SRC"/}"
-  cp "$lf" "$PREFIX/THIRD-PARTY-NOTICES/${rel//\//_}"
+# guard each dir (a future ET tag may drop/rename one) so a bare `find | while` can't abort the
+# recipe under set -e/pipefail with its stderr masked; `|| true` covers any residual find failure.
+for d in "$ET_SRC/third-party" "$ET_SRC/backends"; do
+  [ -d "$d" ] || continue
+  find "$d" -iname 'LICENSE*' -type f | while read -r lf; do
+    rel="${lf#"$ET_SRC"/}"
+    cp "$lf" "$PREFIX/THIRD-PARTY-NOTICES/${rel//\//_}"
+  done || true
 done
 
 # safe.directory='*': the checkout may be owned by a different uid than the container user (mounted
