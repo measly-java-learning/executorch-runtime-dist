@@ -1,6 +1,7 @@
 # ExecuTorch Runtime Dist
 
-The purpose of this repository is to provide PIC assets for desktop builds of [ExecuTorch](https://github.com/pytorch/executorch) for use with JNI.  Meta has a JNI interface layer for ExecuTorch, but it is focused on Android and requires fbjni.  The default build configuration for ExecuTorch is *not* to build with `-fPIC`, making it difficult to link into a JVM via JNI.
+The purpose of this repository is to provide PIC assets for desktop builds of [ExecuTorch](https://github.com/pytorch/executorch) for use with JNI.  
+Meta has a JNI interface layer for ExecuTorch, but it is focused on Android and requires fbjni.  The default build configuration for ExecuTorch is *not* to build with `-fPIC`, making it difficult to link into a JVM via JNI.
 
 This repository hosts CI infrastructure to create and attest these builds such that they can be safely and responsibly consumed elsewhere.
 
@@ -15,7 +16,7 @@ Each release builds three variants of the runtime for `linux-x86_64`:
 Each tarball unpacks to a single top-level directory containing:
 
 ```
-lib/                                        # includes lib/cmake/ExecuTorch/executorch-config.cmake
+lib/                   # includes lib/cmake/ExecuTorch/executorch-config.cmake
 include/
 LICENSE
 THIRD-PARTY-NOTICES/
@@ -46,7 +47,7 @@ hash-pinned tarballs. Pushing a version tag is the **only** CI trigger.
 
 ## Building locally
 
-`build-runtime.sh` is the single entrypoint for the build recipe (contract C8).
+`build-runtime.sh` is the single entrypoint for the build recipe.
 It must run **inside** the `quay.io/pypa/manylinux_2_28_x86_64` container, and
 it never clones ExecuTorch itself — the caller always supplies the source tree:
 

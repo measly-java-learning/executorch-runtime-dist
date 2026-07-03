@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# build-runtime.sh — ExecuTorch runtime recipe entrypoint (contract C8).
+# build-runtime.sh — ExecuTorch runtime recipe entrypoint.
 # MUST run INSIDE manylinux_2_28 (quay.io/pypa/manylinux_2_28_x86_64). The caller owns BOTH boundaries:
 #   1. the container (this script never pulls/spawns one), and
 #   2. the ExecuTorch source — provided as a checked-out tree (with submodules) via --et-src.
 #      The recipe never clones. CI supplies it via actions/checkout; local dev mounts a checkout.
 # Produces a relocatable, position-independent et-install tree at --prefix.
 #
-# SKIP_ET_BUILD=1 (env) reuses an existing --prefix install instead of rebuilding — mirrors the
-# engine's native/build.sh Stage A knob; keyed off the install prefix, writes no marker.
+# SKIP_ET_BUILD=1 (env) reuses an existing --prefix install instead of rebuilding
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/scripts/lib/variants.sh"
 . "$HERE/scripts/lib/cmakeflags.sh"
 
+# As we run as root inside a container, set this flag to avoid log spam
+export PIP_ROOT_USER_ACTION=ignore
 DEFAULT_ET_TAG="v1.3.1"
-PLATFORM="linux-x86_64"          # C4; single platform for now
 TORCH_SPEC="torch==2.12.0+cpu"
 
 usage() {
@@ -43,6 +43,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# As this script is intended to run in a container with a volume mount, the permissions of the built artifacts
+# can be a little goofy.  Use a trap to ensure that permissions get set to something meaningful for the user running the container
+# regardless of build status.  Lack of `HOST_UID` for GitHub Action means this won't do anything when run in CI
+cleanup() {
+  rc=$?
+  if [ -n "${HOST_UID:-}" ]; then
+    chown -R "${HOST_UID}:${HOST_GID}" "${BUILD_DIR}" 2>/dev/null || true
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+
 [ -n "$VARIANT" ] || { echo "--variant required" >&2; exit 2; }
 VARIANT_FLAGS="$(variant_flags "$VARIANT")"   # returns 2 on unknown -> set -e aborts with code 2
 
@@ -54,7 +66,7 @@ fi
 [ -n "$PREFIX" ] || { echo "--prefix required" >&2; exit 2; }
 CONFIG="$PREFIX/lib/cmake/ExecuTorch/executorch-config.cmake"
 
-# ---- SKIP_ET_BUILD: reuse an existing --prefix install (mirrors engine native/build.sh Stage A) ----
+# ---- SKIP_ET_BUILD: reuse an existing --prefix install ----
 # Explicit opt-in; keyed off the install prefix (not the source), guarded so a stale/empty prefix
 # fails fast rather than silently shipping nothing. Does not need --et-src.
 if [ "${SKIP_ET_BUILD:-0}" = "1" ]; then
@@ -74,6 +86,8 @@ fi
 ET_BUILD="${BUILD_DIR:-$(dirname "$PREFIX")/et-build-$VARIANT}"
 mkdir -p "$ET_BUILD"
 
+# An upstream issue for this has been opened here:
+# https://github.com/pytorch/executorch/issues/20709
 # ET 1.3.1 install bug: a few targets install to ${CMAKE_BINARY_DIR}/lib (the build dir) instead of
 # ${CMAKE_INSTALL_LIBDIR}, so their .a is missing from the prefix and the exported ExecuTorchTargets
 # bakes an absolute build-tree path (breaks find_package relocation). Rewrite to match sibling targets.
@@ -90,10 +104,19 @@ else
   echo "   (nothing to patch — source already patched)"
 fi
 
+# Rather than the full `install_requirements.sh` from the ExecuTorch source,
+# just install the minimal set of deps for our build process
 echo ">> installing python deps"
-pip install ninja
 pip install -U pip setuptools wheel pyyaml
+pip install ninja
 pip install "$TORCH_SPEC" --index-url https://download.pytorch.org/whl/cpu
+
+echo ">> Toolchain versions"
+cmake --version
+gcc --version
+g++ --version
+ninja --version
+python -V
 
 echo ">> configuring ($VARIANT)"
 # shellcheck disable=SC2086  # deliberate word-splitting of the flag strings
@@ -118,7 +141,7 @@ if [ -n "$leaked" ]; then
   done
 fi
 
-echo ">> license passthrough (C2)"
+echo ">> license passthrough"
 install -m 0644 "$ET_SRC/LICENSE" "$PREFIX/LICENSE"
 mkdir -p "$PREFIX/THIRD-PARTY-NOTICES"
 # guard each dir (a future ET tag may drop/rename one) so a bare `find | while` can't abort the
