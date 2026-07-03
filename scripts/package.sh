@@ -4,6 +4,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/naming.sh"
 . "$HERE/lib/variants.sh"
+. "$HERE/lib/cmakeflags.sh"
 
 PREFIX=""; ETVER=""; VARIANT=""; PLATFORM=""; PACKAGE_TAG=""; OUTDIR="."
 while [ $# -gt 0 ]; do
@@ -38,7 +39,7 @@ for m in lib include LICENSE THIRD-PARTY-NOTICES; do
   cp -a "$PREFIX/$m" "$STAGE/"
 done
 
-CMAKE_FLAGS="$(variant_flags "$VARIANT") -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXECUTORCH_BUILD_XNNPACK=ON -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON"
+CMAKE_FLAGS="$(variant_flags "$VARIANT") $(common_cmake_flags)"
 ET_VERSION="$ETVER" ET_COMMIT="$ET_COMMIT" TORCH_VERSION="2.12.0+cpu" \
   VARIANT="$VARIANT" PLATFORM="$PLATFORM" CMAKE_FLAGS="$CMAKE_FLAGS" \
   TOOLCHAIN="manylinux_2_28 gcc-toolset-14" PACKAGE_TAG="$PACKAGE_TAG" \

@@ -11,6 +11,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/scripts/lib/variants.sh"
+. "$HERE/scripts/lib/cmakeflags.sh"
 
 DEFAULT_ET_TAG="v1.3.1"
 PLATFORM="linux-x86_64"          # C4; single platform for now
@@ -95,16 +96,10 @@ pip install -U pip setuptools wheel pyyaml
 pip install "$TORCH_SPEC" --index-url https://download.pytorch.org/whl/cpu
 
 echo ">> configuring ($VARIANT)"
-# shellcheck disable=SC2086  # deliberate word-splitting of the flag string
+# shellcheck disable=SC2086  # deliberate word-splitting of the flag strings
 cmake -B "$ET_BUILD" -S "$ET_SRC" -G Ninja --preset linux \
-  -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-  -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-  $VARIANT_FLAGS \
-  -DEXECUTORCH_BUILD_XNNPACK=ON \
-  -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON \
-  -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON \
-  -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON
+  $VARIANT_FLAGS $(common_cmake_flags)
 
 echo ">> building"
 cmake --build "$ET_BUILD" -j"$(nproc)"
