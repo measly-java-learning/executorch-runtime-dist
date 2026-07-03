@@ -59,10 +59,15 @@ the `ET_VARIANT` flag map. Reproduce faithfully:
 It is `build-runtime.sh`'s default `--et-tag` (see C8). Later ET bumps re-parameterize this value; the
 rest of the recipe is version-agnostic.
 
-**ExecuTorch source:** clone `https://github.com/pytorch/executorch` at the tag matching the release's
-ET version (`v1.3.1` for the first release) **with submodules** (`git clone --recursive`, or
-`git submodule update --init --recursive`) — the ET build links in-tree third-party (flatcc, XNNPACK,
-etc.). Do **not** rely on `install_requirements.sh`; the working recipe installs deps directly (below).
+**ExecuTorch source — caller-provided (not cloned by the recipe).** `build-runtime.sh` does **not**
+fetch source; the **caller supplies a checked-out ET tree** (with submodules) and passes its path via
+`--et-src <dir>`. This mirrors the caller-owned container boundary: CI uses `actions/checkout`
+(`repository: pytorch/executorch`, `ref: v1.3.1`, `submodules: recursive`); local dev mounts an
+existing checkout; Repo B's fallback checks out ET then invokes. Submodules are **required** — the ET
+build links in-tree third-party (flatcc, XNNPACK, etc.). Do **not** rely on `install_requirements.sh`;
+the working recipe installs deps directly (below). The release's ET version label comes from `--et-tag`
+(default `v1.3.1`, used for asset naming C1 / `BUILDINFO` C5); `et_commit` is read from the provided
+tree via `git -C <et-src> rev-parse HEAD`.
 
 **Python deps (in the container):**
 ```bash
@@ -112,7 +117,7 @@ Factor the recipe into **`build-runtime.sh`** so CI and Repo B's from-source fal
 code (this is what guarantees a local from-source runtime matches the released one):
 
 ```
-./build-runtime.sh --variant <bare|logging|devtools> --prefix <install-dir> [--et-tag <tag>]
+./build-runtime.sh --variant <bare|logging|devtools> --prefix <install-dir> --et-src <et-checkout> [--et-tag <label>] [--build-dir <dir>]
 ```
 
 - Produces a **relocatable** `et-install` at `<install-dir>` (see next section).
@@ -121,8 +126,26 @@ code (this is what guarantees a local from-source runtime matches the released o
   boundary: CI supplies it via the workflow `container:` key; Repo B's from-source fallback enters
   the container before invoking. This keeps the script a single, portable recipe with no dependency
   on a host container runtime.
+- **Source boundary — caller-owned (`--et-src`, required).** The recipe does **not** clone; the caller
+  supplies a checked-out ET tree with submodules (CI via `actions/checkout`; local dev via a mounted
+  checkout; Repo B via its own checkout). Symmetric with the container boundary above.
+- **Build reuse — `SKIP_ET_BUILD=1` (mirrors the engine's Stage A knob).** Default is to build. When
+  the env var `SKIP_ET_BUILD=1` is set, the recipe **skips the entire slow Stage A** (torch deps +
+  configure + compile + install) and **reuses the existing `--prefix` install**, after a hard guard
+  that `--prefix/lib/cmake/ExecuTorch/executorch-config.cmake` exists (fail-fast otherwise). This is
+  the same explicit opt-in the engine's `native/build.sh` uses — keyed off the **install prefix**, not
+  the source tree, and it writes **no marker into `--prefix`** (so the C2 tarball is unaffected). On a
+  fresh CI checkout the flag is unset and it always builds; a developer iterating locally sets it to
+  reuse a prior install and skip the ~10-minute compile.
+- **Build tree — consistent & inspectable (`--build-dir`).** The CMake build tree defaults to
+  `<dirname of --prefix>/et-build-<variant>` (overridable via `--build-dir`), so when `--prefix` is on
+  a mounted volume the build tree lands there too and its **artifacts can be inspected out of the
+  container**. It is **persisted** (not a `mktemp`, not auto-deleted): retained objects also make a
+  non-`SKIP` re-run incremental via ninja. (`SKIP_ET_BUILD` remains the explicit reuse-the-install
+  path; the persistent build tree is complementary.)
 - Non-zero exit on any failure.
-- `--et-tag` defaults to `v1.3.1` (the current target ET version).
+- `--et-tag` is the **version label** (default `v1.3.1`) used for asset naming (C1) and `BUILDINFO`
+  (C5); `et_commit` is read from the provided checkout (`git -C <et-src> rev-parse HEAD`).
 
 This entrypoint's name, flags, and prefix semantics are **contract point C8** — Repo B invokes it.
 
@@ -228,8 +251,10 @@ set(ET_RUNTIME_SHA256_logging_linux-x86_64 "<sha256>")
   support a new ET. (C9)
 - **Build matrix:** `variant ∈ {bare, logging, devtools}` × `platform ∈ {linux-x86_64}`. Each job
   declares the `container:` key (`quay.io/pypa/manylinux_2_28_x86_64`) so the job body already runs
-  inside manylinux, then calls `build-runtime.sh --variant <v> --prefix <stage>` (the script owns no
-  container itself — see C8).
+  inside manylinux, **checks out `pytorch/executorch`** (`actions/checkout` with `repository:
+  pytorch/executorch`, `ref: <et-tag>`, `submodules: recursive`), then calls `build-runtime.sh
+  --variant <v> --prefix <stage> --et-src <et-checkout>` (the script owns neither the container nor
+  the source — see C8).
 - **Per job:** build → assemble the C2 tarball → `sha256sum` → `attest-build-provenance`.
 - **Aggregate job:** create/update the GitHub Release for the tag; upload all tarballs + `.sha256`;
   generate and attach the `EtRuntimePin.cmake` snippet (C6) covering every `(variant, platform)`.
@@ -237,7 +262,9 @@ set(ET_RUNTIME_SHA256_logging_linux-x86_64 "<sha256>")
 
 ## Repo A file structure
 
-- `build-runtime.sh` — the recipe entrypoint (C8); the migrated Stage A + variant map.
+- `build-runtime.sh` — the recipe entrypoint (C8); the migrated Stage A + variant map. Takes a
+  caller-provided `--et-src` checkout (does not clone); `SKIP_ET_BUILD=1` reuses an existing
+  `--prefix` install instead of rebuilding.
 - `scripts/` — package a prefix into the C2 tarball (including collecting `LICENSE` +
   `THIRD-PARTY-NOTICES/` from the ET checkout); emit `BUILDINFO`; generate `EtRuntimePin.cmake`.
 - `.github/workflows/release.yml` — the matrix build + attest + publish + pin emission.
@@ -246,13 +273,17 @@ set(ET_RUNTIME_SHA256_logging_linux-x86_64 "<sha256>")
 
 ## Testing / acceptance
 
-**Local validation loop.** The dev machine has docker (29.6.1), `gh`, `cmake`, and `ninja`, so the
-entire build + gate can be exercised locally without CI by mounting the repo into the manylinux
-container — the same boundary CI uses:
+**Local validation loop.** The dev machine has docker (29.6.1), `gh`, `cmake`, `ninja`, and an existing
+ET `v1.3.1` checkout at `/home/corey/workspace/executorch`, so the entire build + gate can be exercised
+locally without CI by mounting **both** the repo and the ET checkout into the manylinux container — the
+same two caller-owned boundaries CI uses (`container:` + `actions/checkout`):
 ```bash
-docker run --rm -v "$PWD":/work -w /work quay.io/pypa/manylinux_2_28_x86_64 \
-  bash -lc 'export PATH=/opt/python/cp312-cp312/bin:$PATH; ./build-runtime.sh --variant logging --prefix /work/out'
+docker run --rm -v "$PWD":/work -v /home/corey/workspace/executorch:/executorch \
+  -w /work quay.io/pypa/manylinux_2_28_x86_64 \
+  bash -lc 'export PATH=/opt/python/cp312-cp312/bin:$PATH; ./build-runtime.sh --variant logging --prefix /work/out --et-src /executorch'
 ```
+The mounted checkout stands in for `actions/checkout`; re-runs can set `SKIP_ET_BUILD=1` to reuse the
+existing `/work/out` install and skip the ~10-minute compile.
 The relocatability/PIC gate (`test/relocatability.sh`) runs the same way against the produced prefix.
 
 1. **Relocatability + PIC gate** (above) — extract-elsewhere + `find_package` + link into a **SHARED**
@@ -285,11 +316,19 @@ The relocatability/PIC gate (`test/relocatability.sh`) runs the same way against
   and per row `ET_RUNTIME_URL_<variant>_<platform>` + `ET_RUNTIME_SHA256_<variant>_<platform>`.
 - **C7 — Integrity/provenance:** `<asset>.sha256` (sha256sum format); GitHub build-provenance
   attestation per tarball; `gh attestation verify <tarball> --repo measly-java-learning/executorch-runtime-dist`.
-- **C8 — From-source entrypoint:** `build-runtime.sh --variant <v> --prefix <dir> [--et-tag <tag>]`
-  → relocatable `et-install` at `<dir>`; non-zero on failure. `--et-tag` defaults to `v1.3.1`. The
-  script **must be invoked inside** `manylinux_2_28` — the caller owns the container boundary (CI via
-  the `container:` key; Repo B's fallback enters the container before calling). Repo B clones Repo A
-  at tag `v<etver>-<pkgrev>` (C9) to invoke it.
+- **C8 — From-source entrypoint:** `build-runtime.sh --variant <v> --prefix <dir> --et-src <et-checkout>
+  [--et-tag <label>] [--build-dir <dir>]` → relocatable `et-install` at `<dir>`; non-zero on failure.
+  `--build-dir` (default `<dirname of --prefix>/et-build-<variant>`) is a persisted, inspectable CMake
+  build tree. **Two caller-owned
+  boundaries:** (1) the script **must be invoked inside** `manylinux_2_28` (container boundary), and
+  (2) the caller **provides the ExecuTorch source** as a checked-out tree with submodules via
+  `--et-src` — the recipe does **not** clone (source boundary). CI supplies both (the `container:` key
+  + `actions/checkout` of `pytorch/executorch`); Repo B's fallback enters the container and checks out
+  ET before calling. `--et-tag` is the **version label** (default `v1.3.1`) for naming/`BUILDINFO`;
+  `et_commit` is read from the checkout. Optional env knob **`SKIP_ET_BUILD=1`** skips the slow Stage A
+  and reuses the existing `--prefix` install (guarded by `executorch-config.cmake` presence), mirroring
+  the engine's flag; nothing extra is written into `--prefix`. Repo B clones Repo A at tag
+  `v<etver>-<pkgrev>` (C9) to invoke it.
 - **C9 — Release tag:** `v<etver>-<pkgrev>` (e.g. `v1.3.1-1`); `pkgrev` increments for re-rolls of the
   same ET version.
 
@@ -304,7 +343,19 @@ The relocatability/PIC gate (`test/relocatability.sh`) runs the same way against
 
 ### Contract Deltas (append-only; empty at hand-off)
 
-_None yet._
+- **2026-07-02 — C8 reshaped: caller-owned source (`--et-src`, no clone) + build reuse.** The original
+  C8 had `build-runtime.sh` clone ExecuTorch itself. That is inconsistent with how the recipe actually
+  lands: in CI the source arrives via `actions/checkout`, and Repo B's fallback likewise checks out ET.
+  Revised so the caller **provides** the source tree via a required `--et-src <dir>` (symmetric with the
+  already-caller-owned container boundary); the recipe no longer clones. `--et-tag` becomes the version
+  **label** (default `v1.3.1`) for naming/`BUILDINFO`; `et_commit` is read from the checkout. For speed,
+  an optional env knob **`SKIP_ET_BUILD=1`** (mirroring the engine's `native/build.sh` Stage A flag)
+  skips the whole slow build and **reuses the existing `--prefix` install**, guarded by a check that
+  `executorch-config.cmake` is present. The earlier `--force`/`.et_build_meta` idea is **withdrawn** —
+  reuse is an explicit opt-in keyed to the **install prefix** (not the source, not a marker), so
+  nothing extra is written into `--prefix` and **C2 is unaffected**.
+  **Repo B impact (⚠ C8):** its from-source fallback must now `actions/checkout` (or `git clone
+  --recursive`) ExecuTorch and pass `--et-src`, rather than relying on the recipe to fetch it.
 
 ### Map: Contract point → Repo B touch-point
 
@@ -317,7 +368,7 @@ _None yet._
 | C5 | Informational only — no functional consumer (engine may log it). Low. | ok |
 | C6 | `native/CMakeLists.txt`: `include(EtRuntimePin.cmake)` + read `ET_RUNTIME_*` vars + `FetchContent(URL, URL_HASH SHA256=…)`. **Primary consumer.** | ok |
 | C7 | `FetchContent` `URL_HASH` uses the SHA; optional engine-CI step running `gh attestation verify` before use | ok |
-| C8 | `native/build.sh` from-source fallback: clone Repo A at the pinned tag, **enter `manylinux_2_28`** (caller owns the container boundary), then invoke `build-runtime.sh --variant logging --prefix <tmp>` | ok |
+| C8 | `native/build.sh` from-source fallback: clone Repo A at the pinned tag, **enter `manylinux_2_28`** (container boundary), **check out `pytorch/executorch` with submodules**, then invoke `build-runtime.sh --variant logging --prefix <tmp> --et-src <et-checkout>` | ⚠ (2026-07-02 delta: source is now caller-provided via `--et-src`; the recipe no longer clones — the fallback must check out ET itself) |
 | C9 | Engine from-source fallback clone tag; `EtRuntimePin.cmake` version comment | ok |
 
 ### Repo B work these imply (for the later Repo B spec — NOT this agent's job)

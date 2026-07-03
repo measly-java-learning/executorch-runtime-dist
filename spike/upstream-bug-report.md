@@ -153,3 +153,8 @@ Verified end-to-end for `extension_evalue_util` (the `logging` configuration).
 
 - Confirmed on `v1.3.1`; please check whether `main` still carries these four
   `${CMAKE_BINARY_DIR}/lib` destinations before landing.
+
+https://github.com/pytorch/executorch/blob/main/extension/evalue_util/CMakeLists.txt - Confirmed bug is still present
+https://github.com/pytorch/executorch/blob/main/devtools/CMakeLists.txt - Confirmed bug is still present
+https://github.com/pytorch/executorch/blob/main/devtools/bundled_program/CMakeLists.txt - Confirmed bug is still present
+https://github.com/pytorch/executorch/blob/main/third-party/CMakeLists.txt - Confirmed bug is still present

@@ -15,7 +15,7 @@ Every task's requirements implicitly include these. Exact values copied verbatim
 - **Container:** all builds run **inside** `quay.io/pypa/manylinux_2_28_x86_64` (AlmaLinux 8, gcc-toolset-14). Scripts **assume they are already inside** it — they never pull/spawn a container. The **caller owns the boundary** (CI `container:` key; local dev via `docker run`).
 - **Python:** cp312 — `export PATH=/opt/python/cp312-cp312/bin:$PATH`.
 - **Torch:** `torch==2.12.0+cpu` from `--index-url https://download.pytorch.org/whl/cpu`.
-- **ET target:** tag `v1.3.1` (default `--et-tag`), cloned `--recursive` (submodules required).
+- **ET target:** tag `v1.3.1`. Source is **caller-provided** via required `--et-src <dir>` (a checkout with submodules — `actions/checkout` in CI, a mounted checkout locally); the recipe does **not** clone. `--et-tag` (default `v1.3.1`) is only the version **label** for naming/BUILDINFO; `et_commit` is read from the checkout.
 - **PIC is mandatory:** `-DCMAKE_POSITION_INDEPENDENT_CODE=ON` — the reason this repo exists; output must link into a `.so`.
 - **Variants (C3):** `bare` = `-DEXECUTORCH_ENABLE_LOGGING=OFF`; `logging` = `-DEXECUTORCH_ENABLE_LOGGING=ON`; `devtools` = `-DEXECUTORCH_ENABLE_LOGGING=OFF -DEXECUTORCH_BUILD_DEVTOOLS=ON -DEXECUTORCH_ENABLE_EVENT_TRACER=ON`. `logging` is the ship default.
 - **Platform (C4):** `linux-x86_64` only (token scales to future targets).
@@ -268,15 +268,16 @@ git commit -m "feat: build-runtime.sh CLI + --print-flags dry mode"
 
 ### Task 3: `build-runtime.sh` real build + relocatability + license passthrough
 
-**Heavy — runs a real ~10-minute ET build inside the manylinux container** (clones ET, downloads torch, compiles). Produces the self-contained relocatable et-install for the `logging` variant.
+**Heavy — runs a real ~10-minute ET build inside the manylinux container** against a **caller-provided** ET checkout (mounted; no clone), downloads torch, compiles. Produces the self-contained relocatable et-install for the `logging` variant. `SKIP_ET_BUILD=1` reuses an existing `--prefix` install and skips the slow compile (mirrors the engine's `native/build.sh`).
 
 **Files:**
-- Modify: `build-runtime.sh` (append the build body after the Task 2 marker line)
+- Modify: `build-runtime.sh` — add required `--et-src <dir>` to the CLI (Task 2 marker), then append the build body after it.
+- Modify: `test/build_cli.test.sh` — assert missing `--et-src` (non-dry) exits 2.
 - Create: `test/build_smoke.sh`
 
 **Interfaces:**
-- Consumes: the CLI/vars from Task 2 (`VARIANT`, `PREFIX`, `ET_TAG`, `VARIANT_FLAGS`, `TORCH_SPEC`).
-- Produces: at `$PREFIX` — `lib/` (with `cmake/ExecuTorch/executorch-config.cmake`), `include/`, `LICENSE`, `THIRD-PARTY-NOTICES/`, and a hidden `.et_commit` file (full ET sha, consumed by `package.sh` in Task 5). No absolute build-prefix strings in `lib/cmake`.
+- Consumes: the CLI/vars from Task 2 (`VARIANT`, `PREFIX`, `ET_TAG`, `VARIANT_FLAGS`, `TORCH_SPEC`) **plus new required `--et-src <dir>`** (an ET checkout with submodules; the recipe does not clone).
+- Produces: at `$PREFIX` — `lib/` (with `cmake/ExecuTorch/executorch-config.cmake`), `include/`, `LICENSE`, `THIRD-PARTY-NOTICES/`, and a hidden `.et_commit` file (full ET sha read from `--et-src`, consumed by `package.sh` in Task 5). No absolute build-prefix strings in `lib/cmake`. Build dir is a **persisted, caller-controllable `--build-dir`** (default `<dirname of --prefix>/et-build-<variant>`, inspectable when `--prefix` is on a mounted volume); **nothing is written to `$PREFIX` beyond the C2 members + `.et_commit`** (no marker). Optional env knob `SKIP_ET_BUILD=1` skips Stage A and reuses the existing `$PREFIX` install, guarded by a check that `lib/cmake/ExecuTorch/executorch-config.cmake` is present.
 
 - [ ] **Step 1: Write the failing smoke test** — `test/build_smoke.sh`
 
@@ -307,17 +308,33 @@ Expected: multiple `FAIL:` lines, `SMOKE FAIL`, exit 1.
 
 - [ ] **Step 3: Append the build body to `build-runtime.sh`**
 
-Replace the trailing `# ---- Task 3 appends the real build below this line ----` marker with:
+First **amend the Task 2 CLI**: add a required `--et-src <dir>` arg (the caller-provided ET checkout;
+the recipe does not clone), and — right after the `--prefix` check — a `SKIP_ET_BUILD=1` fast path that
+reuses an existing `--prefix` install (guarded by `executorch-config.cmake` presence, `exit 1` if
+missing) and needs no `--et-src`. Then replace the trailing
+`# ---- Task 3 appends the real build below this line ----` marker with:
 
 ```bash
 # ---- real build (Task 3) ----
-WORK="$(mktemp -d)"
-ET_SRC="$WORK/executorch"
-ET_BUILD="$WORK/et-build"
+[ -n "$ET_SRC" ] || { echo "--et-src required" >&2; exit 2; }
+[ -d "$ET_SRC" ] || { echo "--et-src '$ET_SRC' is not a directory" >&2; exit 2; }
+ET_BUILD="${BUILD_DIR:-$(dirname "$PREFIX")/et-build-$VARIANT}"   # persisted + inspectable; overridable via --build-dir
+mkdir -p "$ET_BUILD"
 
-echo ">> cloning ExecuTorch $ET_TAG (recursive)"
-git clone --depth 1 --branch "$ET_TAG" --recursive \
-  https://github.com/pytorch/executorch "$ET_SRC"
+# ET 1.3.1 install bug: some targets install to ${CMAKE_BINARY_DIR}/lib (build dir) instead of
+# ${CMAKE_INSTALL_LIBDIR}; without this the .a is missing from the prefix and the exported config
+# bakes an absolute build-tree path (breaks relocation). `|| true`: grep exits 1 on an already-patched
+# checkout (idempotent re-run) and must not abort under set -e/pipefail.
+echo ">> patching ET install-destination bug (CMAKE_BINARY_DIR/lib -> CMAKE_INSTALL_LIBDIR)"
+patch_files="$(grep -rl 'DESTINATION ${CMAKE_BINARY_DIR}/lib' --include=CMakeLists.txt "$ET_SRC" || true)"
+if [ -n "$patch_files" ]; then
+  printf '%s\n' "$patch_files" | while read -r f; do
+    echo "   patch: ${f#"$ET_SRC"/}"
+    sed -i 's#DESTINATION ${CMAKE_BINARY_DIR}/lib#DESTINATION ${CMAKE_INSTALL_LIBDIR}#g' "$f"
+  done
+else
+  echo "   (nothing to patch — source already patched)"
+fi
 
 echo ">> installing python deps"
 pip install ninja
@@ -361,16 +378,20 @@ find "$ET_SRC/third-party" "$ET_SRC/backends" -iname 'LICENSE*' -type f 2>/dev/n
   cp "$lf" "$PREFIX/THIRD-PARTY-NOTICES/${rel//\//_}"
 done
 
-git -C "$ET_SRC" rev-parse HEAD > "$PREFIX/.et_commit"
+# safe.directory='*': a mounted/CI checkout may be owned by a different uid than the container user,
+# which trips git's "dubious ownership" guard and blocks rev-parse.
+git -c safe.directory='*' -C "$ET_SRC" rev-parse HEAD > "$PREFIX/.et_commit"
 echo ">> build-runtime.sh done: $PREFIX"
 ```
 
 - [ ] **Step 4: Run the real build for `logging`, then the smoke** (heavy, ~10 min)
 
 ```bash
-docker run --rm -v "$PWD":/work -w /work quay.io/pypa/manylinux_2_28_x86_64 \
-  bash -lc 'export PATH=/opt/python/cp312-cp312/bin:$PATH; ./build-runtime.sh --variant logging --prefix /work/out-logging'
+docker run --rm -v "$PWD":/work -v /home/corey/workspace/executorch:/executorch \
+  -w /work quay.io/pypa/manylinux_2_28_x86_64 \
+  bash -lc 'export PATH=/opt/python/cp312-cp312/bin:$PATH; ./build-runtime.sh --variant logging --prefix /work/out-logging --et-src /executorch'
 bash test/build_smoke.sh "$PWD/out-logging"
+# Re-run reusing the install (skips the ~10-min compile): add SKIP_ET_BUILD=1 to the container env.
 ```
 Expected: build completes; `SMOKE PASS`. (Keep `out-logging/` for Tasks 4 and 5 to avoid rebuilding. Add `out-*/` to `.gitignore`.)
 
