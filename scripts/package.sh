@@ -22,13 +22,21 @@ for v in PREFIX ETVER VARIANT PLATFORM PACKAGE_TAG; do
 done
 
 STEM="$(asset_stem "$ETVER" "$VARIANT" "$PLATFORM")"
+
+# .et_commit is a build-cache input (read for BUILDINFO), never shipped. Fail loudly if absent —
+# silently shipping et_commit=unknown would corrupt provenance.
+[ -s "$PREFIX/.et_commit" ] || { echo "package.sh: $PREFIX/.et_commit missing or empty (build the runtime first)" >&2; exit 1; }
+ET_COMMIT="$(cat "$PREFIX/.et_commit")"
+
+# Stage ONLY the C2 members (deterministic) — do NOT ship whatever else the ET install happens to
+# emit (bin/, share/, ...). BUILDINFO is generated into the stage below.
 STAGE_ROOT="$(mktemp -d)"
 STAGE="$STAGE_ROOT/$STEM"
 mkdir -p "$STAGE"
-cp -a "$PREFIX/." "$STAGE/"
-
-ET_COMMIT="$(cat "$STAGE/.et_commit" 2>/dev/null || echo unknown)"
-rm -f "$STAGE/.et_commit"
+for m in lib include LICENSE THIRD-PARTY-NOTICES; do
+  [ -e "$PREFIX/$m" ] || { echo "package.sh: required C2 member '$m' missing from $PREFIX" >&2; exit 1; }
+  cp -a "$PREFIX/$m" "$STAGE/"
+done
 
 CMAKE_FLAGS="$(variant_flags "$VARIANT") -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXECUTORCH_BUILD_XNNPACK=ON -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON"
 ET_VERSION="$ETVER" ET_COMMIT="$ET_COMMIT" TORCH_VERSION="2.12.0+cpu" \
