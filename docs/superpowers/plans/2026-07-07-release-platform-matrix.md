@@ -129,7 +129,8 @@ EOF
 - Consumes: `scripts/derive-version.sh` from Task 1 (invoked as `./scripts/derive-version.sh`, requires the git-executable-bit already verified by `test/exec_perms.test.sh`).
 - Consumes: `scripts/gen-pin.sh` (unchanged, already accepts `--row <variant> <platform> <sha>` per row — confirmed in `scripts/gen-pin.sh`).
 - Consumes: `scripts/package.sh` (unchanged, `--platform` flag).
-- Produces: three jobs — `build` (matrix `variant × combo`, `combo` sourced from `env.PLATFORMS`), `pin` (needs `build`), `release` (needs `pin`). Artifact names: `dist-<variant>-<platform>` (from `build`) and `pin` (from `pin`, containing `EtRuntimePin.cmake`).
+- Produces: four jobs — `setup` (no dependencies, exposes `env.PLATFORMS` as job output `platforms`), `build` (needs `setup`; matrix `variant × combo`, `combo` sourced from `needs.setup.outputs.platforms`), `pin` (needs `build`), `release` (needs `pin`). Artifact names: `dist-<variant>-<platform>` (from `build`) and `pin` (from `pin`, containing `EtRuntimePin.cmake`).
+- Note: GitHub Actions disallows the `env` context inside `jobs.<job_id>.strategy.matrix` (only `github`/`needs`/`vars`/`inputs` are available there — confirmed via `actionlint`). This is why `build`'s matrix reads `needs.setup.outputs.platforms` rather than `env.PLATFORMS` directly, while `pin` (a normal `run:` step, not `strategy.matrix`) can still read `env.PLATFORMS` — via the `$PLATFORMS` shell variable GitHub Actions injects into every `run:` step's environment, which also avoids any quoting issues from the JSON's embedded double quotes.
 
 - [ ] **Step 1: Replace the full file contents**
 
@@ -152,7 +153,20 @@ env:
     [{"platform":"linux-x86_64","container":"quay.io/pypa/manylinux_2_28_x86_64","runs_on":"ubuntu-latest"}]
 
 jobs:
+  setup:
+    # env is not readable from strategy.matrix (GitHub Actions restriction — confirmed via
+    # actionlint), so build's matrix reads this job's output instead of env.PLATFORMS directly.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      platforms: ${{ steps.platforms.outputs.platforms }}
+    steps:
+      - id: platforms
+        run: echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: setup
     runs-on: ${{ matrix.combo.runs_on }}
     container:
       image: ${{ matrix.combo.container }}   # caller owns the container boundary
@@ -164,7 +178,7 @@ jobs:
       fail-fast: false
       matrix:
         variant: [bare, logging, devtools]
-        combo: ${{ fromJSON(env.PLATFORMS) }}
+        combo: ${{ fromJSON(needs.setup.outputs.platforms) }}
     steps:
       - uses: actions/checkout@v7
       - name: Derive versions from tag
@@ -213,7 +227,7 @@ jobs:
           eval "$(./scripts/derive-version.sh)"
           base="${{ github.server_url }}/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}"
           args=(--version "$pkgver" --etver "$etver" --base-url "$base")
-          for platform in $(echo '${{ env.PLATFORMS }}' | jq -r '.[].platform'); do
+          for platform in $(echo "$PLATFORMS" | jq -r '.[].platform'); do
             for variant in bare logging devtools; do
               sha="$(cut -d' ' -f1 "dist/executorch-runtime-${etver}-${variant}-${platform}.tar.gz.sha256")"
               args+=(--row "$variant" "$platform" "$sha")
@@ -271,14 +285,15 @@ git commit -m "$(cat <<'EOF'
 ci: parametrize release.yml platforms and split build/pin/release
 
 - Single env.PLATFORMS source of truth ({platform, container, runs_on})
-  consumed by build's matrix and pin's loop, so adding linux-aarch64
-  later is a one-line append.
+  consumed by build's matrix (via a new setup job, since env isn't
+  readable from strategy.matrix) and pin's loop, so adding
+  linux-aarch64 later is a one-line append.
 - Split the old release job into pin (generates EtRuntimePin.cmake,
   needs: build) and release (single gh release create/upload, needs:
   pin), so a future per-platform pin loop never races on release
   creation.
 - Least-privilege permissions per job: build gets id-token/attestations
-  (no contents:write), pin gets contents:read only, release gets
+  (no contents:write), pin/setup get contents:read only, release gets
   contents:write only. Resolves the file's prior TODO about scoping
   attestation permissions to build.
 EOF
@@ -291,4 +306,5 @@ EOF
 
 - **Spec coverage:** `PLATFORMS` single source of truth (Task 2 Step 1) ✓; `build`/`pin`/`release` split (Task 2 Step 1) ✓; least-privilege per-job permissions (Task 2 Step 1) ✓; `scripts/derive-version.sh` extraction (Task 1) ✓. All four spec sections have a corresponding task/step.
 - **Placeholder scan:** no TBD/TODO; every step shows full file contents or exact commands with expected output.
-- **Type/name consistency:** `matrix.combo.platform` / `matrix.combo.container` / `matrix.combo.runs_on` used consistently between the `combo` matrix definition and its references in `build`; `dist-<variant>-<platform>` artifact name in `build` matches the `merge-multiple: true` download in `pin` and `release`; `pkgver`/`etver`/`ettag` names match between `scripts/derive-version.sh`'s output and both consumers (`$GITHUB_OUTPUT` in `build`, `eval` in `pin`).
+- **Type/name consistency:** `matrix.combo.platform` / `matrix.combo.container` / `matrix.combo.runs_on` used consistently between the `combo` matrix definition and its references in `build`; `dist-<variant>-<platform>` artifact name in `build` matches the `merge-multiple: true` download in `pin` and `release`; `pkgver`/`etver`/`ettag` names match between `scripts/derive-version.sh`'s output and both consumers (`$GITHUB_OUTPUT` in `build`, `eval` in `pin`); `needs.setup.outputs.platforms` name matches the `setup` job's `outputs:` key and its step id (`steps.platforms.outputs.platforms`).
+- **Correction from implementation:** the original plan had `build`'s matrix read `env.PLATFORMS` directly — `actionlint` caught that GitHub Actions disallows `env` inside `strategy.matrix`. Fixed by adding a `setup` job (see spec `docs/superpowers/specs/2026-07-07-release-platform-matrix-design.md`, "Single source of truth for platforms" section) and updating this task's YAML and commit message accordingly before re-dispatch.
