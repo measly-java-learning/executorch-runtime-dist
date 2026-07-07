@@ -91,6 +91,28 @@ process. Splitting it avoids a matrixed `release` job racing on
    - single `gh release create ... || gh release upload ... --clobber` step,
      unchanged from today
 
+### Least-privilege permissions per job
+
+Today the workflow grants `contents: write`, `id-token: write`, and
+`attestations: write` at the workflow level, so every job — including
+`build`, which never touches releases — inherits all three. This is called
+out by an existing `TODO` comment in the file; the job split above is a
+natural point to resolve it, since each job's actual needs are now clearly
+separated:
+
+- **`build`**: only checks out the repo (read) and runs
+  `actions/attest@v4`, which needs `id-token: write` and
+  `attestations: write`. No `contents: write`.
+- **`pin`**: only checks out the repo and downloads/uploads artifacts.
+  `contents: read` only.
+- **`release`**: runs `gh release create`/`gh release upload`, which needs
+  `contents: write`. No `id-token` or `attestations`.
+
+The top-level `permissions:` block is reduced to `contents: read` (or
+removed, since that's the default), and each job declares its own
+`permissions:` block as above. The `TODO` comment is removed since this
+resolves it.
+
 ### Out of scope
 
 - Adding `linux-aarch64` itself, or any cross-compilation/runner changes
