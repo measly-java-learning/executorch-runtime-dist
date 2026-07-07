@@ -4,41 +4,43 @@ on:
     tags: ['v*-*']          # v<etver>-<pkgrev>, e.g. v1.3.1-1
 
 permissions:
-  contents: read            # least-privilege default; each job below elevates only what it needs
+  contents: read
 
 env:
   # Single source of truth for release platforms. manylinux bakes the architecture into the
   # container image name, so each entry carries its own container + runner. Adding a platform
   # (e.g. linux-aarch64) later is a one-line append here; no job-level YAML changes needed.
   PLATFORMS: >-
-    [{"platform":"linux-x86_64","container":"quay.io/pypa/manylinux_2_28_x86_64","runs_on":"ubuntu-latest"}]
+    [
+        {"platform":"linux-x86_64","container":"quay.io/pypa/manylinux_2_28_x86_64","runs_on":"ubuntu-latest"}
+    ]
 
 jobs:
   setup:
-    # env is not readable from strategy.matrix (GitHub Actions restriction — confirmed via
-    # actionlint), so build's matrix reads this job's output instead of env.PLATFORMS directly.
+    # env is not readable from strategy.matrix so build's matrix reads this job's output
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
       platforms: ${{ steps.platforms.outputs.platforms }}
     steps:
+        # `tee -a` used in place of `>>` to simplify debugging
       - id: platforms
         run: |
           {
             echo "platforms<<EOF"
             echo "$PLATFORMS"
             echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          } | tee -a "$GITHUB_OUTPUT"
 
   build:
     needs: setup
     runs-on: ${{ matrix.combo.runs_on }}
     container:
-      image: ${{ matrix.combo.container }}   # caller owns the container boundary
+      image: ${{ matrix.combo.container }}
     permissions:
       contents: read
-      id-token: write        # attestations
+      id-token: write
       attestations: write
     strategy:
       fail-fast: false
@@ -50,7 +52,7 @@ jobs:
       - name: Derive versions from tag
         id: ver
         run: ./scripts/derive-version.sh >> "$GITHUB_OUTPUT"
-      - name: Checkout ExecuTorch source (caller-owned per C8; the recipe does not clone)
+      - name: Checkout ExecuTorch source
         uses: actions/checkout@v7
         with:
           repository: pytorch/executorch
@@ -76,6 +78,14 @@ jobs:
         with:
           name: dist-${{ matrix.variant }}-${{ matrix.combo.platform }}
           path: dist/*
+
+  #
+  # When we're ready to support Windows and macOS it would present as:
+  # 1. New jobs (e.g. `build-windows` and `build-macos`) that use the correct platform instructions for building
+  # 2. The new platforms need to upload their artifacts using the current `dist-variant-platform` pattern seen with Linux today
+  # 3. The `pin` job needs to depend on all the different `build` jobs (Linux, Windows, macOS)
+  # 4. The `pin` job will no longer drive itself from `$PLATFORMS` and will instead identify what artifacts it has from file system discovery
+  # 5. The releases notes would drop `manylinux`
 
   pin:
     needs: build
@@ -114,7 +124,7 @@ jobs:
     needs: pin
     runs-on: ubuntu-latest
     permissions:
-      contents: write         # create release + upload assets
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
