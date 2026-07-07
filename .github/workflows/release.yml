@@ -24,7 +24,12 @@ jobs:
       platforms: ${{ steps.platforms.outputs.platforms }}
     steps:
       - id: platforms
-        run: echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
+        run: |
+          {
+            echo "platforms<<EOF"
+            echo "$PLATFORMS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     needs: setup
