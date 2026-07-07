@@ -113,6 +113,34 @@ removed, since that's the default), and each job declares its own
 `permissions:` block as above. The `TODO` comment is removed since this
 resolves it.
 
+### Extract version derivation into a testable script
+
+The `tag="${GITHUB_REF_NAME}"; pkgver="${tag#v}"; etver="${pkgver%-*}"` logic
+is currently inline in the `build` job's "Derive versions from tag" step.
+The `pin` job needs the same derivation (it re-derives `etver` to build sha256
+filenames), so this goes from one inline copy to two. Since this repo already
+factors CI logic into small testable scripts under `scripts/` (`gen-pin.sh`,
+`package.sh`, `gen-buildinfo.sh`, `scripts/lib/naming.sh`), extract this into
+`scripts/derive-version.sh`:
+
+```sh
+#!/usr/bin/env bash
+set -euo pipefail
+tag="${GITHUB_REF_NAME:?}"; pkgver="${tag#v}"; etver="${pkgver%-*}"
+printf 'pkgver=%s\netver=%s\nettag=v%s\n' "$pkgver" "$etver" "$etver"
+```
+
+Output format matches `$GITHUB_OUTPUT`'s `key=value` lines, so it's
+consumed two ways:
+
+- `build` (needs step outputs, since it's matrixed and other steps read
+  `steps.ver.outputs.*`): `./scripts/derive-version.sh >> "$GITHUB_OUTPUT"`
+- `pin` (only needs local shell vars within one step, no matrix):
+  `eval "$(./scripts/derive-version.sh)"`
+
+Testable locally without any GitHub Actions context:
+`GITHUB_REF_NAME=v1.3.1-1 ./scripts/derive-version.sh`.
+
 ### Out of scope
 
 - Adding `linux-aarch64` itself, or any cross-compilation/runner changes
