@@ -2,27 +2,49 @@ name: release
 on:
   push:
     tags: ['v*-*']          # v<etver>-<pkgrev>, e.g. v1.3.1-1
+
 permissions:
-  contents: write           # create release + upload assets
-  id-token: write           # attestations
-  attestations: write
+  contents: read            # least-privilege default; each job below elevates only what it needs
+
+env:
+  # Single source of truth for release platforms. manylinux bakes the architecture into the
+  # container image name, so each entry carries its own container + runner. Adding a platform
+  # (e.g. linux-aarch64) later is a one-line append here; no job-level YAML changes needed.
+  PLATFORMS: >-
+    [{"platform":"linux-x86_64","container":"quay.io/pypa/manylinux_2_28_x86_64","runs_on":"ubuntu-latest"}]
+
 jobs:
-  build:
+  setup:
+    # env is not readable from strategy.matrix (GitHub Actions restriction — confirmed via
+    # actionlint), so build's matrix reads this job's output instead of env.PLATFORMS directly.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      platforms: ${{ steps.platforms.outputs.platforms }}
+    steps:
+      - id: platforms
+        run: echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: setup
+    runs-on: ${{ matrix.combo.runs_on }}
     container:
-      image: quay.io/pypa/manylinux_2_28_x86_64   # caller owns the container boundary
+      image: ${{ matrix.combo.container }}   # caller owns the container boundary
+    permissions:
+      contents: read
+      id-token: write        # attestations
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
         variant: [bare, logging, devtools]
-        platform: [linux-x86_64]
+        combo: ${{ fromJSON(needs.setup.outputs.platforms) }}
     steps:
       - uses: actions/checkout@v7
       - name: Derive versions from tag
         id: ver
-        run: |
-          tag="${GITHUB_REF_NAME}"; pkgver="${tag#v}"; etver="${pkgver%-*}"
-          { echo "pkgver=$pkgver"; echo "etver=$etver"; echo "ettag=v$etver"; } >> "$GITHUB_OUTPUT"
+        run: ./scripts/derive-version.sh >> "$GITHUB_OUTPUT"
       - name: Checkout ExecuTorch source (caller-owned per C8; the recipe does not clone)
         uses: actions/checkout@v7
         with:
@@ -39,7 +61,7 @@ jobs:
       - name: Package
         run: |
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
-            --variant "${{ matrix.variant }}" --platform "${{ matrix.platform }}" \
+            --variant "${{ matrix.variant }}" --platform "${{ matrix.combo.platform }}" \
             --package-tag "${GITHUB_REF_NAME}" --outdir "$PWD/dist"
       - name: Attest build provenance
         uses: actions/attest@v4
@@ -47,11 +69,14 @@ jobs:
           subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@v7
         with:
-          name: dist-${{ matrix.variant }}-${{ matrix.platform }}
+          name: dist-${{ matrix.variant }}-${{ matrix.combo.platform }}
           path: dist/*
-  release:
+
+  pin:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -60,12 +85,14 @@ jobs:
           merge-multiple: true
       - name: Generate EtRuntimePin.cmake
         run: |
-          tag="${GITHUB_REF_NAME}"; pkgver="${tag#v}"; etver="${pkgver%-*}"
-          base="${{ github.server_url }}/${{ github.repository }}/releases/download/${tag}"
+          eval "$(./scripts/derive-version.sh)"
+          base="${{ github.server_url }}/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}"
           args=(--version "$pkgver" --etver "$etver" --base-url "$base")
-          for variant in bare logging devtools; do
-            sha="$(cut -d' ' -f1 "dist/executorch-runtime-${etver}-${variant}-linux-x86_64.tar.gz.sha256")"
-            args+=(--row "$variant" linux-x86_64 "$sha")
+          for platform in $(echo "$PLATFORMS" | jq -r '.[].platform'); do
+            for variant in bare logging devtools; do
+              sha="$(cut -d' ' -f1 "dist/executorch-runtime-${etver}-${variant}-${platform}.tar.gz.sha256")"
+              args+=(--row "$variant" "$platform" "$sha")
+            done
           done
           ./scripts/gen-pin.sh "${args[@]}" > dist/EtRuntimePin.cmake
           {
@@ -73,6 +100,22 @@ jobs:
             cat dist/EtRuntimePin.cmake
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pin
+          path: dist/EtRuntimePin.cmake
+
+  release:
+    needs: pin
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write         # create release + upload assets
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
       - name: Create/Update release
         env:
           GH_TOKEN: ${{ github.token }}
