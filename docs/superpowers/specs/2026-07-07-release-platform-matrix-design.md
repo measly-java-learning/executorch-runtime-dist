@@ -40,16 +40,43 @@ env:
     [{"platform":"linux-x86_64","container":"quay.io/pypa/manylinux_2_28_x86_64","runs_on":"ubuntu-latest"}]
 ```
 
-Consumed two ways:
+Consumed two ways — with one wrinkle: GitHub Actions does not allow the
+`env` context inside `jobs.<job_id>.strategy.matrix` (only
+`github`/`needs`/`vars`/`inputs` are available there; confirmed via
+`actionlint`, which rejects `combo: ${{ fromJSON(env.PLATFORMS) }}` directly
+in a matrix). So `build`'s matrix must receive `PLATFORMS` via a `needs.*`
+job output instead of `env` directly. A new `setup` job (no dependencies)
+exposes `env.PLATFORMS` as a job output in one step (job outputs and
+`run:` steps *do* have `env` access — only `strategy.matrix` is
+restricted):
 
-- `build` job: cross `variant` with a `combo` matrix axis built from
-  `PLATFORMS`, then reference the fields off `matrix.combo`:
+```yaml
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      platforms: ${{ steps.platforms.outputs.platforms }}
+    steps:
+      - id: platforms
+        run: echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
+```
+
+(`$PLATFORMS` here is the shell environment variable GitHub Actions
+automatically injects from `env.PLATFORMS` for every `run:` step — no
+`${{ }}` templating needed, which also sidesteps any quoting issues from
+the JSON's embedded double quotes.)
+
+- `build` job (`needs: setup`): cross `variant` with a `combo` matrix axis
+  built from the `setup` job's output, then reference the fields off
+  `matrix.combo`:
 
   ```yaml
   strategy:
     matrix:
       variant: [bare, logging, devtools]
-      combo: ${{ fromJSON(env.PLATFORMS) }}
+      combo: ${{ fromJSON(needs.setup.outputs.platforms) }}
   runs-on: ${{ matrix.combo.runs_on }}
   container:
     image: ${{ matrix.combo.container }}
@@ -58,8 +85,10 @@ Consumed two ways:
   (`matrix.combo.platform` replaces today's `matrix.platform` references in
   the build/package steps and artifact name.)
 
-- `pin` job's shell loop extracts just the platform names:
-  `for platform in $(echo '${{ env.PLATFORMS }}' | jq -r '.[].platform'); do ...`
+- `pin` job's shell loop extracts just the platform names directly from
+  `env.PLATFORMS` (unaffected by the matrix restriction, since this is a
+  normal `run:` step, not `strategy.matrix`):
+  `for platform in $(echo "$PLATFORMS" | jq -r '.[].platform'); do ...`
 
 Adding `linux-aarch64` later means appending one object to this array; no
 job-level YAML structure changes are needed at that time.
@@ -71,8 +100,12 @@ file, and publishing the GitHub release) and hardcodes the platform in the
 process. Splitting it avoids a matrixed `release` job racing on
 `gh release create` while still removing the hardcoded platform:
 
-1. **`build`** (behavior unchanged; matrix wiring updated per above)
-   - matrix: `variant: [bare, logging, devtools]`, `combo: ${{ fromJSON(env.PLATFORMS) }}`
+0. **`setup`** (new, no dependencies) — exposes `env.PLATFORMS` as job
+   output `platforms` so `build`'s matrix can consume it (see above).
+
+1. **`build`** (behavior unchanged; matrix wiring updated per above,
+   `needs: setup`)
+   - matrix: `variant: [bare, logging, devtools]`, `combo: ${{ fromJSON(needs.setup.outputs.platforms) }}`
    - `runs-on`/`container.image` sourced from `matrix.combo`
    - builds + packages + attests + uploads `dist-${variant}-${matrix.combo.platform}` artifact
 
@@ -100,6 +133,9 @@ out by an existing `TODO` comment in the file; the job split above is a
 natural point to resolve it, since each job's actual needs are now clearly
 separated:
 
+- **`setup`**: only emits a job output from `env`. `contents: read` only
+  (no checkout needed at all, but `contents: read` is the harmless default
+  floor used consistently across jobs here).
 - **`build`**: only checks out the repo (read) and runs
   `actions/attest@v4`, which needs `id-token: write` and
   `attestations: write`. No `contents: write`.
