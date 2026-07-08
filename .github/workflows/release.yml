@@ -7,12 +7,13 @@ permissions:
   contents: read
 
 env:
-  # Single source of truth for release platforms. manylinux bakes the architecture into the
+  # Single source of truth for linux release platforms. manylinux bakes the architecture into the
   # container image name, so each entry carries its own container + runner. Adding a platform
   # (e.g. linux-aarch64) later is a one-line append here; no job-level YAML changes needed.
   PLATFORMS: >-
     [
-        {"platform":"linux-x86_64","container":"quay.io/pypa/manylinux_2_28_x86_64","runs_on":"ubuntu-latest"}
+        {"platform":"linux-x86_64","container":"quay.io/pypa/manylinux_2_28_x86_64","runs_on":"ubuntu-latest"},
+        {"platform":"linux-aarch64","container":"quay.io/pypa/manylinux_2_28_aarch64","runs_on":"ubuntu-24.04-arm"}
     ]
 
 jobs:

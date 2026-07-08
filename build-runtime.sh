@@ -141,6 +141,23 @@ if [ -n "$leaked" ]; then
   done
 fi
 
+# ET's find_library resolves system libs to container-absolute paths and bakes them into the
+# exported INTERFACE_LINK_LIBRARIES (e.g. /usr/lib64/libm.so, /usr/lib64/librt.so — this recipe
+# runs in manylinux_2_28, a RHEL base where system libs live under /usr/lib64). Those absolute
+# paths break consumers whose libm/librt live elsewhere (Debian/Ubuntu multiarch keeps them at
+# /usr/lib/x86_64-linux-gnu), failing at link time with "cannot find /usr/lib64/libm.so" even
+# though the lib is present. Rewrite each to its bare link name so the consumer's own linker
+# resolves it via -l<name>. Anchored on /usr/lib64/ so project archives under
+# ${PACKAGE_PREFIX_DIR}/lib are never touched. (|| true: grep exits 1 on no match under set -e.)
+echo ">> normalizing absolute system-library paths to -l<name> (portability across host libdirs)"
+syslib="$(grep -rlE '/usr/lib64/lib[a-z0-9_]+\.(so|a)' "$PREFIX/lib/cmake" 2>/dev/null || true)"
+if [ -n "$syslib" ]; then
+  echo ">> WARNING: absolute system-lib paths leaked into cmake configs; rewriting to bare link names"
+  printf '%s\n' "$syslib" | while read -r f; do
+    sed -i -E 's#/usr/lib64/lib([a-z0-9_]+)\.(so|a)#\1#g' "$f"
+  done
+fi
+
 echo ">> license passthrough"
 install -m 0644 "$ET_SRC/LICENSE" "$PREFIX/LICENSE"
 mkdir -p "$PREFIX/THIRD-PARTY-NOTICES"
