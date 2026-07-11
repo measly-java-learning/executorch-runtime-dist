@@ -265,21 +265,28 @@ const auto etnp_lstm_registrar = executorch::runtime::register_kernel(
 # parent scope for the nm-guard.
 
 # --- generate the op-name header from extra.yaml (single source of truth) ---
+# BUILD-time generation (not execute_process at configure time): DEPENDS on BOTH
+# the YAML and the generator script, so editing either regenerates the header on the
+# next `cmake --build`. execute_process would only re-run on reconfigure, letting a
+# local iterative build compile against a header out of sync with extra.yaml.
 set(_extra_yaml "${CMAKE_CURRENT_LIST_DIR}/../extra.yaml")
+set(_gen_script "${CMAKE_CURRENT_LIST_DIR}/../../generate_schema_header.py")
 set(_gen_header "${CMAKE_CURRENT_BINARY_DIR}/gen/etnp_lstm_schema.h")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-execute_process(
-  COMMAND "${Python3_EXECUTABLE}"
-          "${CMAKE_CURRENT_LIST_DIR}/../../generate_schema_header.py"
-          "${_extra_yaml}" "${_gen_header}"
-  RESULT_VARIABLE _gen_rc)
-if(NOT _gen_rc EQUAL 0)
-  message(FATAL_ERROR "generate_schema_header.py failed (rc=${_gen_rc})")
-endif()
+add_custom_command(
+  OUTPUT "${_gen_header}"
+  COMMAND "${Python3_EXECUTABLE}" "${_gen_script}" "${_extra_yaml}" "${_gen_header}"
+  DEPENDS "${_extra_yaml}" "${_gen_script}"
+  COMMENT "Generating etnp_lstm_schema.h from extra.yaml (single source of truth)"
+  VERBATIM)
 
+# Listing the generated header as a target source wires the custom command's OUTPUT
+# into the target's dependency graph, so it regenerates before etnp_lstm.cpp (which
+# #includes it) compiles — correct under Ninja parallel builds too.
 add_library(etnp_ops_lstm STATIC
   "${CMAKE_CURRENT_LIST_DIR}/etnp_lstm.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/lstm_cell.cc")
+  "${CMAKE_CURRENT_LIST_DIR}/lstm_cell.cc"
+  "${_gen_header}")
 set_property(TARGET etnp_ops_lstm PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_compile_features(etnp_ops_lstm PRIVATE cxx_std_17)
 
