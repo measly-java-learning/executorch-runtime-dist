@@ -80,7 +80,7 @@ jobs:
           # let that version stick; the C++ runtime is built from ET source
           # independently, so there is no skew to guard against.
           (cd executorch && ./install_executorch.sh)
-          pip install numpy pytest
+          pip install numpy pytest ninja   # ninja: round-trip builds lstm_runner with -G Ninja; not in the base image
           ETNP_PREFIX="$PWD/out" python -m pytest \
             extras/lstm/test/test_lstm_roundtrip.py -v
       - name: Package

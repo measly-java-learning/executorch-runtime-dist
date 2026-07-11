@@ -1197,14 +1197,14 @@ In `.github/workflows/release.yml`, after the `Build runtime` step and before `P
           # let that version stick; the C++ runtime is built from ET source
           # independently, so there is no skew to guard against.
           (cd executorch && ./install_executorch.sh)
-          pip install numpy pytest
+          pip install numpy pytest ninja   # ninja: round-trip builds lstm_runner with -G Ninja; not in the base image
           ETNP_PREFIX="$PWD/out" python -m pytest \
             extras/lstm/test/test_lstm_roundtrip.py -v
 ```
 
 Notes for the implementer:
 - The `executorch` python package is installed here from the checked-out ET source (`./executorch`) via `install_executorch.sh` (Task 5B) — it is **not** part of `build-runtime.sh`'s bootstrap.
-- `install_executorch.sh` pins its own torch; do not re-pin. `numpy`/`pytest` are the only extras this step adds.
+- `install_executorch.sh` pins its own torch; do not re-pin. The step adds `numpy`/`pytest` (compare + test runner) and `ninja` (the round-trip builds `lstm_runner` with `-G Ninja`, which is not in the base manylinux image).
 - `--prefix "$PWD/out"` is what the `Build runtime` step used, so `ETNP_PREFIX=$PWD/out`.
 - The op is variant-identical (bare/logging/devtools compile the same kernel), so
   the step is gated to the `logging` variant only via `if: matrix.variant ==
