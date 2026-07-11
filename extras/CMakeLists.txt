@@ -49,3 +49,27 @@ if(TARGET etnp_ops_lstm)
   target_link_libraries(lstm_kernel_test PRIVATE
     ${_ET_LINK} "$<LINK_LIBRARY:WHOLE_ARCHIVE,etnp_ops_lstm>")
 endif()
+
+# --- static registration guard (every build, incl. cross-compiled targets) ---
+add_executable(etnp_extras_link_probe link_probe.cpp)
+set(_probe_whole "")
+foreach(_lib IN LISTS ETNP_EXTRAS_LIBS)
+  list(APPEND _probe_whole "$<LINK_LIBRARY:WHOLE_ARCHIVE,${_lib}>")
+endforeach()
+target_link_libraries(etnp_extras_link_probe PRIVATE ${_ET_LINK} ${_probe_whole})
+add_custom_command(TARGET etnp_extras_link_probe POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -DSO=$<TARGET_FILE:etnp_extras_link_probe> -DNM=nm
+          "-DEXPECT_TUS=${ETNP_EXTRAS_ALL_EXPECT_TUS}"
+          -P ${CMAKE_CURRENT_LIST_DIR}/../cmake/assert_extras_registered.cmake
+  VERBATIM)
+
+# --- negative-control probe (Task 4 Step 5 only) ---
+# SAME ET deps as the real probe, but the extras archives are linked PLAIN (no
+# whole-archive), so this is a VALID, fully-resolved binary in which the linker
+# legitimately omits the unreferenced registrar TU. It exists to prove the guard
+# fails for the RIGHT reason (dropped registrar in a valid binary) — NOT because of
+# an unresolved-symbol link error like a bare `.a`-only link would give.
+# EXCLUDE_FROM_ALL: normal builds never build it; no POST_BUILD guard attached.
+add_executable(etnp_extras_neg_probe EXCLUDE_FROM_ALL link_probe.cpp)
+target_link_libraries(etnp_extras_neg_probe PRIVATE ${_ET_LINK} ${ETNP_EXTRAS_LIBS})
+target_link_options(etnp_extras_neg_probe PRIVATE -Wl,--gc-sections)
