@@ -674,37 +674,37 @@ built runtime exactly — no `.pte` skew. (Task 6's AOT module itself uses only
 
 **Interfaces:**
 - Produces a Python environment where `import executorch` and
-  `from executorch.exir import to_edge_transform_and_lower` succeed with
-  `torch==2.12.0+cpu` intact. Consumed by Task 7 (local) and Task 8 (CI).
+  `from executorch.exir import to_edge_transform_and_lower` succeed. Consumed by
+  Task 7 (local) and Task 8 (CI). Creating this env is a **prerequisite** — the plan
+  does not depend on any pre-existing venv in the workspace.
 
-- [ ] **Step 1: Local — confirm the reusable export venv**
+- [ ] **Step 1: Create a fresh export venv and install `executorch` from `--et-src`**
 
-The ET checkout already has one (the shim used it). Verify:
+Create a virtual environment and install the `executorch` package from the same
+pinned ET checkout the runtime is built from, via the canonical from-source installer
+`./install_executorch.sh` (delegates to `install_executorch.py`; installs its own
+pinned torch + `executorch` into the active environment).
+
+**Local (fast path — `uv`):** use `uv` to create the venv. `install_executorch.sh`
+shells out to pip, so seed pip into the venv with `--seed`:
 ```bash
-ET=/home/corey/workspace/executorch
-$ET/.venv/bin/python -c "import executorch, torch; \
-  from executorch.exir import to_edge_transform_and_lower; \
-  print('executorch ok; torch', torch.__version__)"
+uv venv --seed --python 3.12 .export-venv
+. .export-venv/bin/activate
+(cd executorch && ./install_executorch.sh)   # from the --et-src checkout
 ```
-Expected: `executorch ok; torch 2.12.0+cpu`. Record this as the local export interpreter.
+(Plain-stdlib fallback if `uv` is unavailable: `python3.12 -m venv .export-venv`.)
 
-- [ ] **Step 2: Fresh env (CI/new machine) — install from `--et-src`**
+**CI:** the ephemeral manylinux container python **is** the environment — Task 8
+installs `executorch` into it directly (no venv, **no `uv`**). `uv` stays a
+local-only convenience so CI takes on no new dependency or risk.
 
-The canonical from-source installer is `./install_executorch.sh` (delegates to
-`install_executorch.py`), run from the ET checkout root; it installs its own pinned
-torch and the `executorch` package into the active environment. Concretely:
-```bash
-export PATH=/opt/python/cp312-cp312/bin:$PATH     # the container's python env
-cd executorch && ./install_executorch.sh && cd -
-```
+- [ ] **Step 2: Verify the AOT surface imports (let executorch's torch stick)**
 
-- [ ] **Step 3: Verify the AOT surface imports (let executorch's torch stick)**
-
-`install_executorch.py` pins its own torch. **Let it win** — do not fight or re-pin
-it. `build-runtime.sh`'s `torch==2.12.0+cpu` is only a shortcut mirroring
-ExecuTorch's pin for the *runtime* build; the export venv's torch is whatever
-executorch dictates, and the C++ runtime is built from ET source independently, so
-there is no skew to guard against. Just confirm the AOT surface imports:
+`install_executorch.py` pins its own torch. **Let it win** — do not re-pin it.
+`build-runtime.sh`'s `torch==2.12.0+cpu` is only a shortcut mirroring ExecuTorch's
+pin for the *runtime* build; the export env's torch is whatever executorch dictates,
+and the C++ runtime is built from ET source independently, so there is no skew to
+guard against. Just confirm the AOT surface imports:
 ```bash
 python -c "import torch, executorch; \
   from executorch.exir import to_edge_transform_and_lower; \
@@ -712,7 +712,7 @@ python -c "import torch, executorch; \
 ```
 Expected: `exir ok; torch <whatever executorch pinned>` (informational — no assertion).
 
-- [ ] **Step 4: Write `extras/README.md` (dev guide)**
+- [ ] **Step 3: Write `extras/README.md` (dev guide)**
 
 ```markdown
 # extras/ — first-party custom ops
@@ -726,21 +726,24 @@ and `extra.yaml` (the single source of truth for the op name + schema).
 the ET install and installs `libetnp_ops_lstm.a` + `include/etnp/lstm.h` +
 `lib/cmake/ETNPExtras/ETNPExtras.cmake` into the prefix. No separate step needed.
 
-## Building `.pte` artifacts / running the round-trip (needs the export venv)
+## Building `.pte` artifacts / running the round-trip (needs an export venv)
 The AOT export path needs the `executorch` Python package installed **from the same
 ExecuTorch source (`--et-src`) at the pinned commit** the runtime is built from, so
-lowering passes match the runtime exactly. Two ways to get it:
+lowering passes match the runtime exactly. Create the env fresh — it's a prerequisite:
 
-- **Local:** reuse the ET checkout's venv, e.g. `/home/corey/workspace/executorch/.venv`.
-- **Fresh env / CI:** run `./install_executorch.sh` from the ET checkout root. It
-  pins its own torch — let that version stick (don't re-pin; the C++ runtime is built
-  from ET source independently, so there's no skew). Then confirm
-  `from executorch.exir import to_edge_transform_and_lower` imports.
+- **Local (fast):** `uv venv --seed --python 3.12 .export-venv && . .export-venv/bin/activate`,
+  then `(cd executorch && ./install_executorch.sh)`. (`--seed` gives the venv pip, which
+  the installer uses; plain `python3.12 -m venv` works too if `uv` is unavailable.)
+- **CI:** install into the container python directly (no venv, no `uv`).
+
+`./install_executorch.sh` pins its own torch — let that version stick (don't re-pin;
+the C++ runtime is built from ET source independently, so there's no skew). Then
+confirm `from executorch.exir import to_edge_transform_and_lower` imports.
 
 Then: `ETNP_PREFIX=<built-prefix> python -m pytest extras/lstm/test/test_lstm_roundtrip.py`.
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add extras/README.md
@@ -1011,12 +1014,11 @@ def test_roundtrip_matches_eager():
 
 - [ ] **Step 4: Run the round-trip against a built prefix**
 
-Run with the **export venv from Task 5B** (the one where `executorch.exir` imports),
-after Task 5's `build-runtime.sh` produced `out-logging` (locally that interpreter is
-`/home/corey/workspace/executorch/.venv/bin/python`):
+Run with the **export venv from Task 5B** activated (the one where `executorch.exir`
+imports), after Task 5's `build-runtime.sh` produced `out-logging`:
 ```bash
-ETNP_PREFIX="$PWD/out-logging" \
-  /home/corey/workspace/executorch/.venv/bin/python -m pytest \
+. .export-venv/bin/activate
+ETNP_PREFIX="$PWD/out-logging" python -m pytest \
   extras/lstm/test/test_lstm_roundtrip.py -v
 ```
 Expected: PASS — the `.pte` contains `etnp::lstm.out`, the runner loads+runs it against the tarball, and output matches eager within 1e-4.
