@@ -66,6 +66,23 @@ jobs:
           ./build-runtime.sh --variant "${{ matrix.variant }}" \
             --prefix "$PWD/out" --et-src "$PWD/executorch" \
             --et-tag "${{ steps.ver.outputs.ettag }}"
+      - name: LSTM round-trip gate (export -> run vs eager)
+        # The LSTM op is variant-identical (bare/logging/devtools compile the same
+        # kernel), so gate on the `logging` variant only rather than all 3 — this
+        # cuts the ~15min in-container executorch install from 6x/release to
+        # 2x/release with no coverage loss. Both platforms still run, for
+        # aarch64 SIMD parity coverage.
+        if: matrix.variant == 'logging'
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          # AOT export needs the executorch python package from the SAME pinned ET
+          # source we built the runtime from (Task 5B). It pins its own torch —
+          # let that version stick; the C++ runtime is built from ET source
+          # independently, so there is no skew to guard against.
+          (cd executorch && ./install_executorch.sh)
+          pip install numpy pytest
+          ETNP_PREFIX="$PWD/out" python -m pytest \
+            extras/lstm/test/test_lstm_roundtrip.py -v
       - name: Package
         run: |
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \

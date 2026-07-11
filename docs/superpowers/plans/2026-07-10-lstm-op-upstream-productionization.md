@@ -1184,6 +1184,12 @@ In `.github/workflows/release.yml`, after the `Build runtime` step and before `P
 
 ```yaml
       - name: LSTM round-trip gate (export -> run vs eager)
+        # The LSTM op is variant-identical (bare/logging/devtools compile the same
+        # kernel), so gate on the `logging` variant only rather than all 3 — this
+        # cuts the ~15min in-container executorch install from 6x/release to
+        # 2x/release with no coverage loss. Both platforms still run, for
+        # aarch64 SIMD parity coverage.
+        if: matrix.variant == 'logging'
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           # AOT export needs the executorch python package from the SAME pinned ET
@@ -1200,7 +1206,12 @@ Notes for the implementer:
 - The `executorch` python package is installed here from the checked-out ET source (`./executorch`) via `install_executorch.sh` (Task 5B) — it is **not** part of `build-runtime.sh`'s bootstrap.
 - `install_executorch.sh` pins its own torch; do not re-pin. `numpy`/`pytest` are the only extras this step adds.
 - `--prefix "$PWD/out"` is what the `Build runtime` step used, so `ETNP_PREFIX=$PWD/out`.
-- The op is variant-identical, but running per matrix cell is cheap and also covers the aarch64 SIMD path — keep it unguarded across variants/platforms unless a non-executing target is later added.
+- The op is variant-identical (bare/logging/devtools compile the same kernel), so
+  the step is gated to the `logging` variant only via `if: matrix.variant ==
+  'logging'` at the step level — this avoids paying the ~15min in-container
+  `install_executorch.sh` cost 6x/release (3 variants x 2 platforms) when 2x
+  (1 variant x 2 platforms) gives identical coverage. Both platforms still run,
+  preserving aarch64 SIMD parity coverage.
 
 - [ ] **Step 2: Validate the workflow YAML**
 
@@ -1214,7 +1225,7 @@ Expected: `yaml ok`.
 
 ```bash
 git add .github/workflows/release.yml
-git commit -m "ci: gate release build on the LSTM live round-trip (executable targets)"
+git commit -m "ci: gate release build on the LSTM live round-trip (logging variant only)"
 ```
 
 ---
