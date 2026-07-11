@@ -91,7 +91,10 @@ Establish the bundle skeleton and the mechanism that makes op-name drift impossi
 namespace: etnp
 op: lstm
 # variants this op ships in. [all] => every tarball variant (bare/logging/devtools).
-# Designed in now though everything is always-on; annoying to retrofit later.
+# RESERVED / unused today: everything is always-on, so only [all] is honored. The
+# field is designed in now (annoying to retrofit) and VALIDATED at consumption
+# (load_schema rejects anything but [all]) so a stray value fails loudly rather than
+# being silently ignored. Per-op variant gating is future work.
 variants: [all]
 schema:
   functional: >-
@@ -125,6 +128,20 @@ def test_load_schema_roundtrip():
     assert s["qualified_name"] == "etnp::lstm"
     assert s["functional"].startswith("lstm(")
     assert s["out"].startswith("lstm.out(")
+    assert s["variants"] == ["all"]
+
+
+def test_non_all_variants_rejected(tmp_path):
+    # Reserved-field guard: only [all] is implemented today, so anything else must
+    # fail loudly at consumption rather than be silently ignored.
+    import yaml, pytest
+    sys.path.insert(0, str(HERE))
+    from generate_schema_header import load_schema
+    bad = tmp_path / "extra.yaml"
+    bad.write_text(yaml.safe_dump({"namespace": "etnp", "op": "lstm",
+                                   "variants": ["logging"]}))
+    with pytest.raises(ValueError, match="variant gating is not yet implemented"):
+        load_schema(bad)
 ```
 
 - [ ] **Step 3: Run the test to verify it fails**
@@ -149,9 +166,19 @@ import sys, pathlib, yaml
 def load_schema(extra_yaml) -> dict:
     d = yaml.safe_load(pathlib.Path(extra_yaml).read_text())
     ns, op = d["namespace"], d["op"]
+    variants = d.get("variants", ["all"])
+    # `variants` is reserved for future per-op variant gating. Only [all] is
+    # implemented today (the op is always-on in every tarball variant); validate
+    # here — the single consumption point both faces call — so an unexpected value
+    # fails loudly instead of being silently ignored. Replace when gating lands.
+    if variants != ["all"]:
+        raise ValueError(
+            f"extra.yaml variants={variants!r}: per-op variant gating is not yet "
+            "implemented; only [all] is supported.")
     return {
         "namespace": ns,
         "op": op,
+        "variants": variants,
         "qualified_name": f"{ns}::{op}",
         "qualified_out_name": f"{ns}::{op}.out",
         "functional": " ".join(d["schema"]["functional"].split()),
@@ -190,7 +217,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `python -m pytest extras/test_generate_schema_header.py -v`
-Expected: PASS (2 passed).
+Expected: PASS (4 passed).
 
 - [ ] **Step 6: Commit**
 
