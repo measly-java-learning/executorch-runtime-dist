@@ -28,7 +28,7 @@
 
 ### Task 1: De-risk spikes (no production code)
 
-Resolve the three version-sensitive unknowns before porting. Output is a committed findings note.
+Resolve the version-sensitive unknowns and record the Highway dependency rationale before porting. Output is a committed findings note.
 
 **Files:**
 - Create: `docs/superpowers/notes/2026-07-10-lstm-derisk-findings.md`
@@ -58,13 +58,35 @@ Expected: all four exist (already verified). Record.
 
 Inspect `.github/workflows/release.yml`: the aarch64 combo uses `runs_on: ubuntu-24.04-arm` (a native ARM runner), so it *can* execute a built binary. Record this conclusion (it decides whether the round-trip in Task 8 runs on aarch64 too, not only x86_64).
 
-- [ ] **Step 4: Write and commit the findings note**
+- [ ] **Step 4: Record the Highway-vs-ET-optimized (`at::vec`) dependency rationale**
 
-Write `docs/superpowers/notes/2026-07-10-lstm-derisk-findings.md` capturing Steps 1–3 (boxed-registrar decision, XNNPACK availability, aarch64-executes decision).
+Before adding Highway (a new third-party dep), confirm we are not reinventing a
+building block ExecuTorch already ships torch-free. Conclusion: ET's optimized
+elementwise SIMD (`sigmoid`/`tanh`/arithmetic — what the fused cell needs) is
+`at::vec::Vectorized`, reached via `executorch::vec`
+(`kernels/optimized/vec/functional.h` → `#include <ATen/cpu/vec/vec.h>`). Those vec
+headers are a **torch/ATen build dependency** and are **absent from our relocatable
+prefix**, whereas the runtime kernel is **torch-free by contract** (Face 1). So
+`at::vec` is not usable here without dragging torch/ATen headers into the kernel;
+Highway (self-contained, hash-pinned, torch-free SIMD) is the correct substitute, and
+XNNPACK — already in the prefix — is reused for the projections rather than ET's
+Eigen-backed `cpublas::gemm`. Verify the two facts the conclusion rests on:
+```bash
+# at::vec headers are NOT in our relocatable prefix (empty output expected) ...
+find out-logging/include -path '*ATen/cpu/vec*' -o -path '*optimized/vec*' 2>/dev/null
+# ... they exist only under torch's includes (torch-coupled)
+find /home/corey/workspace/executorch -path '*ATen/cpu/vec/vec.h' 2>/dev/null | head -1
+```
+Expected: the first command prints nothing (no ATen vec in the prefix); the second
+prints a path under `.../torch/include/...`. Record this as the dependency rationale.
+
+- [ ] **Step 5: Write and commit the findings note**
+
+Write `docs/superpowers/notes/2026-07-10-lstm-derisk-findings.md` capturing Steps 1–4 (boxed-registrar decision, XNNPACK availability, aarch64-executes decision, and the Highway-vs-`at::vec` dependency rationale).
 
 ```bash
 git add docs/superpowers/notes/2026-07-10-lstm-derisk-findings.md
-git commit -m "docs: LSTM productionization de-risk findings (boxed cap, xnnpack, aarch64)"
+git commit -m "docs: LSTM productionization de-risk findings (boxed cap, xnnpack, aarch64, highway rationale)"
 ```
 
 ---
@@ -1276,6 +1298,7 @@ setup is a blocker for this plan.
 - Objective 4 (extras bundle, convention not framework) → Tasks 2–5 (glob, no codegen framework). ✓
 - Face 1 → Task 3; Face 2 → Task 2 + Task 3 Step 2 + Task 6 Step 2; Face 3 → Task 6; Face 4 → Task 7. ✓
 - XNNPACK-from-prefix → Task 3 CMake; Highway fetch → Task 3; Highway license → Task 5; Highway docs → Task 9. ✓
+- Highway dependency rationale (not reinventing ET's torch-coupled `at::vec`; XNNPACK reused for gemm) → Task 1 Step 4 (recorded in the findings note). ✓
 - Shipped whole-archive declaration (extras-only, per-OS helper) → Task 5. ✓
 - Manifest guard (one TU/op, no dup names, static/every build) → Task 4 + Task 3 Step 4 (dup check). ✓
 - Static-guard-everywhere vs execute-per-target split → Task 4 (probe, all builds) vs Task 7/8 (round-trip, executable targets). ✓
