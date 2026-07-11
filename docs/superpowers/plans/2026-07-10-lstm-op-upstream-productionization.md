@@ -938,6 +938,24 @@ The definitive proof: export an `nn.LSTM` through the custom op to a `.pte`, run
 - Consumes: the installed prefix (`etnp_ops_lstm`, `ETNPExtras.cmake`), `etnp_lstm_op.py` (Task 6).
 - `lstm_runner <model.pte> <inputs.bin> <out.bin>`: loads the `.pte`, runs it with the given flat float inputs, writes flat float outputs.
 
+> **Correction to an earlier draft of this task (found during implementation):**
+> the `Wrap` module below stores the LSTM weights as plain tensor *attributes*
+> (`self.wih = ...`, not `nn.Parameter`/`register_buffer`) and `forward(x, h0, c0)`
+> takes only the 3 runtime tensors. `torch.export` therefore traces `self.wih`
+> etc. as closed-over tensors and **lifts them as `InputKind.CONSTANT_TENSOR`s
+> baked into the `.pte`** — they are NOT part of the exported `forward`'s
+> argument list. Verified empirically via `ep.graph_signature.input_specs`:
+> `[CONSTANT_TENSOR c_wih, CONSTANT_TENSOR c_whh, CONSTANT_TENSOR c_bih,
+> CONSTANT_TENSOR c_bhh, USER_INPUT x, USER_INPUT h0, USER_INPUT c0]`. So the
+> exported method's **arity is 3** (`x`, `h0`, `c0`); `lstm_runner` and
+> `test_lstm_roundtrip.py` build a 3-tensor `in.bin` and pass only those 3 to
+> `module.forward` — NOT the 7-tensor version an earlier draft assumed. Also:
+> the flatbuffer stores the op's name (`"etnp::lstm"`) and overload
+> (`"out"`) as separate string fields, not one contiguous `"etnp::lstm.out"` run
+> of bytes, so the sanity check below inspects
+> `executorch_program.execution_plan[0].operators` instead of doing a raw
+> substring search on `pte.buffer`.
+
 - [ ] **Step 1: Write the C++ runner `extras/lstm/test/lstm_runner.cpp`**
 
 ```cpp
@@ -945,7 +963,10 @@ The definitive proof: export an `nn.LSTM` through the custom op to a `.pte`, run
 // the first real exercise of the shipped consumer contract (whole-archived via
 // ETNPExtras.cmake). Reads flat little-endian float32 inputs, writes float32 output.
 //   lstm_runner <model.pte> <inputs.bin> <out.bin>
-// inputs.bin = concat of input,h0,c0,w_ih,w_hh,b_ih,b_hh (row-major, the schema order).
+// inputs.bin = concat of input,h0,c0 (row-major). The exported .pte bakes the LSTM
+// weights (w_ih, w_hh, b_ih, b_hh) as CONSTANTS (plain tensor attributes on the
+// traced nn.Module, not graph inputs) -- torch.export lifts them out of forward's
+// argument list, so the exported method takes only (x, h0, c0).
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -982,21 +1003,13 @@ int main(int argc, char** argv) {
   auto in  = take((size_t)T * B * I);
   auto h0  = take((size_t)B * H);
   auto c0  = take((size_t)B * H);
-  auto wih = take((size_t)4 * H * I);
-  auto whh = take((size_t)4 * H * H);
-  auto bih = take((size_t)4 * H);
-  auto bhh = take((size_t)4 * H);
 
   auto t_in  = make_tensor_ptr({T, B, I}, const_cast<float*>(in));
   auto t_h0  = make_tensor_ptr({B, H},   const_cast<float*>(h0));
   auto t_c0  = make_tensor_ptr({B, H},   const_cast<float*>(c0));
-  auto t_wih = make_tensor_ptr({4 * H, I}, const_cast<float*>(wih));
-  auto t_whh = make_tensor_ptr({4 * H, H}, const_cast<float*>(whh));
-  auto t_bih = make_tensor_ptr({4 * H},  const_cast<float*>(bih));
-  auto t_bhh = make_tensor_ptr({4 * H},  const_cast<float*>(bhh));
 
   Module module(argv[1]);
-  std::vector<EValue> inputs = {*t_in, *t_h0, *t_c0, *t_wih, *t_whh, *t_bih, *t_bhh};
+  std::vector<EValue> inputs = {*t_in, *t_h0, *t_c0};
   const auto res = module.forward(inputs);
   if (!res.ok()) { std::fprintf(stderr, "forward failed\n"); return 1; }
   const auto out = res.get()[0].toTensor();  // output [T,B,H]
@@ -1034,7 +1047,16 @@ etnp_extras_whole_archive(lstm_runner)   # shipped helper wraps etnp_ops_lstm
 """Live round-trip: nn.LSTM -> export+lower through etnp::lstm -> run vs a C++
 runner built against the installed tarball -> compare to torch eager @ 1e-4.
 Requires: torch, a built+installed prefix (ETNP_PREFIX), cmake, a C++ compiler.
-Replaces the MVP committed-golden workaround."""
+Replaces the MVP committed-golden workaround.
+
+NOTE on input arity: `Wrap` stores the LSTM weights as plain tensor attributes
+(not graph inputs). torch.export traces `self.wih` etc. as closed-over tensors
+and lifts them as CONSTANTS baked into the .pte (not part of forward's argument
+list), rather than as extra graph inputs. The exported/lowered `forward` method
+therefore takes only the 3 runtime tensors (x, h0, c0) -- verified empirically by
+inspecting `ep.graph_signature`/`pte` and by running the C++ runner. The 4 weight
+tensors are NOT part of in.bin and are NOT passed to `module.forward`.
+"""
 import os, pathlib, struct, subprocess, sys, tempfile
 import numpy as np
 import torch
@@ -1084,18 +1106,38 @@ def test_roundtrip_matches_eager():
     # export + lower (no partitioner -> op stays opaque -> ToOutVarPass -> lstm.out)
     from executorch.exir import to_edge_transform_and_lower
     ep = torch.export.export(Wrap(wih, whh, bih, bhh), (x, h0, c0))
+
+    # The 4 weight tensors are plain (non-Parameter) attributes closed over by
+    # forward, so torch.export lifts them as constants, NOT graph inputs. Assert
+    # the observed arity so a future torch/export-recipe change that flips this
+    # back to lifting weights as inputs fails loudly here instead of silently
+    # mismatching the runner's 3-input contract.
+    user_inputs = [
+        s for s in ep.graph_signature.input_specs
+        if s.kind == torch.export.graph_signature.InputKind.USER_INPUT
+    ]
+    assert len(user_inputs) == 3, (
+        f"expected export to bake weights as constants (3 user inputs: x,h0,c0), "
+        f"got {len(user_inputs)}: {[s.arg.name for s in user_inputs]}")
+
     pte = to_edge_transform_and_lower(ep).to_executorch()
     tmp = pathlib.Path(tempfile.mkdtemp())
     model = tmp / "lstm.pte"
     model.write_bytes(pte.buffer)
 
-    # sanity: the lowered program references exactly our out op
-    assert b"etnp::lstm.out" in pte.buffer
+    # sanity: the lowered program references exactly our out op. The flatbuffer
+    # stores the op name ("etnp::lstm") and overload ("out") as separate string
+    # fields (verified via executorch_program.execution_plan[0].operators), so
+    # they are NOT one contiguous "etnp::lstm.out" byte run in pte.buffer --
+    # check via the structured API instead of a raw substring search.
+    ops = pte.executorch_program.execution_plan[0].operators
+    assert any(op.name == "etnp::lstm" and op.overload == "out" for op in ops), ops
 
-    # flat inputs in schema order
+    # flat inputs, runtime tensors only (x, h0, c0) -- schema order for what's
+    # actually left as a forward() argument after weight-baking.
     def flat(*ts):
         return b"".join(struct.pack(f"{t.numel()}f", *t.flatten().tolist()) for t in ts)
-    (tmp / "in.bin").write_bytes(flat(x, h0, c0, wih, whh, bih, bhh))
+    (tmp / "in.bin").write_bytes(flat(x, h0, c0))
 
     runner = _build_runner(tmp / "rbuild")
     env = {**os.environ, "LSTM_T": str(T), "LSTM_B": str(B),
@@ -1117,7 +1159,7 @@ imports), after Task 5's `build-runtime.sh` produced `out-logging`:
 ETNP_PREFIX="$PWD/out-logging" python -m pytest \
   extras/lstm/test/test_lstm_roundtrip.py -v
 ```
-Expected: PASS — the `.pte` contains `etnp::lstm.out`, the runner loads+runs it against the tarball, and output matches eager within 1e-4.
+Expected: PASS — the `.pte`'s execution plan references op `etnp::lstm` overload `out`, the runner loads+runs it (with only `x`, `h0`, `c0` as inputs — the weights are baked in as constants) against the tarball, and output matches eager within 1e-4 (observed max|diff| ~3e-8).
 
 - [ ] **Step 5: Commit**
 
