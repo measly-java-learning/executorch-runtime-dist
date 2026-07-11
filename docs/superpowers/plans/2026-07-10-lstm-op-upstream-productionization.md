@@ -101,7 +101,7 @@ Establish the bundle skeleton and the mechanism that makes op-name drift impossi
 - Test: `extras/test_generate_schema_header.py`
 
 **Interfaces:**
-- Produces: `extras/lstm/extra.yaml` with keys `name: etnp`, `op: lstm`, `variants: [all]`, `schema.functional`, `schema.out`.
+- Produces: `extras/lstm/extra.yaml` with keys `namespace: etnp`, `op: lstm`, `variants: [all]`, `schema.functional`, `schema.out`.
 - Produces: `generate_schema_header.py <extra.yaml> <out_header>` → writes a header defining `namespace etnp::schema { inline constexpr char kLstmName[]="etnp::lstm"; inline constexpr char kLstmOutName[]="etnp::lstm.out"; }` (consumed by Task 3's registrar) and reading it back (`load_schema(extra_yaml) -> dict`, consumed by Task 6's AOT).
 
 - [ ] **Step 1: Write `extras/lstm/extra.yaml`**
