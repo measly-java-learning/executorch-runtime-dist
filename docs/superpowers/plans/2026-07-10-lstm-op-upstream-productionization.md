@@ -493,6 +493,10 @@ if(NOT _rc EQUAL 0)
   message(FATAL_ERROR "assert_extras_registered: '${NM} ${SO}' failed (rc=${_rc}): ${_err}")
 endif()
 foreach(_tu IN LISTS EXPECT_TUS)
+  # Strip first: a whitespace-only entry (e.g. a mis-scoped/blank op variable that
+  # expands to spaces) would otherwise become a regex that trivially matches the
+  # spacing in nm output -> a silent false PASS that defeats the guard's purpose.
+  string(STRIP "${_tu}" _tu)
   if(_tu STREQUAL "")
     continue()
   endif()
