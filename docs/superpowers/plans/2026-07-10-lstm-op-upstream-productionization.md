@@ -239,7 +239,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `python -m pytest extras/test_generate_schema_header.py -v`
-Expected: PASS (4 passed).
+Expected: PASS (3 passed — two header-name/roundtrip tests plus the variants-rejection test).
 
 - [ ] **Step 6: Commit**
 
