@@ -361,6 +361,13 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # ExecuTorch from the prefix we were just installed next to.
 find_package(ExecuTorch CONFIG REQUIRED)
 
+# ExecuTorch link set shared by every test/probe target below. Defined here in the
+# driver core — NOT in a later appended block — so no target depends on the order in
+# which the test/probe sections were appended to this file.
+set(_ET_LINK
+  executorch optimized_native_cpu_ops_lib xnnpack_backend
+  extension_module_static extension_data_loader extension_tensor)
+
 set(ETNP_EXTRAS_LIBS "")
 set(ETNP_EXTRAS_ALL_EXPECT_TUS "")
 file(GLOB _op_dirs RELATIVE "${CMAKE_CURRENT_LIST_DIR}" "${CMAKE_CURRENT_LIST_DIR}/*")
@@ -399,12 +406,10 @@ This test is torch-free: zero weights ⇒ analytic recurrence `c_t=0.5·c_{t-1}`
 
 - [ ] **Step 6: Add the test target to the extras build**
 
-Append to `extras/CMakeLists.txt` (inside the file, after the loop):
+Append to `extras/CMakeLists.txt` (inside the file, after the loop). `_ET_LINK` is
+defined in the driver core (Step 4), so this block does not redefine it:
 ```cmake
 # --- per-op tests (built against the extras libs, whole-archived) ---
-set(_ET_LINK
-  executorch optimized_native_cpu_ops_lib xnnpack_backend
-  extension_module_static extension_data_loader extension_tensor)
 if(TARGET etnp_ops_lstm)
   add_executable(lstm_kernel_test lstm/test/lstm_kernel_test.cpp)
   target_link_libraries(lstm_kernel_test PRIVATE
