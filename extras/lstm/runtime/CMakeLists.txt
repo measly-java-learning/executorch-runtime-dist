@@ -63,3 +63,9 @@ set(ETNP_EXTRAS_EXPECT_TUS "_GLOBAL__sub_I_etnp_lstm.cpp" PARENT_SCOPE)
 # Install the archive + a public header carrying the op-name constants.
 install(TARGETS etnp_ops_lstm ARCHIVE DESTINATION lib)
 install(FILES "${_gen_header}" DESTINATION include/etnp RENAME lstm.h)
+
+# Highway's compiled runtime (lstm_cell.cc uses HWY_DYNAMIC_DISPATCH -> hwy::GetChosenTarget
+# + per-target trampolines) must ship too, or an external consumer whole-archiving
+# etnp_ops_lstm gets undefined Highway symbols at link. ETNPExtras.cmake wires it as
+# etnp_ops_lstm's plain link dependency (NOT whole-archived).
+install(TARGETS hwy ARCHIVE DESTINATION lib)

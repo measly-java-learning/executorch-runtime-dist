@@ -610,6 +610,12 @@ Append:
 # Install the archive + a public header carrying the op-name constants.
 install(TARGETS etnp_ops_lstm ARCHIVE DESTINATION lib)
 install(FILES "${_gen_header}" DESTINATION include/etnp RENAME lstm.h)
+
+# Highway's compiled runtime (lstm_cell.cc uses HWY_DYNAMIC_DISPATCH -> hwy::GetChosenTarget
+# + per-target trampolines) must ship too, or an external consumer whole-archiving
+# etnp_ops_lstm gets undefined Highway symbols at link. ETNPExtras.cmake wires it as
+# etnp_ops_lstm's plain link dependency (NOT whole-archived).
+install(TARGETS hwy ARCHIVE DESTINATION lib)
 ```
 
 - [ ] **Step 2: Write `extras/cmake/ETNPExtras.cmake.in`**
@@ -632,6 +638,16 @@ set_target_properties(etnp_ops_lstm PROPERTIES
   IMPORTED_LOCATION "${_etnp_prefix}/lib/libetnp_ops_lstm.a"
   INTERFACE_INCLUDE_DIRECTORIES "${_etnp_prefix}/include")
 
+# Highway's compiled runtime ships alongside the op (dynamic dispatch). Declare it and
+# make it etnp_ops_lstm's link dependency so consumers pull it transitively — plain-linked,
+# NOT whole-archived (only the registrar archive needs whole-archiving). Named etnp_hwy to
+# avoid colliding with a consumer's own `hwy` target.
+add_library(etnp_hwy STATIC IMPORTED)
+set_target_properties(etnp_hwy PROPERTIES
+  IMPORTED_LOCATION "${_etnp_prefix}/lib/libhwy.a")
+set_target_properties(etnp_ops_lstm PROPERTIES
+  INTERFACE_LINK_LIBRARIES etnp_hwy)
+
 # The archives a consumer MUST whole-archive (pure static-init registration TUs).
 # Future extras append here automatically; consumers never edit a link line.
 set(ETNP_EXTRAS_WHOLE_ARCHIVE_LIBS @ETNP_EXTRAS_INSTALL_LIBS@)
@@ -644,7 +660,7 @@ function(etnp_extras_whole_archive target)
         "-Wl,-force_load,$<TARGET_PROPERTY:${_lib},IMPORTED_LOCATION>")
     elseif(MSVC)
       target_link_libraries(${target} PRIVATE ${_lib}
-        "-WHOLEARCHIVE:$<TARGET_PROPERTY:${_lib},IMPORTED_LOCATION>")
+        "/WHOLEARCHIVE:$<TARGET_PROPERTY:${_lib},IMPORTED_LOCATION>")
     else()  # GNU ld / Linux
       target_link_libraries(${target} PRIVATE
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,${_lib}>")
@@ -706,7 +722,7 @@ set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 PREFIX="${PREFIX:-$here/../out-logging}"
 fail=0
-for m in lib/libetnp_ops_lstm.a include/etnp/lstm.h lib/cmake/ETNPExtras/ETNPExtras.cmake \
+for m in lib/libetnp_ops_lstm.a lib/libhwy.a include/etnp/lstm.h lib/cmake/ETNPExtras/ETNPExtras.cmake \
          THIRD-PARTY-NOTICES/highway_LICENSE; do
   if [ ! -e "$PREFIX/$m" ]; then echo "MISSING: $m"; fail=1; fi
 done
