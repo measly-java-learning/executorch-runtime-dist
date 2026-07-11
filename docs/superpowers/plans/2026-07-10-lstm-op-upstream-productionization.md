@@ -471,6 +471,17 @@ add_custom_command(TARGET etnp_extras_link_probe POST_BUILD
           "-DEXPECT_TUS=${ETNP_EXTRAS_ALL_EXPECT_TUS}"
           -P ${CMAKE_CURRENT_LIST_DIR}/../cmake/assert_extras_registered.cmake
   VERBATIM)
+
+# --- negative-control probe (Task 4 Step 5 only) ---
+# SAME ET deps as the real probe, but the extras archives are linked PLAIN (no
+# whole-archive), so this is a VALID, fully-resolved binary in which the linker
+# legitimately omits the unreferenced registrar TU. It exists to prove the guard
+# fails for the RIGHT reason (dropped registrar in a valid binary) — NOT because of
+# an unresolved-symbol link error like a bare `.a`-only link would give.
+# EXCLUDE_FROM_ALL: normal builds never build it; no POST_BUILD guard attached.
+add_executable(etnp_extras_neg_probe EXCLUDE_FROM_ALL link_probe.cpp)
+target_link_libraries(etnp_extras_neg_probe PRIVATE ${_ET_LINK} ${ETNP_EXTRAS_LIBS})
+target_link_options(etnp_extras_neg_probe PRIVATE -Wl,--gc-sections)
 ```
 
 - [ ] **Step 4: Build the probe — guard passes on a correct link**
@@ -485,19 +496,23 @@ Expected: build succeeds; STATUS line `assert_extras_registered: all extras regi
 
 - [ ] **Step 5: Prove the guard actually fails on a dropped registrar (negative test)**
 
-Temporarily link the probe WITHOUT whole-archive to confirm the guard catches it:
+Build the negative-control probe (from Step 3) — same ET deps, extras archive linked
+**plain** so `--gc-sections` legitimately drops the unreferenced registrar — and run
+the guard on that *valid* binary. Reuse the `/tmp/extras-build` configured in Step 4:
 ```bash
-cmake -B /tmp/extras-neg -S extras -G Ninja \
-  -DCMAKE_PREFIX_PATH="$PWD/out-logging" -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-# Manually link probe against the plain archive (no whole-archive) and run the guard:
-c++ extras/link_probe.cpp /tmp/extras-neg/lstm/libetnp_ops_lstm.a -o /tmp/probe_plain \
-  $(pkg-config --libs 2>/dev/null; true) 2>/dev/null || \
-  c++ extras/link_probe.cpp -Wl,--gc-sections /tmp/extras-neg/lstm/libetnp_ops_lstm.a -o /tmp/probe_plain
-cmake -DSO=/tmp/probe_plain -DNM=nm \
+cmake --build /tmp/extras-build --target etnp_extras_neg_probe
+# sanity: it IS a valid, runnable binary (a broken link would fail before this) ...
+/tmp/extras-build/etnp_extras_neg_probe; echo "neg probe ran rc=$?"
+# ... and nm confirms the registrar TU really is absent from it
+nm /tmp/extras-build/etnp_extras_neg_probe | grep -c '_GLOBAL__sub_I_etnp_lstm.cpp' || true
+# the guard must fail — for the RIGHT reason (dropped registrar, not a link error)
+cmake -DSO=/tmp/extras-build/etnp_extras_neg_probe -DNM=nm \
   "-DEXPECT_TUS=_GLOBAL__sub_I_etnp_lstm.cpp" \
   -P cmake/assert_extras_registered.cmake; echo "guard rc=$?"
 ```
-Expected: FATAL_ERROR ("registrar ... was dropped"), non-zero rc — proving the guard is not a no-op. (Clean up `/tmp/probe_plain`.)
+Expected: the probe builds and runs (`rc=0`), the `nm | grep -c` prints `0` (registrar
+absent), and the guard exits non-zero with FATAL_ERROR `"registrar ... was dropped"` —
+proving on a *valid* binary that the guard is not a no-op.
 
 - [ ] **Step 6: Commit**
 
