@@ -562,7 +562,7 @@ git commit -m "feat(extras): generalized nm-guard — registrar TUs survive whol
 Install the archive, header, and a self-describing `ETNPExtras.cmake` into the prefix; make `build-runtime.sh` build+install the extras after the ET install (so every variant ships the op) and pass Highway's license through. Verified by a consumer-style shell test.
 
 **Files:**
-- Create: `extras/cmake/ETNPExtrasConfig.cmake.in`
+- Create: `extras/cmake/ETNPExtras.cmake.in`
 - Modify: `extras/lstm/runtime/CMakeLists.txt` (install rules for the archive + header)
 - Modify: `extras/CMakeLists.txt` (install the config + set install of headers)
 - Modify: `build-runtime.sh` (extras build/install step; Highway license passthrough)
@@ -581,7 +581,7 @@ install(TARGETS etnp_ops_lstm ARCHIVE DESTINATION lib)
 install(FILES "${_gen_header}" DESTINATION include/etnp RENAME lstm.h)
 ```
 
-- [ ] **Step 2: Write `extras/cmake/ETNPExtrasConfig.cmake.in`**
+- [ ] **Step 2: Write `extras/cmake/ETNPExtras.cmake.in`**
 
 ```cmake
 # ETNPExtras.cmake — shipped INSIDE the tarball. Self-describing whole-archive
@@ -628,7 +628,7 @@ Append:
 ```cmake
 # Render ETNPExtras.cmake with the concrete whole-archive lib list and install it.
 string(REPLACE ";" " " ETNP_EXTRAS_INSTALL_LIBS "${ETNP_EXTRAS_LIBS}")
-configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/ETNPExtrasConfig.cmake.in"
+configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/ETNPExtras.cmake.in"
                "${CMAKE_BINARY_DIR}/ETNPExtras.cmake" @ONLY)
 install(FILES "${CMAKE_BINARY_DIR}/ETNPExtras.cmake"
         DESTINATION lib/cmake/ETNPExtras)
@@ -701,7 +701,7 @@ Expected: build succeeds (extras built + guard passed + installed); test prints 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add extras/cmake/ETNPExtrasConfig.cmake.in extras/lstm/runtime/CMakeLists.txt \
+git add extras/cmake/ETNPExtras.cmake.in extras/lstm/runtime/CMakeLists.txt \
         extras/CMakeLists.txt build-runtime.sh test/extras_members.test.sh
 git commit -m "feat(extras): install ETNPExtras.cmake whole-archive helper; wire into build-runtime.sh"
 ```
