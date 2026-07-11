@@ -59,3 +59,7 @@ target_link_libraries(etnp_ops_lstm PRIVATE hwy)
 # Registrar TU the nm-guard must find post whole-archive link. etnp_lstm.cpp
 # registers (register_kernel); lstm_cell.cc is an aux SIMD source (no registrar).
 set(ETNP_EXTRAS_EXPECT_TUS "_GLOBAL__sub_I_etnp_lstm.cpp" PARENT_SCOPE)
+
+# Install the archive + a public header carrying the op-name constants.
+install(TARGETS etnp_ops_lstm ARCHIVE DESTINATION lib)
+install(FILES "${_gen_header}" DESTINATION include/etnp RENAME lstm.h)

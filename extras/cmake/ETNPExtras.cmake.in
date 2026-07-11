@@ -1,0 +1,36 @@
+# ETNPExtras.cmake — shipped INSIDE the tarball. Self-describing whole-archive
+# contract for the first-party custom ops in this runtime (extras-only; ET's own
+# backend/ops archives still need whole-archiving per ET's guidance — see the
+# consumer guide). Include AFTER find_package(executorch).
+#
+#   find_package(executorch CONFIG REQUIRED PATHS "<prefix>/lib/cmake/ExecuTorch")
+#   include("<prefix>/lib/cmake/ETNPExtras/ETNPExtras.cmake")
+#   etnp_extras_whole_archive(my_consumer_target)
+#
+# Paths are relative to THIS file, so the tree stays relocatable.
+get_filename_component(_etnp_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+add_library(etnp_ops_lstm STATIC IMPORTED)
+set_target_properties(etnp_ops_lstm PROPERTIES
+  IMPORTED_LOCATION "${_etnp_prefix}/lib/libetnp_ops_lstm.a"
+  INTERFACE_INCLUDE_DIRECTORIES "${_etnp_prefix}/include")
+
+# The archives a consumer MUST whole-archive (pure static-init registration TUs).
+# Future extras append here automatically; consumers never edit a link line.
+set(ETNP_EXTRAS_WHOLE_ARCHIVE_LIBS @ETNP_EXTRAS_INSTALL_LIBS@)
+
+# Apply the correct per-OS whole-archive wrapping to <target>'s link.
+function(etnp_extras_whole_archive target)
+  foreach(_lib IN LISTS ETNP_EXTRAS_WHOLE_ARCHIVE_LIBS)
+    if(APPLE)
+      target_link_libraries(${target} PRIVATE
+        "-Wl,-force_load,$<TARGET_PROPERTY:${_lib},IMPORTED_LOCATION>")
+    elseif(MSVC)
+      target_link_libraries(${target} PRIVATE ${_lib}
+        "-WHOLEARCHIVE:$<TARGET_PROPERTY:${_lib},IMPORTED_LOCATION>")
+    else()  # GNU ld / Linux
+      target_link_libraries(${target} PRIVATE
+        "$<LINK_LIBRARY:WHOLE_ARCHIVE,${_lib}>")
+    endif()
+  endforeach()
+endfunction()

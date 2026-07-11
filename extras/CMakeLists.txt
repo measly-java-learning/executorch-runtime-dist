@@ -73,3 +73,10 @@ add_custom_command(TARGET etnp_extras_link_probe POST_BUILD
 add_executable(etnp_extras_neg_probe EXCLUDE_FROM_ALL link_probe.cpp)
 target_link_libraries(etnp_extras_neg_probe PRIVATE ${_ET_LINK} ${ETNP_EXTRAS_LIBS})
 target_link_options(etnp_extras_neg_probe PRIVATE -Wl,--gc-sections)
+
+# Render ETNPExtras.cmake with the concrete whole-archive lib list and install it.
+string(REPLACE ";" " " ETNP_EXTRAS_INSTALL_LIBS "${ETNP_EXTRAS_LIBS}")
+configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/ETNPExtras.cmake.in"
+               "${CMAKE_BINARY_DIR}/ETNPExtras.cmake" @ONLY)
+install(FILES "${CMAKE_BINARY_DIR}/ETNPExtras.cmake"
+        DESTINATION lib/cmake/ETNPExtras)

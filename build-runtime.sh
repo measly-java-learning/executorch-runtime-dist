@@ -131,6 +131,17 @@ echo ">> installing to $PREFIX"
 mkdir -p "$PREFIX"
 cmake --install "$ET_BUILD" --prefix "$PREFIX"
 
+echo ">> building extras (custom ops) against the installed prefix"
+EXTRAS_BUILD="$ET_BUILD/../etnp-extras-$VARIANT"
+cmake -B "$EXTRAS_BUILD" -S "$HERE/extras" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+  -DCMAKE_PREFIX_PATH="$PREFIX" \
+  -DCMAKE_INSTALL_PREFIX="$PREFIX"
+# Building the link probe runs the POST_BUILD nm-guard (registrar survived).
+cmake --build "$EXTRAS_BUILD" -j"$(nproc)"
+cmake --install "$EXTRAS_BUILD" --prefix "$PREFIX"
+
 echo ">> measuring relocatability"
 # capture once (`|| true`: grep exits 1 on no match, which must not abort under set -e/pipefail)
 leaked="$(grep -rl "$PREFIX" "$PREFIX/lib/cmake" 2>/dev/null || true)"
@@ -170,6 +181,14 @@ for d in "$ET_SRC/third-party" "$ET_SRC/backends"; do
     cp "$lf" "$PREFIX/THIRD-PARTY-NOTICES/${rel//\//_}"
   done || true
 done
+
+# Highway (fetched by the extras build) — its LICENSE is not in ET's tree.
+hwy_lic="$(find "$EXTRAS_BUILD" -path '*highway-src/LICENSE' -type f 2>/dev/null | head -n1 || true)"
+if [ -n "$hwy_lic" ]; then
+  cp "$hwy_lic" "$PREFIX/THIRD-PARTY-NOTICES/highway_LICENSE"
+else
+  echo ">> WARNING: Highway LICENSE not found under $EXTRAS_BUILD" >&2
+fi
 
 # safe.directory='*': the checkout may be owned by a different uid than the container user (mounted
 # tree / CI), which otherwise trips git's "dubious ownership" guard and blocks rev-parse.
