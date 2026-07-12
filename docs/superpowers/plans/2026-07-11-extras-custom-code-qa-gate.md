@@ -17,7 +17,7 @@
 - **Supply-chain posture (non-negotiable):** every downloaded tarball/fixture is `sha256sum -c`'d **and** `gh attestation verify`'d before use. The gate must not be the one place the repo trusts an unverified binary.
 - **Numeric tolerance:** rtol/atol `1e-4` (matches the existing round-trip).
 - **Asset naming is single-source:** runtime tarballs via `scripts/lib/naming.sh`; fixtures via the new `fixtures_name` added there.
-- **Fixture single source of truth:** the published `.pte`/golden and the live round-trip are generated from the *same* code (`extras/lstm/test/lstm_case.py`) — dims, seed, weights, arity/op-name assertions all live there once.
+- **Fixture single source of truth:** the published `.pte`/golden and the live round-trip are generated from the *same* code (`extras/lstm/aot/lstm_case.py`) — dims, seed, weights, arity/op-name assertions all live there once.
 - **Shell test harness:** new `test/*.test.sh` files are auto-discovered by `test/run.sh` (globs `*.test.sh`); no wiring needed. Run all with `bash test/run.sh`.
 
 ---
@@ -255,7 +255,7 @@ git commit -m "feat(gate): build-runtime.sh --extras-only (phase-2-only rebuild)
 ### Task 3: Fixture single-source (`lstm_case.py`) + round-trip refactor + shared runner helper
 
 **Files:**
-- Create: `extras/lstm/test/lstm_case.py` (torch; the single source of dims/seed/weights/assertions)
+- Create: `extras/lstm/aot/lstm_case.py` (torch; the single source of dims/seed/weights/assertions). Lives under `aot/` — **not** `test/` — because it defines the export recipe + golden, so a change to it must trigger tier2 via the existing `aot/` classifier rule.
 - Create: `extras/lstm/test/_runner.py` (torch-free cmake build/run helpers)
 - Modify: `extras/lstm/test/test_lstm_roundtrip.py` (become a thin wrapper over `lstm_case` + `_runner`)
 
@@ -290,7 +290,7 @@ def run_runner(runner: pathlib.Path, model: pathlib.Path, inbin: pathlib.Path,
     subprocess.run([str(runner), str(model), str(inbin), str(outbin)], check=True, env=env)
 ```
 
-- [ ] **Step 2: Create `extras/lstm/test/lstm_case.py`** (torch)
+- [ ] **Step 2: Create `extras/lstm/aot/lstm_case.py`** (torch)
 
 ```python
 """Single source of truth for the LSTM QA case: dims, seed, weights, export recipe,
@@ -370,14 +370,19 @@ The case (dims/seed/weights/assertions) lives once in lstm_case.py — the same 
 published fixtures are minted from, so live and frozen paths cannot drift."""
 import os
 import pathlib
+import sys
 import tempfile
 
 import numpy as np
 
 from _runner import build_runner, run_runner
-import lstm_case
 
+# lstm_case lives under extras/lstm/aot/ (AOT-side: it defines the export recipe + the
+# golden, so a change to it must trigger tier2 — see scripts/classify-gate.sh). Import it
+# via the package path, ensuring the repo root is importable.
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[2]))          # repo root, for extras.*
+from extras.lstm.aot import lstm_case  # noqa: E402
 
 
 def test_roundtrip_matches_eager():
@@ -397,11 +402,11 @@ def test_roundtrip_matches_eager():
         np.abs(got - ref).max()
 ```
 
-Note: pytest runs with `rootdir` at repo root but imports `_runner`/`lstm_case` as top-level modules because they sit next to the test; `conftest`-free sibling import works since pytest adds the test file's dir to `sys.path` (rootdir insertion). If the runner env already relied on that for `extras.lstm.aot`, it is preserved via `lstm_case`'s `sys.path` insert.
+Note: `_runner` is imported as a sibling (pytest prepends the test file's dir to `sys.path`); `lstm_case` is imported via its package path `extras.lstm.aot` (repo root inserted above). The split mirrors the file locations — `_runner` is a torch-free test helper under `test/`, `lstm_case` is AOT-side under `aot/`.
 
 - [ ] **Step 4: Verify import wiring without torch**
 
-Run: `python -c "import ast; ast.parse(open('extras/lstm/test/lstm_case.py').read()); ast.parse(open('extras/lstm/test/_runner.py').read()); ast.parse(open('extras/lstm/test/test_lstm_roundtrip.py').read()); print('syntax ok')"`
+Run: `python -c "import ast; ast.parse(open('extras/lstm/aot/lstm_case.py').read()); ast.parse(open('extras/lstm/test/_runner.py').read()); ast.parse(open('extras/lstm/test/test_lstm_roundtrip.py').read()); print('syntax ok')"`
 Expected: `syntax ok`
 
 (The full round-trip needs torch + executorch + a built prefix; it is exercised end-to-end by the Tier 2 / full-build workflow jobs and the local docker loop, not in the plain dev shell. See Task 8's manual dry-run.)
@@ -409,7 +414,7 @@ Expected: `syntax ok`
 - [ ] **Step 5: Commit**
 
 ```bash
-git add extras/lstm/test/lstm_case.py extras/lstm/test/_runner.py extras/lstm/test/test_lstm_roundtrip.py
+git add extras/lstm/aot/lstm_case.py extras/lstm/test/_runner.py extras/lstm/test/test_lstm_roundtrip.py
 git commit -m "refactor(gate): extract lstm_case single-source + shared runner helper"
 ```
 
@@ -418,12 +423,12 @@ git commit -m "refactor(gate): extract lstm_case single-source + shared runner h
 ### Task 4: `emit_fixtures.py` (mint the published fixture set)
 
 **Files:**
-- Create: `extras/lstm/test/emit_fixtures.py` (torch)
+- Create: `extras/lstm/aot/emit_fixtures.py` (torch; AOT-side, so a change to it triggers tier2 via the `aot/` rule)
 - Test: `extras/lstm/test/test_emit_fixtures.py` (guarded: skips without torch)
 
 **Interfaces:**
 - Consumes: `lstm_case.build_case()`, `lstm_case.DIMS`.
-- Produces: `python extras/lstm/test/emit_fixtures.py <outdir>` writes `lstm.pte`, `in.bin`, `out.bin` (golden), and `shape` (lines `LSTM_T=5` … `LSTM_H=3`) into `<outdir>`.
+- Produces: `python extras/lstm/aot/emit_fixtures.py <outdir>` writes `lstm.pte`, `in.bin`, `out.bin` (golden), and `shape` (lines `LSTM_T=5` … `LSTM_H=3`) into `<outdir>`.
 - Produces (importable): `emit_fixtures.shape_text(dims: dict) -> str`.
 - Consumed by: Task 5 (`consumer_smoke.parse_shape` parses the same `shape` format), Task 6 (release workflow), Task 8 (full-build dry-run).
 
@@ -439,7 +444,7 @@ import sys
 import pytest
 
 HERE = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "aot"))     # emit_fixtures lives under extras/lstm/aot/
 import emit_fixtures  # noqa: E402
 
 
@@ -461,7 +466,7 @@ def test_emit_writes_all_members(tmp_path):
 Run: `python -m pytest extras/lstm/test/test_emit_fixtures.py::test_shape_text_format -v`
 Expected: FAIL (`emit_fixtures` does not exist).
 
-- [ ] **Step 3: Create `extras/lstm/test/emit_fixtures.py`**
+- [ ] **Step 3: Create `extras/lstm/aot/emit_fixtures.py`**
 
 ```python
 """Mint the published LSTM fixture set from lstm_case.build_case() (the same source the
@@ -503,7 +508,7 @@ Expected: `test_shape_text_format` PASS; `test_emit_writes_all_members` PASS or 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add extras/lstm/test/emit_fixtures.py extras/lstm/test/test_emit_fixtures.py
+git add extras/lstm/aot/emit_fixtures.py extras/lstm/test/test_emit_fixtures.py
 git commit -m "feat(gate): emit_fixtures.py mints published .pte/golden/shape"
 ```
 
@@ -645,7 +650,7 @@ Insert immediately **after** the `LSTM round-trip gate` step (after `release.yml
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           # torch + executorch are already installed by the round-trip step above; the
           # built prefix is $PWD/out. Mint the fixtures from the SAME lstm_case source.
-          python extras/lstm/test/emit_fixtures.py "$PWD/fixtures"
+          python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures"
           mkdir -p "$PWD/dist"
           ./scripts/package-fixtures.sh --dir "$PWD/fixtures" \
             --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
@@ -677,9 +682,11 @@ git commit -m "feat(gate): publish + attest LSTM fixtures from the release build
 **Interfaces:**
 - Produces: `scripts/classify-gate.sh <changed-files-file>` → prints `mode=<tier1|tier2|full>`, `etver=<x.y.z>`, `release_tag=<v..-..|>` (three `key=value` lines, `$GITHUB_OUTPUT`-appendable).
 - Decision order: (1) any `build-runtime.sh` change → `full`; (2) else resolve newest `v<etver>-*` release — none → `full`; (3) else any AOT/schema file changed → `tier2`; (4) else → `tier1`.
-- AOT/schema match: a changed path matching `^extras/([^/]+/)?aot/`, or basename `generate_schema_header.py`, or basename `extra.yaml`.
+- AOT/schema match: a changed path matching `^extras/([^/]+/)?aot/`, or basename `generate_schema_header.py`, or basename `extra.yaml`. The `aot/` arm deliberately covers `extras/lstm/aot/lstm_case.py` and `extras/lstm/aot/emit_fixtures.py` — the fixture-defining files were placed under `aot/` (Tasks 3–4) precisely so a change to them forces tier2, rather than needing a special-case rule here.
 - Test hooks (env): `GATE_ET_TAG` overrides the `DEFAULT_ET_TAG` parse; `GATE_RELEASE_TAG` (set, possibly empty) overrides the `gh` lookup — empty string means "no release". When unset, uses `gh release list`.
 - Consumed by: Task 8 (`classify` job).
+
+**Note (accepted gap):** a PR that edits **only `extras/lstm/test/test_lstm_roundtrip.py`** (the live-round-trip test itself, not the case/kernel/AOT) classifies **tier1** — it is a `test/` file and defines no fixtures — so the live round-trip does not re-run to validate the edited test. This is accepted as low-risk: it is the test harness, not shipped source or the published fixtures. If a future change makes this matter, add a narrow `test_lstm_roundtrip.py → tier2` clause to the AOT/schema match. Documented for contributors in `docs/extras-gate.md` (Task 9).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -712,6 +719,9 @@ GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/aot/etnp_lstm_op.py" ; check aot   
 GATE_RELEASE_TAG="v1.3.1-2" run "extras/generate_schema_header.py"; check schema tier2
 # extra.yaml (op name/schema) -> tier2
 GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/extra.yaml"          ; check yaml  tier2
+# fixture-defining files live under aot/ -> tier2 (guards the classification bug this fixes)
+GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/aot/lstm_case.py"    ; check case  tier2
+GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/aot/emit_fixtures.py"; check emit  tier2
 # no matching release -> full (even for a pure kernel edit)
 GATE_RELEASE_TAG="" run "extras/lstm/runtime/lstm_cell.cc"        ; check norelease full
 # etver is derived from the ET tag
@@ -981,7 +991,7 @@ jobs:
           (cd executorch && ./install_executorch.sh)
           pip install numpy pytest ninja
           ETNP_PREFIX="$PWD/out" python -m pytest extras/lstm/test/test_lstm_roundtrip.py -v
-          python extras/lstm/test/emit_fixtures.py "$PWD/fixtures-dryrun"   # prove emit works; not published
+          python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures-dryrun"   # prove emit works; not published
 ```
 
 - [ ] **Step 2: Validate the workflow parses**
@@ -1041,7 +1051,7 @@ Write the guide covering exactly the spec §6 checklist. Use this structure and 
 | You changed | Gate | Cost |
 |---|---|---|
 | kernel / runtime / test under `extras/**` (not `aot/`) | **tier1** — torch-free consumer smoke, both arches | cheap |
-| AOT def / schema (`extras/**/aot/**`, `generate_schema_header.py`, `extra.yaml`) | **tier1 + tier2** — adds the live round-trip | + torch/export |
+| AOT def / schema / fixture source (`extras/**/aot/**` — incl. `lstm_case.py` + `emit_fixtures.py` — `generate_schema_header.py`, `extra.yaml`) | **tier1 + tier2** — adds the live round-trip | + torch/export |
 | **`build-runtime.sh`** (any change), or no release exists for the pinned ET | **full** — a full-build release dry-run | ~15 min |
 
 Decision logic lives in `scripts/classify-gate.sh` (unit-tested in `test/classify_gate.test.sh`).
@@ -1070,8 +1080,8 @@ For the full build / live round-trip, mount an ExecuTorch checkout and run
 design/handover docs).
 
 ## Re-blessing fixtures (intentional numeric or AOT change)
-The published `.pte`/golden come from `extras/lstm/test/lstm_case.py` via
-`emit_fixtures.py`. To change them:
+The published `.pte`/golden come from `extras/lstm/aot/lstm_case.py` via
+`extras/lstm/aot/emit_fixtures.py`. To change them:
 1. Update `lstm_case.py` (and the kernel/AOT as needed).
 2. In an env with torch + executorch installed against the pinned ET, run the **live**
    round-trip to confirm agreement: `ETNP_PREFIX=<prefix> pytest extras/lstm/test/test_lstm_roundtrip.py`.
@@ -1098,6 +1108,10 @@ The published `.pte`/golden come from `extras/lstm/test/lstm_case.py` via
 - Release packaging / license harvest / attestation — only the release build + full-build
   fallback exercise those.
 - ET-version compatibility — an ET bump always takes the full-build fallback.
+- A change to **`test_lstm_roundtrip.py` alone** classifies tier1 (a `test/` file that
+  defines no fixtures), so the live round-trip is not re-run to validate the edited test
+  itself. Low-risk (it is the harness, not shipped source or fixtures) — pair such edits
+  with an AOT/kernel change, or run the round-trip locally.
 ````
 
 - [ ] **Step 2: Sanity-check the doc renders / links**
@@ -1125,6 +1139,7 @@ git commit -m "docs(gate): usage & troubleshooting guide for the extras QA gate"
 - §6 documentation → Task 9. ✓ (mirrors the §6 checklist section-for-section.)
 - §7 files list → all created: extras-gate.yml (T8), consumer harness (T5), fixture-emit (T4), release.yml change (T6), docs (T9). ✓ Plus the necessary `--extras-only` (T2), `lstm_case`/`_runner` (T3), `classify-gate.sh` (T7), `package-fixtures.sh`/naming (T1) the spec implied.
 - Open items resolved: shape format = `LSTM_*=<n>` (T4); scrub list fixed (Global Constraints, T8). ✓
+- Classification correctness: `lstm_case.py`/`emit_fixtures.py` live under `extras/lstm/aot/` (T3/T4) so the existing tier2 `aot/` rule catches fixture-defining changes — guarded by classify test cases (T7). Residual `test_lstm_roundtrip.py`-only edits documented as an accepted tier1 gap (T7 note, T9 docs). ✓
 
 **Placeholder scan:** no TBD/TODO/"handle edge cases"/"similar to Task N"; every code step shows full content. ✓
 
