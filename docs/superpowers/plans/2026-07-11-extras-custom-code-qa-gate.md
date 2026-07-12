@@ -17,7 +17,7 @@
 - **Supply-chain posture:** every downloaded tarball/fixture is `sha256sum -c`'d before use — **mandatory in every case, including fork PRs** (the `.sha256` is published by our release, so a match proves the bytes are exactly what we shipped). `gh attestation verify` is **defense-in-depth**: enforced on same-repo PRs, best-effort (skipped with a `::notice::`) on fork PRs whose reduced, un-elevatable token can't read attestations — so external contributions are never blocked while integrity stays gated.
 - **Numeric tolerance:** rtol/atol `1e-4` (matches the existing round-trip).
 - **Extras license parity (invariant):** any path that installs `libhwy.a` also installs Highway's license — `build_extras` is always followed by `install_highway_license` (full build **and** `--extras-only`), so no built prefix (CI, gate, or local) is license-incomplete for the dependency the extras phase adds.
-- **Import convention (Python under `extras/`):** every `extras/lstm/**/*.py` puts the repo root on `sys.path` (`_REPO_ROOT = Path(__file__).resolve().parents[3]`, or `HERE.parents[2]` when `HERE` is the file's dir) and imports **every** cross-module dependency by its full package path — `from extras.lstm.test._runner import …`, `from extras.lstm.aot import lstm_case`/`emit_fixtures`, `import extras.lstm.aot.etnp_lstm_op`. No bare sibling imports (`import lstm_case`, `from _runner import …`): those only resolve when the containing dir happens to be on the path (script-run or pytest launch) and let a module load under two identities in one process. This keeps imports cwd-independent and single-identity for scripts, pytest, and any future cross-op reuse.
+- **Import convention (Python under `extras/`):** every `extras/lstm/**/*.py` puts the repo root on `sys.path` (`_REPO_ROOT = Path(__file__).resolve().parents[3]`, or `HERE.parents[2]` when `HERE` is the file's dir) and imports **every** cross-module dependency by its full package path — `from extras.lstm.test._runner import …`, `from extras.lstm.aot import lstm_case`/`emit_fixtures`, `import extras.lstm.aot.etnp_lstm_op`. No bare sibling imports (`import lstm_case`, `from _runner import …`): those only resolve when the containing dir happens to be on the path (script-run or pytest launch) and let a module load under two identities in one process. This keeps imports cwd-independent and single-identity for scripts, pytest, and any future cross-op reuse. (A package-based alternative — `__init__.py` + `python -m` — is captured under **Deferred / future work**.)
 - **Asset naming is single-source:** runtime tarballs via `scripts/lib/naming.sh`; fixtures via the new `fixtures_name` added there.
 - **Fixture single source of truth:** the published `.pte`/golden and the live round-trip are generated from the *same* code (`extras/lstm/aot/lstm_case.py`) — dims, seed, weights, arity/op-name assertions all live there once.
 - **Shell test harness:** new `test/*.test.sh` files are auto-discovered by `test/run.sh` (globs `*.test.sh`); no wiring needed. Run all with `bash test/run.sh`.
@@ -1235,6 +1235,23 @@ git commit -m "docs(gate): usage & troubleshooting guide for the extras QA gate"
 ```
 
 ---
+
+## Deferred / future work
+
+- **Package-based imports instead of per-file `sys.path` bootstrap.** The current Import
+  convention (Global Constraints) has each `extras/lstm/**/*.py` insert the repo root and
+  import by full package path. A cleaner long-term structure is to make the test tree a
+  real package and let Python's import machinery do the work: add `__init__.py` at the root
+  of the test code directory (`extras/lstm/test/__init__.py`, plus the parent packages as
+  needed), run the entry-point scripts via `python -m extras.lstm.aot.emit_fixtures` /
+  `-m extras.lstm.test.consumer_smoke` instead of `python <path>.py`, and drop the per-file
+  bootstrap. Deferred because it changes the workflow's script-invocation convention (Tasks
+  6, 8 call `python extras/lstm/**.py` directly) and touches packaging; the per-file
+  bootstrap ships the gate now with no packaging changes.
+  - **Placement rule when we do this (repo preference):** any *shared, non-fixture* test
+    helper (e.g. `_runner`) belongs in the test package — an `__init__.py` at the test-dir
+    root or a submodule of it — **not** in `conftest.py`. `conftest.py` is reserved strictly
+    for pytest **fixtures**; it is not a home for common code.
 
 ## Self-Review
 
