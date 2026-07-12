@@ -1,0 +1,15 @@
+name: Checkout ExecuTorch
+description: Check out pytorch/executorch at a tag with submodules, into ./executorch
+inputs:
+  ref:
+    description: ExecuTorch git ref/tag (e.g. v1.3.1)
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        repository: pytorch/executorch
+        ref: ${{ inputs.ref }}
+        submodules: recursive
+        path: executorch

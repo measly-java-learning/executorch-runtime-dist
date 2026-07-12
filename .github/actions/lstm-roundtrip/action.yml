@@ -1,0 +1,20 @@
+name: LSTM live round-trip
+description: Install the ExecuTorch python package and run the export->run-vs-eager round-trip against a prefix
+inputs:
+  prefix:
+    description: ET install prefix to test against (becomes ETNP_PREFIX)
+    required: true
+  executorch-src:
+    description: Path to the checked-out ExecuTorch source (for install_executorch.sh)
+    required: false
+    default: executorch
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        export PATH=/opt/python/cp312-cp312/bin:$PATH
+        # AOT export needs the executorch python package from the SAME pinned ET source.
+        (cd "${{ inputs.executorch-src }}" && ./install_executorch.sh)
+        pip install numpy pytest ninja
+        ETNP_PREFIX="${{ inputs.prefix }}" python -m pytest extras/lstm/test/test_lstm_roundtrip.py -v

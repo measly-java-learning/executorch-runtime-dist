@@ -54,12 +54,9 @@ jobs:
         id: ver
         run: ./scripts/derive-version.sh >> "$GITHUB_OUTPUT"
       - name: Checkout ExecuTorch source
-        uses: actions/checkout@v7
+        uses: ./.github/actions/checkout-executorch
         with:
-          repository: pytorch/executorch
           ref: ${{ steps.ver.outputs.ettag }}
-          submodules: recursive
-          path: executorch
       - name: Build runtime
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
@@ -67,22 +64,22 @@ jobs:
             --prefix "$PWD/out" --et-src "$PWD/executorch" \
             --et-tag "${{ steps.ver.outputs.ettag }}"
       - name: LSTM round-trip gate (export -> run vs eager)
-        # The LSTM op is variant-identical (bare/logging/devtools compile the same
-        # kernel), so gate on the `logging` variant only rather than all 3 — this
-        # cuts the ~15min in-container executorch install from 6x/release to
-        # 2x/release with no coverage loss. Both platforms still run, for
-        # aarch64 SIMD parity coverage.
+        # Variant-identical kernel: gate on `logging` only (both platforms). The round-trip
+        # recipe now lives in the composite action, shared with the extras-gate workflow.
         if: matrix.variant == 'logging'
+        uses: ./.github/actions/lstm-roundtrip
+        with:
+          prefix: ${{ github.workspace }}/out
+      - name: Emit + package LSTM fixtures (arch-independent; x86_64 logging only)
+        if: matrix.variant == 'logging' && matrix.combo.platform == 'linux-x86_64'
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
-          # AOT export needs the executorch python package from the SAME pinned ET
-          # source we built the runtime from (Task 5B). It pins its own torch —
-          # let that version stick; the C++ runtime is built from ET source
-          # independently, so there is no skew to guard against.
-          (cd executorch && ./install_executorch.sh)
-          pip install numpy pytest ninja   # ninja: round-trip builds lstm_runner with -G Ninja; not in the base image
-          ETNP_PREFIX="$PWD/out" python -m pytest \
-            extras/lstm/test/test_lstm_roundtrip.py -v
+          # torch + executorch are already installed by the round-trip action above; the
+          # built prefix is $PWD/out. Mint the fixtures from the SAME lstm_case source.
+          python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures"
+          mkdir -p "$PWD/dist"
+          ./scripts/package-fixtures.sh --dir "$PWD/fixtures" \
+            --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
       - name: Package
         run: |
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
