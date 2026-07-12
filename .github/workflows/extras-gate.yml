@@ -109,7 +109,7 @@ jobs:
           tar -C fixtures -xzf "gate-inputs/etnp-lstm-fixtures-${ETVER}.tar.gz"
       - name: Scrub shipped extras (so a rename/removal cannot false-pass)
         run: |
-          rm -f  prefix/lib/libetnp_ops_*.a
+          rm -f  prefix/lib/libetnp_ops_*.a prefix/lib/libhwy.a
           rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
       - name: Rebuild extras from branch (phase 2 only) + consumer smoke
         run: |
@@ -146,7 +146,7 @@ jobs:
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           mkdir prefix
           tar -C prefix -xzf "gate-inputs/executorch-runtime-${ETVER}-logging-linux-x86_64.tar.gz" --strip-components=1
-          rm -f  prefix/lib/libetnp_ops_*.a
+          rm -f  prefix/lib/libetnp_ops_*.a prefix/lib/libhwy.a
           rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
           pip install ninja
           ./build-runtime.sh --extras-only --variant logging --prefix "$PWD/prefix"

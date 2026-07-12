@@ -33,7 +33,7 @@ Use the manylinux docker loop (same two caller-owned boundaries as CI):
 # tier1 mechanics against a local ./prefix (extracted logging tarball) + ./fixtures:
 docker run --rm -v "$PWD":/work -w /work quay.io/pypa/manylinux_2_28_x86_64 bash -lc '
   export PATH=/opt/python/cp312-cp312/bin:$PATH; pip install ninja numpy
-  rm -f prefix/lib/libetnp_ops_*.a; rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
+  rm -f prefix/lib/libetnp_ops_*.a prefix/lib/libhwy.a; rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
   ./build-runtime.sh --extras-only --variant logging --prefix /work/prefix
   FIXTURES_DIR=/work/fixtures ETNP_PREFIX=/work/prefix python extras/lstm/test/consumer_smoke.py'
 ```
@@ -62,7 +62,7 @@ The published `.pte`/golden come from `extras/lstm/aot/lstm_case.py` via
   API/network error while resolving the release (not a build-recipe change). The classifier
   deliberately refuses to mislabel this as a full build — just re-run the job.
 - **No matching release / first release:** classify falls back to **full**; expect ~15 min.
-- **Stale-extras false pass:** the scrub step removes `lib/libetnp_ops_*.a`,
+- **Stale-extras false pass:** the scrub step removes `lib/libetnp_ops_*.a`, `lib/libhwy.a`,
   `lib/cmake/ETNPExtras/`, `include/etnp/` before the rebuild — if you add op artifacts,
   extend the scrub list.
 - **Toolchain/ABI mismatch:** the gate compiles inside manylinux_2_28 on purpose; do not
