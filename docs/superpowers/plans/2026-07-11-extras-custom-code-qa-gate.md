@@ -17,6 +17,7 @@
 - **Supply-chain posture:** every downloaded tarball/fixture is `sha256sum -c`'d before use — **mandatory in every case, including fork PRs** (the `.sha256` is published by our release, so a match proves the bytes are exactly what we shipped). `gh attestation verify` is **defense-in-depth**: enforced on same-repo PRs, best-effort (skipped with a `::notice::`) on fork PRs whose reduced, un-elevatable token can't read attestations — so external contributions are never blocked while integrity stays gated.
 - **Numeric tolerance:** rtol/atol `1e-4` (matches the existing round-trip).
 - **Extras license parity (invariant):** any path that installs `libhwy.a` also installs Highway's license — `build_extras` is always followed by `install_highway_license` (full build **and** `--extras-only`), so no built prefix (CI, gate, or local) is license-incomplete for the dependency the extras phase adds.
+- **Import convention (Python under `extras/`):** every `extras/lstm/**/*.py` puts the repo root on `sys.path` (`_REPO_ROOT = Path(__file__).resolve().parents[3]`, or `HERE.parents[2]` when `HERE` is the file's dir) and imports **every** cross-module dependency by its full package path — `from extras.lstm.test._runner import …`, `from extras.lstm.aot import lstm_case`/`emit_fixtures`, `import extras.lstm.aot.etnp_lstm_op`. No bare sibling imports (`import lstm_case`, `from _runner import …`): those only resolve when the containing dir happens to be on the path (script-run or pytest launch) and let a module load under two identities in one process. This keeps imports cwd-independent and single-identity for scripts, pytest, and any future cross-op reuse.
 - **Asset naming is single-source:** runtime tarballs via `scripts/lib/naming.sh`; fixtures via the new `fixtures_name` added there.
 - **Fixture single source of truth:** the published `.pte`/golden and the live round-trip are generated from the *same* code (`extras/lstm/aot/lstm_case.py`) — dims, seed, weights, arity/op-name assertions all live there once.
 - **Shell test harness:** new `test/*.test.sh` files are auto-discovered by `test/run.sh` (globs `*.test.sh`); no wiring needed. Run all with `bash test/run.sh`.
@@ -345,7 +346,9 @@ import sys
 import torch
 
 HERE = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[2]))          # repo root, for extras.*
+_REPO_ROOT = HERE.parents[2]                       # extras/lstm/aot/ -> repo root, for extras.*
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 import extras.lstm.aot.etnp_lstm_op  # noqa: E402,F401  registers torch.ops.etnp.lstm
 
 DIMS = {"T": 5, "B": 2, "I": 4, "H": 3}
@@ -410,13 +413,16 @@ import tempfile
 
 import numpy as np
 
-from _runner import build_runner, run_runner
-
-# lstm_case lives under extras/lstm/aot/ (AOT-side: it defines the export recipe + the
-# golden, so a change to it must trigger tier2 — see scripts/classify-gate.sh). Import it
-# via the package path, ensuring the repo root is importable.
+# Imports work from ANY cwd and each module has ONE canonical identity: put the repo root on
+# sys.path and import both helpers by their FULL package path (never bare `_runner`/`lstm_case`,
+# which only resolve when the containing dir happens to be on the path). `_runner` is the
+# torch-free test helper under test/; `lstm_case` is AOT-side under aot/ (a change to it
+# triggers tier2 — see scripts/classify-gate.sh).
 HERE = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[2]))          # repo root, for extras.*
+_REPO_ROOT = HERE.parents[2]                       # extras/lstm/test/ -> repo root
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from extras.lstm.test._runner import build_runner, run_runner  # noqa: E402
 from extras.lstm.aot import lstm_case  # noqa: E402
 
 
@@ -437,7 +443,7 @@ def test_roundtrip_matches_eager():
         np.abs(got - ref).max()
 ```
 
-Note: `_runner` is imported as a sibling (pytest prepends the test file's dir to `sys.path`); `lstm_case` is imported via its package path `extras.lstm.aot` (repo root inserted above). The split mirrors the file locations — `_runner` is a torch-free test helper under `test/`, `lstm_case` is AOT-side under `aot/`.
+Note: every module is imported by its full package path (`extras.lstm.test._runner`, `extras.lstm.aot.lstm_case`) after putting the repo root on `sys.path`, so imports are cwd-independent and each module has a single canonical identity — no bare sibling imports that depend on how the file was launched. See the **Import convention** in Global Constraints.
 
 - [ ] **Step 4: Verify import wiring without torch**
 
@@ -478,9 +484,10 @@ import sys
 
 import pytest
 
-HERE = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "aot"))     # emit_fixtures lives under extras/lstm/aot/
-import emit_fixtures  # noqa: E402
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]   # extras/lstm/test/ -> repo root
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from extras.lstm.aot import emit_fixtures  # noqa: E402
 
 
 def test_shape_text_format():
@@ -510,7 +517,9 @@ shape file (LSTM_<dim>=<n> lines) the torch-free consumer smoke reads."""
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]   # extras/lstm/aot/ -> repo root
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 def shape_text(dims: dict) -> str:
@@ -518,7 +527,7 @@ def shape_text(dims: dict) -> str:
 
 
 def main(outdir: pathlib.Path) -> None:
-    import lstm_case  # torch import deferred so shape_text stays torch-free
+    from extras.lstm.aot import lstm_case  # torch import deferred so shape_text stays torch-free
     pte, in_bytes, golden, dims = lstm_case.build_case()
     outdir = pathlib.Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -571,9 +580,10 @@ import sys
 
 import numpy as np
 
-HERE = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-import consumer_smoke  # noqa: E402
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]   # extras/lstm/test/ -> repo root
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from extras.lstm.test import consumer_smoke  # noqa: E402
 
 
 def test_parse_shape_roundtrip(tmp_path):
@@ -606,9 +616,11 @@ import tempfile
 
 import numpy as np
 
-from _runner import build_runner, run_runner
-
 HERE = pathlib.Path(__file__).resolve().parent
+_REPO_ROOT = HERE.parents[2]                       # extras/lstm/test/ -> repo root
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from extras.lstm.test._runner import build_runner, run_runner  # noqa: E402
 
 
 def parse_shape(path) -> dict:
