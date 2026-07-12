@@ -10,6 +10,7 @@
 // is wrong for this export recipe and is corrected here to the observed 3-input arity.
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <vector>
 
@@ -33,10 +34,16 @@ int main(int argc, char** argv) {
   if (argc != 4) { std::fprintf(stderr, "usage: lstm_runner model inputs out\n"); return 2; }
   // Shapes are fixed by the test that generates inputs.bin (see the .py).
   // T,B,I,H are passed via env to keep the runner tiny and shape-agnostic.
-  const int T = std::atoi(std::getenv("LSTM_T"));
-  const int B = std::atoi(std::getenv("LSTM_B"));
-  const int I = std::atoi(std::getenv("LSTM_I"));
-  const int H = std::atoi(std::getenv("LSTM_H"));
+  // getenv returns null if unset — fail cleanly instead of atoi(NULL) UB.
+  auto env_int = [](const char* k) -> int {
+    const char* v = std::getenv(k);
+    if (!v) { std::fprintf(stderr, "env %s not set\n", k); std::exit(2); }
+    return std::atoi(v);
+  };
+  const int T = env_int("LSTM_T");
+  const int B = env_int("LSTM_B");
+  const int I = env_int("LSTM_I");
+  const int H = env_int("LSTM_H");
 
   std::vector<float> blob = read_floats(argv[2]);
   size_t off = 0;

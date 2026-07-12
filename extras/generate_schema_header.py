@@ -34,6 +34,9 @@ def load_schema(extra_yaml) -> dict:
 
 def render_header(s: dict) -> str:
     guard_ns = s["namespace"]
+    # TODO(op#2): the constant names kLstmName/kLstmOutName are lstm-specific. When a
+    # second op is added, derive them from s["op"] (e.g. kGruName) or emit fixed
+    # kOpName/kOpOutName — otherwise op #2 would get mis-named C++ constants.
     return (
         "// GENERATED from extras/{op}/extra.yaml — do not edit.\n"
         "#pragma once\n"

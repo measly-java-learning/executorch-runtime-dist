@@ -187,7 +187,10 @@ hwy_lic="$(find "$EXTRAS_BUILD" -path '*highway-src/LICENSE' -type f 2>/dev/null
 if [ -n "$hwy_lic" ]; then
   cp "$hwy_lic" "$PREFIX/THIRD-PARTY-NOTICES/highway_LICENSE"
 else
-  echo ">> WARNING: Highway LICENSE not found under $EXTRAS_BUILD" >&2
+  # Hard-fail, not warn: Highway (libhwy.a) ships in the tarball, so omitting its
+  # license is a compliance defect. No CI gate re-checks this, so fail the build.
+  echo ">> ERROR: Highway LICENSE not found under $EXTRAS_BUILD; refusing to ship libhwy.a without its license" >&2
+  exit 1
 fi
 
 # safe.directory='*': the checkout may be owned by a different uid than the container user (mounted

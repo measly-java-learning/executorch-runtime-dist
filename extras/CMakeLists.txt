@@ -27,6 +27,10 @@ foreach(_d IN LISTS _op_dirs)
     if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/${_d}/test")
       message(FATAL_ERROR "extra '${_d}' has no test/ dir — every extra must ship a test")
     endif()
+    # TODO(op#2): reset ETNP_EXTRAS_EXPECT_TUS to "" before this add_subdirectory so a
+    # future op that forgets its PARENT_SCOPE set can't inherit the prior op's TUs; and
+    # generalize the test wiring below (currently the lstm-specific `if(TARGET
+    # etnp_ops_lstm)` block) + the "test/ dir exists" check into per-op handling.
     add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/${_d}/runtime" "${CMAKE_BINARY_DIR}/${_d}")
     list(APPEND ETNP_EXTRAS_LIBS "etnp_ops_${_d}")
     list(APPEND ETNP_EXTRAS_ALL_EXPECT_TUS ${ETNP_EXTRAS_EXPECT_TUS})
