@@ -14,7 +14,7 @@
 - **Ship/default variant:** `logging`. The gate uses `logging` for all runtime work.
 - **Platforms:** `linux-x86_64` and `linux-aarch64` (manylinux_2_28, glibc ≥ 2.28). Tier 1 runs both; tier2/full run x86_64 only.
 - **Container discipline:** any step that compiles/links against the ET static archives runs **inside** `quay.io/pypa/manylinux_2_28_<arch>` (fidelity vs. the shipped archives). `gh` is **not** available in those images — download/verify happens in an `ubuntu-latest` job and artifacts are passed in.
-- **Supply-chain posture (non-negotiable):** every downloaded tarball/fixture is `sha256sum -c`'d **and** `gh attestation verify`'d before use. The gate must not be the one place the repo trusts an unverified binary.
+- **Supply-chain posture:** every downloaded tarball/fixture is `sha256sum -c`'d before use — **mandatory in every case, including fork PRs** (the `.sha256` is published by our release, so a match proves the bytes are exactly what we shipped). `gh attestation verify` is **defense-in-depth**: enforced on same-repo PRs, best-effort (skipped with a `::notice::`) on fork PRs whose reduced, un-elevatable token can't read attestations — so external contributions are never blocked while integrity stays gated.
 - **Numeric tolerance:** rtol/atol `1e-4` (matches the existing round-trip).
 - **Asset naming is single-source:** runtime tarballs via `scripts/lib/naming.sh`; fixtures via the new `fixtures_name` added there.
 - **Fixture single source of truth:** the published `.pte`/golden and the live round-trip are generated from the *same* code (`extras/lstm/aot/lstm_case.py`) — dims, seed, weights, arity/op-name assertions all live there once.
@@ -683,7 +683,7 @@ git commit -m "feat(gate): publish + attest LSTM fixtures from the release build
 - Produces: `scripts/classify-gate.sh <changed-files-file>` → prints `mode=<tier1|tier2|full>`, `etver=<x.y.z>`, `release_tag=<v..-..|>` (three `key=value` lines, `$GITHUB_OUTPUT`-appendable).
 - Decision order: (1) any `build-runtime.sh` change → `full`; (2) else resolve newest `v<etver>-*` release — none → `full`; (3) else any AOT/schema file changed → `tier2`; (4) else → `tier1`.
 - AOT/schema match: a changed path matching `^extras/([^/]+/)?aot/`, or basename `generate_schema_header.py`, or basename `extra.yaml`. The `aot/` arm deliberately covers `extras/lstm/aot/lstm_case.py` and `extras/lstm/aot/emit_fixtures.py` — the fixture-defining files were placed under `aot/` (Tasks 3–4) precisely so a change to them forces tier2, rather than needing a special-case rule here.
-- Test hooks (env): `GATE_ET_TAG` overrides the `DEFAULT_ET_TAG` parse; `GATE_RELEASE_TAG` (set, possibly empty) overrides the `gh` lookup — empty string means "no release". When unset, uses `gh release list`.
+- Test hooks (env): `GATE_ET_TAG` overrides the `DEFAULT_ET_TAG` parse; `GATE_RELEASE_TAG` (set, possibly empty) overrides the `gh` lookup — empty string means "no release"; `GATE_GH_CMD` overrides the `gh` binary (inject a stub/`false`); `GATE_RETRY_SLEEP` overrides the retry backoff (set `0` in tests). When the `gh` lookup is used and **fails** after 3 attempts (as opposed to returning no rows), the script exits non-zero (code 3) rather than emitting `full` — a transient infra error must not masquerade as a build-recipe change.
 - Consumed by: Task 8 (`classify` job).
 
 **Note (accepted gap):** a PR that edits **only `extras/lstm/test/test_lstm_roundtrip.py`** (the live-round-trip test itself, not the case/kernel/AOT) classifies **tier1** — it is a `test/` file and defines no fixtures — so the live round-trip does not re-run to validate the edited test. This is accepted as low-risk: it is the test harness, not shipped source or the published fixtures. If a future change makes this matter, add a narrow `test_lstm_roundtrip.py → tier2` clause to the AOT/schema match. Documented for contributors in `docs/extras-gate.md` (Task 9).
@@ -728,6 +728,23 @@ GATE_RELEASE_TAG="" run "extras/lstm/runtime/lstm_cell.cc"        ; check norele
 GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/runtime/lstm_cell.cc"
 printf '%s\n' "$out" | grep -q '^etver=1.3.1$' || { echo "FAIL etver parse"; fail=1; }
 
+# transient gh failure (no GATE_RELEASE_TAG) exits non-zero — must NOT silently emit full
+printf 'extras/lstm/runtime/lstm_cell.cc\n' > "$tmp/ch"
+if GATE_ET_TAG="v1.3.1" GATE_GH_CMD="false" GATE_RETRY_SLEEP=0 \
+     "$root/scripts/classify-gate.sh" "$tmp/ch" >/dev/null 2>&1; then
+  echo "FAIL: gh failure should exit non-zero, not succeed"; fail=1
+fi
+
+# a working gh stub (no GATE_RELEASE_TAG) resolves the newest matching tag -> tier1
+cat > "$tmp/ghstub" <<'STUB'
+#!/usr/bin/env bash
+printf 'v1.2.0-9\nv1.3.1-1\nv1.3.1-2\n'   # emulates: gh release list --json tagName --jq '.[].tagName'
+STUB
+chmod +x "$tmp/ghstub"
+out="$(GATE_ET_TAG="v1.3.1" GATE_GH_CMD="$tmp/ghstub" "$root/scripts/classify-gate.sh" "$tmp/ch")"
+[ "$(mode)" = "tier1" ] || { echo "FAIL: stub resolve mode=$(mode)"; fail=1; }
+printf '%s\n' "$out" | grep -q '^release_tag=v1.3.1-2$' || { echo "FAIL: stub newest tag"; fail=1; }
+
 [ "$fail" -eq 0 ] && echo "OK: classify-gate" || exit 1
 ```
 
@@ -744,8 +761,11 @@ Expected: FAIL (script does not exist).
 #   classify-gate.sh <changed-files-file>   # prints mode=/etver=/release_tag=
 # Order: build-runtime.sh change -> full ; no matching release -> full ;
 #        AOT/schema change -> tier2 ; else -> tier1.
+# A gh lookup FAILURE (distinct from an empty result) exits non-zero rather than silently
+# falling back to full — an infra error is re-runnable, not a build-recipe change.
 # Test hooks: GATE_ET_TAG overrides the DEFAULT_ET_TAG parse; GATE_RELEASE_TAG (set,
-# maybe empty) overrides the gh lookup (empty = no release).
+# maybe empty) overrides the gh lookup entirely (empty = no release); GATE_GH_CMD
+# overrides the `gh` binary; GATE_RETRY_SLEEP overrides the retry backoff (0 in tests).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -762,12 +782,29 @@ if grep -qx 'build-runtime.sh' "$CHANGED"; then
   emit full ""; exit 0
 fi
 
-# (2) resolve the newest matching package release
+# (2) resolve the newest matching package release.
+# A transient `gh` failure must NOT be silently treated as "no release" (which would waste
+# a ~15min full build and mislabel the PR). Distinguish: an empty result from a SUCCESSFUL
+# call means genuinely no release -> full; a FAILED call after retries is an infra problem
+# -> exit non-zero so the (re-runnable) job fails visibly.
+GH="${GATE_GH_CMD:-gh}"
 if [ -n "${GATE_RELEASE_TAG+x}" ]; then
   release_tag="$GATE_RELEASE_TAG"
 else
-  release_tag="$(gh release list --limit 100 --json tagName -q \
-    ".[].tagName | select(test(\"^v${etver}-\"))" 2>/dev/null | sort -V | tail -n1 || true)"
+  release_tag=""; resolved=0
+  for attempt in 1 2 3; do
+    if tags="$("$GH" release list --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null)"; then
+      resolved=1
+      release_tag="$(printf '%s\n' "$tags" | grep -E "^v${etver}-" | sort -V | tail -n1 || true)"
+      break
+    fi
+    [ "$attempt" -lt 3 ] && sleep "${GATE_RETRY_SLEEP:-$((attempt * 3))}"
+  done
+  if [ "$resolved" -ne 1 ]; then
+    echo "classify-gate.sh: 'gh release list' failed after 3 attempts (transient?); refusing" >&2
+    echo "  to default to a full build on an infra error — re-run this job." >&2
+    exit 3
+  fi
 fi
 if [ -z "$release_tag" ]; then
   emit full ""; exit 0
@@ -853,28 +890,46 @@ jobs:
     needs: classify
     if: needs.classify.outputs.mode == 'tier1' || needs.classify.outputs.mode == 'tier2'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read        # gh attestation verify (same-repo PRs; fork tokens can't elevate)
     env:
       ETVER: ${{ needs.classify.outputs.etver }}
       RELEASE_TAG: ${{ needs.classify.outputs.release_tag }}
       GH_TOKEN: ${{ github.token }}
+      # Fork PRs run with a reduced, secret-less read token GitHub does not let the workflow
+      # elevate, so `gh attestation verify` can fail on forks. sha256 is the MANDATORY
+      # integrity gate in every case (the .sha256 is published by our release, so a match
+      # proves the bytes are exactly what we shipped); attestation is defense-in-depth —
+      # enforced for same-repo PRs, best-effort (skipped with a notice) on forks, so
+      # external contributions are never blocked.
+      IS_SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - name: Download + verify runtime tarballs + fixtures
         run: |
           set -euo pipefail
           mkdir gate-inputs
+          # Build the -p pattern list as a bash ARRAY (never via `printf %q` + word-split:
+          # %q emits shell quoting that command-substitution does NOT re-parse, so a quoted
+          # token would reach gh as a literal-quote glob and silently match nothing).
           fx="etnp-lstm-fixtures-${ETVER}.tar.gz"
-          assets=("$fx" "$fx.sha256")
+          patterns=( -p "$fx" -p "$fx.sha256" )
           for plat in linux-x86_64 linux-aarch64; do
             tb="executorch-runtime-${ETVER}-logging-${plat}.tar.gz"
-            assets+=("$tb" "$tb.sha256")
+            patterns+=( -p "$tb" -p "$tb.sha256" )
           done
-          ( cd gate-inputs && gh release download "$RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" $(printf ' -p %q' "${assets[@]}") )
+          ( cd gate-inputs && gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" "${patterns[@]}" )
           cd gate-inputs
           for f in *.tar.gz; do
-            sha256sum -c "$f.sha256"
-            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"
+            sha256sum -c "$f.sha256"                 # mandatory integrity gate (all PRs, incl. forks)
           done
+          if [ "$IS_SAME_REPO" = "true" ]; then
+            for f in *.tar.gz; do
+              gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"   # provenance (defense-in-depth)
+            done
+          else
+            echo "::notice::fork PR — skipping gh attestation verify (fork token lacks access); sha256 integrity is still enforced. See docs/extras-gate.md."
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: gate-inputs
@@ -1090,9 +1145,15 @@ The published `.pte`/golden come from `extras/lstm/aot/lstm_case.py` via
    compares against the new golden.
 
 ## Troubleshooting
-- **`gh attestation verify` fails:** the asset is not provenance-attested for this repo —
-  do not proceed; re-cut the release. `gh` runs only in the ubuntu `fetch`/`classify`
-  jobs (it is absent from manylinux).
+- **`gh attestation verify` on a fork PR:** fork PRs run with a reduced, secret-less read
+  token GitHub won't let the workflow elevate, so attestation verify is **skipped on forks**
+  (you'll see a `::notice::`) while `sha256sum -c` is enforced in every case. On a
+  **same-repo** PR a genuine verify failure means the asset isn't provenance-attested — do
+  not proceed; re-cut the release. `gh` runs only in the ubuntu `fetch`/`classify` jobs (it
+  is absent from manylinux).
+- **`classify` fails with "gh release list failed after 3 attempts":** a transient GitHub
+  API/network error while resolving the release (not a build-recipe change). The classifier
+  deliberately refuses to mislabel this as a full build — just re-run the job.
 - **No matching release / first release:** classify falls back to **full**; expect ~15 min.
 - **Stale-extras false pass:** the scrub step removes `lib/libetnp_ops_*.a`,
   `lib/cmake/ETNPExtras/`, `include/etnp/` before the rebuild — if you add op artifacts,
@@ -1140,6 +1201,7 @@ git commit -m "docs(gate): usage & troubleshooting guide for the extras QA gate"
 - §7 files list → all created: extras-gate.yml (T8), consumer harness (T5), fixture-emit (T4), release.yml change (T6), docs (T9). ✓ Plus the necessary `--extras-only` (T2), `lstm_case`/`_runner` (T3), `classify-gate.sh` (T7), `package-fixtures.sh`/naming (T1) the spec implied.
 - Open items resolved: shape format = `LSTM_*=<n>` (T4); scrub list fixed (Global Constraints, T8). ✓
 - Classification correctness: `lstm_case.py`/`emit_fixtures.py` live under `extras/lstm/aot/` (T3/T4) so the existing tier2 `aot/` rule catches fixture-defining changes — guarded by classify test cases (T7). Residual `test_lstm_roundtrip.py`-only edits documented as an accepted tier1 gap (T7 note, T9 docs). ✓
+- `gh` robustness (T7/T8): download args built as a bash array (no `printf %q` injection); `gh release list` failure retried then surfaced as a non-zero classify (never a silent full build) — tested via `GATE_GH_CMD`/`GATE_RETRY_SLEEP`; `gh attestation verify` gated to same-repo PRs with sha256 mandatory everywhere, so fork PRs aren't blocked. ✓
 
 **Placeholder scan:** no TBD/TODO/"handle edge cases"/"similar to Task N"; every code step shows full content. ✓
 
