@@ -16,6 +16,7 @@
 - **Container discipline:** any step that compiles/links against the ET static archives runs **inside** `quay.io/pypa/manylinux_2_28_<arch>` (fidelity vs. the shipped archives). `gh` is **not** available in those images — download/verify happens in an `ubuntu-latest` job and artifacts are passed in.
 - **Supply-chain posture:** every downloaded tarball/fixture is `sha256sum -c`'d before use — **mandatory in every case, including fork PRs** (the `.sha256` is published by our release, so a match proves the bytes are exactly what we shipped). `gh attestation verify` is **defense-in-depth**: enforced on same-repo PRs, best-effort (skipped with a `::notice::`) on fork PRs whose reduced, un-elevatable token can't read attestations — so external contributions are never blocked while integrity stays gated.
 - **Numeric tolerance:** rtol/atol `1e-4` (matches the existing round-trip).
+- **Extras license parity (invariant):** any path that installs `libhwy.a` also installs Highway's license — `build_extras` is always followed by `install_highway_license` (full build **and** `--extras-only`), so no built prefix (CI, gate, or local) is license-incomplete for the dependency the extras phase adds.
 - **Asset naming is single-source:** runtime tarballs via `scripts/lib/naming.sh`; fixtures via the new `fixtures_name` added there.
 - **Fixture single source of truth:** the published `.pte`/golden and the live round-trip are generated from the *same* code (`extras/lstm/aot/lstm_case.py`) — dims, seed, weights, arity/op-name assertions all live there once.
 - **Shell test harness:** new `test/*.test.sh` files are auto-discovered by `test/run.sh` (globs `*.test.sh`); no wiring needed. Run all with `bash test/run.sh`.
@@ -140,10 +141,10 @@ git commit -m "feat(gate): fixtures naming + package-fixtures.sh"
 - Test: `test/extras_only.test.sh`
 
 **Interfaces:**
-- Produces: `build-runtime.sh --extras-only --variant <v> --prefix <existing-prefix>` → rebuilds + installs only the extras (custom ops) against an existing ET install; requires `<prefix>/lib/cmake/ExecuTorch/executorch-config.cmake` (fails fast otherwise); does **not** need `--et-src`, does not clone, does not touch ET license/relocatability steps. Non-zero on a missing/invalid prefix.
+- Produces: `build-runtime.sh --extras-only --variant <v> --prefix <existing-prefix>` → rebuilds + installs only the extras (custom ops) against an existing ET install; requires `<prefix>/lib/cmake/ExecuTorch/executorch-config.cmake` (fails fast otherwise); does **not** need `--et-src` and does not clone. It **does** run the Highway license passthrough (so `libhwy.a` never ships without its license — parity with the full build), but not the ET-side license/relocatability steps (those belong to `--et-src`). Non-zero on a missing/invalid prefix or a missing Highway license.
 - Consumed by: Task 8 (Tier 1 + Tier 2 rebuild-from-branch steps).
 
-**Context:** today the extras build is lines `build-runtime.sh:134-143`. `SKIP_ET_BUILD=1` exits at line 76 *before* it, so there is no phase-2-only path. This task factors 134-143 into `build_extras()` and reaches it via `--extras-only`, leaving the full-build flow behaviorally identical.
+**Context:** today the extras build is lines `build-runtime.sh:134-143`. `SKIP_ET_BUILD=1` exits at line 76 *before* it, so there is no phase-2-only path. This task factors 134-143 into `build_extras()` **and** the Highway-license block (185-194) into `install_highway_license()`, reaching both via `--extras-only`. The full-build flow stays behaviorally identical — it calls the same two functions in the same order/positions. The license extraction closes a compliance gap: without it, `--extras-only` would install `libhwy.a` (fetched by the extras build) while skipping its license, so a *distributed local build* against a bare prefix could ship `libhwy.a` unlicensed.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -206,7 +207,38 @@ At the former location (lines 134-143) leave just:
 build_extras
 ```
 
-(The Highway-license block at 185-194 still runs in the full path and reads `$EXTRAS_BUILD`, which `build_extras` sets.)
+Then extract the existing **Highway-license block** (`build-runtime.sh:185-194`) into a
+function too, so every path that installs `libhwy.a` also installs its license. Define it
+near `build_extras`:
+
+```bash
+# Highway (libhwy.a) is fetched + installed by build_extras; its LICENSE is not in ET's
+# tree. Copy it into the prefix or hard-fail — shipping libhwy.a without its license is a
+# compliance defect. Called by BOTH the full build and --extras-only, so a locally-built
+# or gate-built prefix is never license-incomplete for the dependency the extras phase adds.
+install_highway_license() {
+  mkdir -p "$PREFIX/THIRD-PARTY-NOTICES"
+  local hwy_lic
+  hwy_lic="$(find "$EXTRAS_BUILD" -path '*highway-src/LICENSE' -type f 2>/dev/null | head -n1 || true)"
+  if [ -n "$hwy_lic" ]; then
+    cp "$hwy_lic" "$PREFIX/THIRD-PARTY-NOTICES/highway_LICENSE"
+  else
+    echo ">> ERROR: Highway LICENSE not found under $EXTRAS_BUILD; refusing to ship libhwy.a without its license" >&2
+    exit 1
+  fi
+}
+```
+
+At the former Highway block location (lines 185-194), leave just:
+
+```bash
+install_highway_license
+```
+
+(The ET `LICENSE` + ET `THIRD-PARTY-NOTICES/` passthrough above it stays inline in the full
+path — those come from `--et-src`, which `--extras-only` does not have and is not
+responsible for. The extras phase only adds `libhwy.a`, so only its license is shared
+between the two paths.)
 
 - [ ] **Step 4: Add the `--extras-only` flag + guard**
 
@@ -223,11 +255,14 @@ After the `--print-flags` early-exit block (after line 64) and after `PREFIX` is
 ```bash
 # ---- --extras-only: rebuild ONLY the extras against an existing prefix ----
 # Used by the PR gate: a downloaded release tarball is the ET install; we rebuild the
-# branch's custom ops on top of it. No ET compile, no --et-src, no license/reloc steps.
+# branch's custom ops on top of it. No ET compile, no --et-src, no ET-license/reloc steps —
+# but DO run install_highway_license, because build_extras installs libhwy.a and a
+# distributed local build must carry Highway's license too (parity with the full build).
 if [ "${EXTRAS_ONLY:-0}" -eq 1 ]; then
   test -f "$CONFIG" \
     || { echo "--extras-only but $CONFIG is missing; provide a built/extracted ET prefix" >&2; exit 1; }
   build_extras
+  install_highway_license
   echo ">> --extras-only done: $PREFIX"
   exit 0
 fi
