@@ -30,6 +30,7 @@ EOF
 }
 
 VARIANT=""; PREFIX=""; ET_SRC=""; ET_TAG="$DEFAULT_ET_TAG"; BUILD_DIR=""; PRINT_FLAGS=0
+EXTRAS_ONLY=0; PRINT_ET_TAG=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --variant)   VARIANT="${2:-}"; shift 2 ;;
@@ -38,10 +39,17 @@ while [ $# -gt 0 ]; do
     --et-tag)    ET_TAG="${2:-}"; shift 2 ;;
     --build-dir) BUILD_DIR="${2:-}"; shift 2 ;;
     --print-flags) PRINT_FLAGS=1; shift ;;
+    --extras-only)   EXTRAS_ONLY=1; shift ;;
+    --print-et-tag)  PRINT_ET_TAG=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [ "${PRINT_ET_TAG:-0}" -eq 1 ]; then
+  printf '%s\n' "$ET_TAG"   # ET_TAG defaults to DEFAULT_ET_TAG (overridable via --et-tag)
+  exit 0
+fi
 
 # As this script is intended to run in a container with a volume mount, the permissions of the built artifacts
 # can be a little goofy.  Use a trap to ensure that permissions get set to something meaningful for the user running the container
@@ -65,6 +73,53 @@ fi
 
 [ -n "$PREFIX" ] || { echo "--prefix required" >&2; exit 2; }
 CONFIG="$PREFIX/lib/cmake/ExecuTorch/executorch-config.cmake"
+
+# Phase 2: build + install the extras (custom ops) against an already-installed prefix.
+# Reachable standalone via --extras-only (used by the PR gate to rebuild extras from a
+# branch against a downloaded release prefix, skipping the ~15min ET compile).
+build_extras() {
+  echo ">> building extras (custom ops) against the installed prefix"
+  local extras_build="${BUILD_DIR:-$(dirname "$PREFIX")}/etnp-extras-$VARIANT"
+  cmake -B "$extras_build" -S "$HERE/extras" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DCMAKE_PREFIX_PATH="$PREFIX" \
+    -DCMAKE_INSTALL_PREFIX="$PREFIX"
+  # Building the link probe runs the POST_BUILD nm-guard (registrar survived).
+  cmake --build "$extras_build" -j"$(nproc)"
+  cmake --install "$extras_build" --prefix "$PREFIX"
+  EXTRAS_BUILD="$extras_build"   # exported for the full-build Highway-license step
+}
+
+# Highway (libhwy.a) is fetched + installed by build_extras; its LICENSE is not in ET's
+# tree. Copy it into the prefix or hard-fail — shipping libhwy.a without its license is a
+# compliance defect. Called by BOTH the full build and --extras-only, so a locally-built
+# or gate-built prefix is never license-incomplete for the dependency the extras phase adds.
+install_highway_license() {
+  mkdir -p "$PREFIX/THIRD-PARTY-NOTICES"
+  local hwy_lic
+  hwy_lic="$(find "$EXTRAS_BUILD" -path '*highway-src/LICENSE' -type f 2>/dev/null | head -n1 || true)"
+  if [ -n "$hwy_lic" ]; then
+    cp "$hwy_lic" "$PREFIX/THIRD-PARTY-NOTICES/highway_LICENSE"
+  else
+    echo ">> ERROR: Highway LICENSE not found under $EXTRAS_BUILD; refusing to ship libhwy.a without its license" >&2
+    exit 1
+  fi
+}
+
+# ---- --extras-only: rebuild ONLY the extras against an existing prefix ----
+# Used by the PR gate: a downloaded release tarball is the ET install; we rebuild the
+# branch's custom ops on top of it. No ET compile, no --et-src, no ET-license/reloc steps —
+# but DO run install_highway_license, because build_extras installs libhwy.a and a
+# distributed local build must carry Highway's license too (parity with the full build).
+if [ "${EXTRAS_ONLY:-0}" -eq 1 ]; then
+  test -f "$CONFIG" \
+    || { echo "--extras-only but $CONFIG is missing; provide a built/extracted ET prefix" >&2; exit 1; }
+  build_extras
+  install_highway_license
+  echo ">> --extras-only done: $PREFIX"
+  exit 0
+fi
 
 # ---- SKIP_ET_BUILD: reuse an existing --prefix install ----
 # Explicit opt-in; keyed off the install prefix (not the source), guarded so a stale/empty prefix
@@ -131,16 +186,7 @@ echo ">> installing to $PREFIX"
 mkdir -p "$PREFIX"
 cmake --install "$ET_BUILD" --prefix "$PREFIX"
 
-echo ">> building extras (custom ops) against the installed prefix"
-EXTRAS_BUILD="$ET_BUILD/../etnp-extras-$VARIANT"
-cmake -B "$EXTRAS_BUILD" -S "$HERE/extras" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-  -DCMAKE_PREFIX_PATH="$PREFIX" \
-  -DCMAKE_INSTALL_PREFIX="$PREFIX"
-# Building the link probe runs the POST_BUILD nm-guard (registrar survived).
-cmake --build "$EXTRAS_BUILD" -j"$(nproc)"
-cmake --install "$EXTRAS_BUILD" --prefix "$PREFIX"
+build_extras
 
 echo ">> measuring relocatability"
 # capture once (`|| true`: grep exits 1 on no match, which must not abort under set -e/pipefail)
@@ -182,16 +228,7 @@ for d in "$ET_SRC/third-party" "$ET_SRC/backends"; do
   done || true
 done
 
-# Highway (fetched by the extras build) — its LICENSE is not in ET's tree.
-hwy_lic="$(find "$EXTRAS_BUILD" -path '*highway-src/LICENSE' -type f 2>/dev/null | head -n1 || true)"
-if [ -n "$hwy_lic" ]; then
-  cp "$hwy_lic" "$PREFIX/THIRD-PARTY-NOTICES/highway_LICENSE"
-else
-  # Hard-fail, not warn: Highway (libhwy.a) ships in the tarball, so omitting its
-  # license is a compliance defect. No CI gate re-checks this, so fail the build.
-  echo ">> ERROR: Highway LICENSE not found under $EXTRAS_BUILD; refusing to ship libhwy.a without its license" >&2
-  exit 1
-fi
+install_highway_license
 
 # safe.directory='*': the checkout may be owned by a different uid than the container user (mounted
 # tree / CI), which otherwise trips git's "dubious ownership" guard and blocks rev-parse.
