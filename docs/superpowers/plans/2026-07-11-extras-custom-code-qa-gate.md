@@ -675,27 +675,100 @@ git commit -m "feat(gate): torch-free consumer_smoke over published fixtures"
 
 ---
 
-### Task 6: Publish fixtures from the release build
+### Task 6: Shared CI composite actions + publish fixtures from the release build
 
 **Files:**
-- Modify: `.github/workflows/release.yml` (add fixture emit + package steps in the `logging`/`linux-x86_64` cell, before Package/Attest)
+- Create: `.github/actions/checkout-executorch/action.yml`
+- Create: `.github/actions/lstm-roundtrip/action.yml`
+- Modify: `.github/workflows/release.yml` (use both composites; add fixture emit + package)
 
 **Interfaces:**
-- Consumes: `emit_fixtures.py` (Task 4), `scripts/package-fixtures.sh` (Task 1), the round-trip step's already-installed torch/executorch + built `out` prefix.
-- Produces: `dist/etnp-lstm-fixtures-<etver>.tar.gz` + `.sha256` in that one matrix cell, which the **existing** `Attest build provenance` (`subject-path: dist/*.tar.gz`) and `upload-artifact` (`path: dist/*`) steps then attest + publish automatically. The `pin` job's name-specific globbing ignores the extra file; the `release` job's `gh release create dist/*` includes it.
+- Produces (reusable composite actions, consumed here **and** by Task 8):
+  - `./.github/actions/checkout-executorch` — input `ref` (ET tag, e.g. `v1.3.1`); checks out `pytorch/executorch` with submodules into `./executorch`.
+  - `./.github/actions/lstm-roundtrip` — inputs `prefix` (ET install to test → `ETNP_PREFIX`) and `executorch-src` (default `executorch`); installs the ET python package and runs `test_lstm_roundtrip.py`.
+- Consumes: `emit_fixtures.py` (Task 4), `scripts/package-fixtures.sh` (Task 1), the built `out` prefix + the torch/executorch the round-trip action just installed.
+- Produces: `dist/etnp-lstm-fixtures-<etver>.tar.gz` + `.sha256` in the `logging`/`linux-x86_64` cell, which the **existing** `Attest` (`subject-path: dist/*.tar.gz`) + `upload-artifact` (`path: dist/*`) steps attest + publish automatically. The `pin` job's name-specific globbing ignores it; `release`'s `gh release create dist/*` includes it.
 
-**Context:** the round-trip step (`release.yml:69-85`) runs `if: matrix.variant == 'logging'` on both platforms. Fixtures are arch-independent, so emit them in **x86_64 logging only**.
+**Context / why hoist:** the ET checkout (`repository/ref/submodules/path`) and the live round-trip (`install_executorch` + `pip` + `pytest`) are each duplicated **3×** — release build, gate `live-roundtrip`, gate `full-build` — and both carry correctness-critical detail (the `submodules: recursive` flag; the exact install+pytest sequence). Two composite actions remove that drift risk with no new machinery. (The intra-gate scrub + `--extras-only` block is a smaller, gate-only duplicate — left inline for now; see Deferred / future work.) Fixtures are arch-independent, so they are emitted in **x86_64 logging only**.
 
-- [ ] **Step 1: Add the fixture emit + package step**
+- [ ] **Step 1: Create `.github/actions/checkout-executorch/action.yml`**
 
-Insert immediately **after** the `LSTM round-trip gate` step (after `release.yml:85`) and **before** the `Package` step:
+```yaml
+name: Checkout ExecuTorch
+description: Check out pytorch/executorch at a tag with submodules, into ./executorch
+inputs:
+  ref:
+    description: ExecuTorch git ref/tag (e.g. v1.3.1)
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        repository: pytorch/executorch
+        ref: ${{ inputs.ref }}
+        submodules: recursive
+        path: executorch
+```
+
+- [ ] **Step 2: Create `.github/actions/lstm-roundtrip/action.yml`**
+
+```yaml
+name: LSTM live round-trip
+description: Install the ExecuTorch python package and run the export->run-vs-eager round-trip against a prefix
+inputs:
+  prefix:
+    description: ET install prefix to test against (becomes ETNP_PREFIX)
+    required: true
+  executorch-src:
+    description: Path to the checked-out ExecuTorch source (for install_executorch.sh)
+    required: false
+    default: executorch
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        export PATH=/opt/python/cp312-cp312/bin:$PATH
+        # AOT export needs the executorch python package from the SAME pinned ET source.
+        (cd "${{ inputs.executorch-src }}" && ./install_executorch.sh)
+        pip install numpy pytest ninja
+        ETNP_PREFIX="${{ inputs.prefix }}" python -m pytest extras/lstm/test/test_lstm_roundtrip.py -v
+```
+
+- [ ] **Step 3: Refactor `release.yml` to use the composites**
+
+Replace the `Checkout ExecuTorch source` step (`release.yml:56-62`) with:
+
+```yaml
+      - name: Checkout ExecuTorch source
+        uses: ./.github/actions/checkout-executorch
+        with:
+          ref: ${{ steps.ver.outputs.ettag }}
+```
+
+Replace the `LSTM round-trip gate` step (`release.yml:69-85`) — keeping its `if: matrix.variant == 'logging'` guard (variant-identical kernel: gate `logging` only, both platforms) — with a call to the composite:
+
+```yaml
+      - name: LSTM round-trip gate (export -> run vs eager)
+        # Variant-identical kernel: gate on `logging` only (both platforms). The round-trip
+        # recipe now lives in the composite action, shared with the extras-gate workflow.
+        if: matrix.variant == 'logging'
+        uses: ./.github/actions/lstm-roundtrip
+        with:
+          prefix: ${{ github.workspace }}/out
+```
+
+- [ ] **Step 4: Add the fixture emit + package step**
+
+Insert immediately **after** the `LSTM round-trip gate` step and **before** the `Package` step:
 
 ```yaml
       - name: Emit + package LSTM fixtures (arch-independent; x86_64 logging only)
         if: matrix.variant == 'logging' && matrix.combo.platform == 'linux-x86_64'
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
-          # torch + executorch are already installed by the round-trip step above; the
+          # torch + executorch are already installed by the round-trip action above; the
           # built prefix is $PWD/out. Mint the fixtures from the SAME lstm_case source.
           python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures"
           mkdir -p "$PWD/dist"
@@ -703,19 +776,19 @@ Insert immediately **after** the `LSTM round-trip gate` step (after `release.yml
             --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
 ```
 
-The subsequent `Package` step also writes into `$PWD/dist`; both the runtime tarball and the fixtures tarball land there, so the existing `Attest`/`upload-artifact` steps cover both.
+The subsequent `Package` step also writes into `$PWD/dist`; both tarballs land there, so the existing `Attest`/`upload-artifact` steps cover both.
 
-- [ ] **Step 2: Validate the workflow parses**
+- [ ] **Step 5: Validate the workflow + actions parse**
 
-Run: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml')); print('yaml ok')"`
+Run: `python3 -c "import yaml; [yaml.safe_load(open(p)) for p in ['.github/workflows/release.yml','.github/actions/checkout-executorch/action.yml','.github/actions/lstm-roundtrip/action.yml']]; print('yaml ok')"`
 Expected: `yaml ok`
-(If `actionlint` is installed: `actionlint .github/workflows/release.yml` → no errors.)
+(If `actionlint` is installed: `actionlint` → no errors.)
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add .github/workflows/release.yml
-git commit -m "feat(gate): publish + attest LSTM fixtures from the release build"
+git add .github/actions/checkout-executorch/action.yml .github/actions/lstm-roundtrip/action.yml .github/workflows/release.yml
+git commit -m "feat(gate): checkout-executorch + lstm-roundtrip composite actions; publish fixtures"
 ```
 
 ---
@@ -893,7 +966,7 @@ git commit -m "feat(gate): classify-gate.sh tier decision"
 - Create: `.github/workflows/extras-gate.yml`
 
 **Interfaces:**
-- Consumes: `scripts/classify-gate.sh` (Task 7), `build-runtime.sh --extras-only` (Task 2), `consumer_smoke.py` (Task 5), `test_lstm_roundtrip.py` (Task 3), `emit_fixtures.py` (Task 4), and the published tarball/fixtures (Task 6).
+- Consumes: `scripts/classify-gate.sh` (Task 7), `build-runtime.sh --extras-only` (Task 2), the `checkout-executorch` + `lstm-roundtrip` composite actions (Task 6), `consumer_smoke.py` (Task 5), `test_lstm_roundtrip.py` (Task 3), `emit_fixtures.py` (Task 4), and the published tarball/fixtures (Task 6). **Depends on Task 6** for the composite actions — the `live-roundtrip`/`full-build` jobs `uses: ./.github/actions/...`.
 - Jobs: `classify` (ubuntu) → `fetch` (ubuntu, tier1|tier2: gh download+verify, upload `gate-inputs`) → `fast-gate` (manylinux matrix, both arches: scrub + `--extras-only` + consumer_smoke), `live-roundtrip` (manylinux x86_64, tier2 only), `full-build` (manylinux x86_64, full only).
 
 **Context / rationale baked into comments:** `gh` is unavailable in manylinux → all `gh` use is confined to the ubuntu `fetch`/`classify` jobs; container jobs receive artifacts via `actions/download-artifact`. Tier 1 + Tier 2 both **rebuild extras from the branch** so the kernel under test is the branch's, not the shipped one.
@@ -1036,12 +1109,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Checkout ExecuTorch source (for the export python package)
-        uses: actions/checkout@v7
+        uses: ./.github/actions/checkout-executorch
         with:
-          repository: pytorch/executorch
           ref: v${{ needs.classify.outputs.etver }}
-          submodules: recursive
-          path: executorch
       - uses: actions/download-artifact@v8
         with:
           name: gate-inputs
@@ -1057,12 +1127,9 @@ jobs:
           pip install ninja
           ./build-runtime.sh --extras-only --variant logging --prefix "$PWD/prefix"
       - name: Live round-trip (export -> run vs eager)
-        run: |
-          set -euo pipefail
-          export PATH=/opt/python/cp312-cp312/bin:$PATH
-          (cd executorch && ./install_executorch.sh)
-          pip install numpy pytest ninja
-          ETNP_PREFIX="$PWD/prefix" python -m pytest extras/lstm/test/test_lstm_roundtrip.py -v
+        uses: ./.github/actions/lstm-roundtrip
+        with:
+          prefix: ${{ github.workspace }}/prefix
 
   # Fallback: any build-runtime.sh change (or no matching release) → a full-build
   # release DRY-RUN. Full ET compile + live round-trip + fixture-emit (not published),
@@ -1078,22 +1145,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Checkout ExecuTorch source
-        uses: actions/checkout@v7
+        uses: ./.github/actions/checkout-executorch
         with:
-          repository: pytorch/executorch
           ref: v${{ needs.classify.outputs.etver }}
-          submodules: recursive
-          path: executorch
-      - name: Full build + live round-trip + fixture-emit dry-run
+      - name: Full build (release dry-run — full ET compile)
         run: |
           set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           ./build-runtime.sh --variant logging --prefix "$PWD/out" \
             --et-src "$PWD/executorch" --et-tag "v${ETVER}"
-          (cd executorch && ./install_executorch.sh)
-          pip install numpy pytest ninja
-          ETNP_PREFIX="$PWD/out" python -m pytest extras/lstm/test/test_lstm_roundtrip.py -v
-          python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures-dryrun"   # prove emit works; not published
+      - name: Live round-trip (export -> run vs eager)
+        uses: ./.github/actions/lstm-roundtrip
+        with:
+          prefix: ${{ github.workspace }}/out
+      - name: Fixture-emit dry-run (prove emit works; not published)
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures-dryrun"
 ```
 
 - [ ] **Step 2: Validate the workflow parses**
@@ -1252,6 +1320,14 @@ git commit -m "docs(gate): usage & troubleshooting guide for the extras QA gate"
     helper (e.g. `_runner`) belongs in the test package — an `__init__.py` at the test-dir
     root or a submodule of it — **not** in `conftest.py`. `conftest.py` is reserved strictly
     for pytest **fixtures**; it is not a home for common code.
+- **Hoist the intra-gate scrub + `--extras-only` block into a composite action.** The
+  scrub (`rm libetnp_ops_*.a` + `cmake/ETNPExtras` + `include/etnp`) followed by `pip install
+  ninja` + `build-runtime.sh --extras-only` is duplicated in the gate's `fast-gate` and
+  `live-roundtrip` jobs (2×, gate-only). It could become a third composite action
+  (`rebuild-extras-from-branch`, input `prefix`) to centralize the correctness-sensitive
+  scrub list. Left inline now to avoid over-engineering (the two cross-workflow duplicates —
+  ET checkout + round-trip — were the higher-value hoists done in Task 6); revisit if the
+  scrub list changes or a third call site appears.
 
 ## Self-Review
 
@@ -1266,6 +1342,7 @@ git commit -m "docs(gate): usage & troubleshooting guide for the extras QA gate"
 - Open items resolved: shape format = `LSTM_*=<n>` (T4); scrub list fixed (Global Constraints, T8). ✓
 - Classification correctness: `lstm_case.py`/`emit_fixtures.py` live under `extras/lstm/aot/` (T3/T4) so the existing tier2 `aot/` rule catches fixture-defining changes — guarded by classify test cases (T7). Residual `test_lstm_roundtrip.py`-only edits documented as an accepted tier1 gap (T7 note, T9 docs). ✓
 - `gh` robustness (T7/T8): download args built as a bash array (no `printf %q` injection); `gh release list` failure retried then surfaced as a non-zero classify (never a silent full build) — tested via `GATE_GH_CMD`/`GATE_RETRY_SLEEP`; `gh attestation verify` gated to same-repo PRs with sha256 mandatory everywhere, so fork PRs aren't blocked. ✓
+- DRY across workflows (T6/T8): the ET checkout and the live round-trip — each duplicated 3× (release build + gate `live-roundtrip` + gate `full-build`) — are hoisted into the `checkout-executorch` and `lstm-roundtrip` composite actions (Task 6), consumed by both workflows. Task 8 declares the dependency on Task 6's actions. Intra-gate scrub+`--extras-only` duplicate left inline, recorded in Deferred / future work. ✓
 
 **Placeholder scan:** no TBD/TODO/"handle edge cases"/"similar to Task N"; every code step shows full content. ✓
 
