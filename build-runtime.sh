@@ -79,7 +79,11 @@ CONFIG="$PREFIX/lib/cmake/ExecuTorch/executorch-config.cmake"
 # branch against a downloaded release prefix, skipping the ~15min ET compile).
 build_extras() {
   echo ">> building extras (custom ops) against the installed prefix"
-  local extras_build="${BUILD_DIR:-$(dirname "$PREFIX")}/etnp-extras-$VARIANT"
+  # Place the extras build tree NEXT TO the ET build tree (its sibling), exactly as the
+  # pre-refactor inline code did — for both the default and an explicit --build-dir. This
+  # keeps the full-build path behaviorally identical (Task 2 review decision).
+  local _etb="${BUILD_DIR:-$(dirname "$PREFIX")/et-build-$VARIANT}"
+  local extras_build="$(dirname "$_etb")/etnp-extras-$VARIANT"
   cmake -B "$extras_build" -S "$HERE/extras" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
