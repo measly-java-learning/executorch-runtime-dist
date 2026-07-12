@@ -1,0 +1,1137 @@
+# Custom-Code (extras) QA Gate — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Add a path-filtered PR gate that QAs the LSTM/extras custom code without paying the ~10–15 min ExecuTorch compile, by rebuilding only the extras phase against a downloaded, attested release tarball and running a torch-free consumer smoke over published `.pte` fixtures.
+
+**Architecture:** A released runtime tarball is a prebuilt "phase-1" ExecuTorch prefix. The gate downloads + verifies it, scrubs the shipped extras out, rebuilds extras **from the branch** via a new `build-runtime.sh --extras-only` entrypoint, then runs the branch's kernel against a published, arch-independent `.pte`/golden fixture set. A `classify` step picks one of three modes by inspecting the PR's changed files: **tier1** (torch-free consumer smoke, both arches), **tier2** (tier1 + the live torch round-trip, for AOT/schema changes), or **full** (a full-build release dry-run, for any `build-runtime.sh` change or when no matching release exists).
+
+**Tech Stack:** Bash, CMake/Ninja, GitHub Actions, Python (torch + executorch for AOT/fixture generation; numpy-only for the consumer smoke), `gh` CLI (download/attestation), manylinux_2_28 containers.
+
+## Global Constraints
+
+- **ET version pin (branch source of truth):** `DEFAULT_ET_TAG="v1.3.1"` in `build-runtime.sh:17`. The gate derives `etver` (`1.3.1`) from it.
+- **Ship/default variant:** `logging`. The gate uses `logging` for all runtime work.
+- **Platforms:** `linux-x86_64` and `linux-aarch64` (manylinux_2_28, glibc ≥ 2.28). Tier 1 runs both; tier2/full run x86_64 only.
+- **Container discipline:** any step that compiles/links against the ET static archives runs **inside** `quay.io/pypa/manylinux_2_28_<arch>` (fidelity vs. the shipped archives). `gh` is **not** available in those images — download/verify happens in an `ubuntu-latest` job and artifacts are passed in.
+- **Supply-chain posture (non-negotiable):** every downloaded tarball/fixture is `sha256sum -c`'d **and** `gh attestation verify`'d before use. The gate must not be the one place the repo trusts an unverified binary.
+- **Numeric tolerance:** rtol/atol `1e-4` (matches the existing round-trip).
+- **Asset naming is single-source:** runtime tarballs via `scripts/lib/naming.sh`; fixtures via the new `fixtures_name` added there.
+- **Fixture single source of truth:** the published `.pte`/golden and the live round-trip are generated from the *same* code (`extras/lstm/test/lstm_case.py`) — dims, seed, weights, arity/op-name assertions all live there once.
+- **Shell test harness:** new `test/*.test.sh` files are auto-discovered by `test/run.sh` (globs `*.test.sh`); no wiring needed. Run all with `bash test/run.sh`.
+
+---
+
+### Task 1: Fixtures naming + packaging script
+
+**Files:**
+- Modify: `scripts/lib/naming.sh` (append `fixtures_name`)
+- Create: `scripts/package-fixtures.sh`
+- Test: `test/package_fixtures.test.sh`
+
+**Interfaces:**
+- Produces: `fixtures_name <etver>` → `etnp-lstm-fixtures-<etver>.tar.gz` (bash function, sourced).
+- Produces: `scripts/package-fixtures.sh --dir <fixtures-dir> --etver <etver> --outdir <dir>` → writes `<outdir>/etnp-lstm-fixtures-<etver>.tar.gz` + `.sha256` (flat: the 4 fixture files at tar root); prints the tarball path on stdout. Non-zero on missing input file.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/package_fixtures.test.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Packages a fixtures dir into etnp-lstm-fixtures-<etver>.tar.gz + .sha256 (flat layout).
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$here/.."
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+fail=0
+
+# a fake fixtures dir with the 4 expected members
+mkdir -p "$tmp/fx"
+printf 'PTE'   > "$tmp/fx/lstm.pte"
+printf 'IN'    > "$tmp/fx/in.bin"
+printf 'OUT'   > "$tmp/fx/out.bin"
+printf 'LSTM_T=5\n' > "$tmp/fx/shape"
+
+out="$("$root/scripts/package-fixtures.sh" --dir "$tmp/fx" --etver 1.3.1 --outdir "$tmp/out")" \
+  || { echo "package-fixtures.sh failed"; exit 1; }
+
+tb="$tmp/out/etnp-lstm-fixtures-1.3.1.tar.gz"
+[ "$out" = "$tb" ] || { echo "stdout path mismatch: $out"; fail=1; }
+[ -f "$tb" ] || { echo "MISSING tarball"; fail=1; }
+[ -f "$tb.sha256" ] || { echo "MISSING sha256"; fail=1; }
+( cd "$tmp/out" && sha256sum -c "etnp-lstm-fixtures-1.3.1.tar.gz.sha256" >/dev/null ) \
+  || { echo "sha256 does not verify"; fail=1; }
+# flat layout: files at tar root, no leading directory
+names="$(tar -tzf "$tb" | sort | tr '\n' ' ')"
+[ "$names" = "in.bin lstm.pte out.bin shape " ] || { echo "bad tar members: $names"; fail=1; }
+# missing --dir fails non-zero
+"$root/scripts/package-fixtures.sh" --dir "$tmp/nope" --etver 1.3.1 --outdir "$tmp/out" 2>/dev/null \
+  && { echo "expected failure on missing dir"; fail=1; }
+
+[ "$fail" -eq 0 ] && echo "OK: package-fixtures" || exit 1
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `bash test/package_fixtures.test.sh`
+Expected: FAIL (script does not exist yet).
+
+- [ ] **Step 3: Add `fixtures_name` to `scripts/lib/naming.sh`**
+
+Append after `sha_name`:
+
+```bash
+fixtures_name() { printf 'etnp-lstm-fixtures-%s.tar.gz' "$1"; }               # <etver> (arch-independent)
+```
+
+- [ ] **Step 4: Create `scripts/package-fixtures.sh`**
+
+```bash
+#!/usr/bin/env bash
+# Package the arch-independent LSTM fixture set (lstm.pte, in.bin, out.bin, shape)
+# into etnp-lstm-fixtures-<etver>.tar.gz + .sha256 (flat: files at tar root).
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/lib/naming.sh"
+
+DIR=""; ETVER=""; OUTDIR="."
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dir)    DIR="$2"; shift 2 ;;
+    --etver)  ETVER="$2"; shift 2 ;;
+    --outdir) OUTDIR="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$DIR" ] && [ -n "$ETVER" ] || { echo "--dir and --etver required" >&2; exit 2; }
+[ -d "$DIR" ] || { echo "package-fixtures.sh: --dir '$DIR' not a directory" >&2; exit 1; }
+for m in lstm.pte in.bin out.bin shape; do
+  [ -s "$DIR/$m" ] || { echo "package-fixtures.sh: missing fixture member '$m' in $DIR" >&2; exit 1; }
+done
+
+mkdir -p "$OUTDIR"; OUTDIR="$(cd "$OUTDIR" && pwd)"
+TARBALL="$OUTDIR/$(fixtures_name "$ETVER")"
+tar -C "$DIR" -czf "$TARBALL" lstm.pte in.bin out.bin shape
+( cd "$OUTDIR" && sha256sum "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
+printf '%s\n' "$TARBALL"
+```
+
+Make executable: `chmod +x scripts/package-fixtures.sh`
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `bash test/package_fixtures.test.sh`
+Expected: `OK: package-fixtures`
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/lib/naming.sh scripts/package-fixtures.sh test/package_fixtures.test.sh
+git commit -m "feat(gate): fixtures naming + package-fixtures.sh"
+```
+
+---
+
+### Task 2: `build-runtime.sh --extras-only` (phase-2-only entrypoint)
+
+**Files:**
+- Modify: `build-runtime.sh` (extract a `build_extras` function; add `--extras-only` flag + guard)
+- Test: `test/extras_only.test.sh`
+
+**Interfaces:**
+- Produces: `build-runtime.sh --extras-only --variant <v> --prefix <existing-prefix>` → rebuilds + installs only the extras (custom ops) against an existing ET install; requires `<prefix>/lib/cmake/ExecuTorch/executorch-config.cmake` (fails fast otherwise); does **not** need `--et-src`, does not clone, does not touch ET license/relocatability steps. Non-zero on a missing/invalid prefix.
+- Consumed by: Task 8 (Tier 1 + Tier 2 rebuild-from-branch steps).
+
+**Context:** today the extras build is lines `build-runtime.sh:134-143`. `SKIP_ET_BUILD=1` exits at line 76 *before* it, so there is no phase-2-only path. This task factors 134-143 into `build_extras()` and reaches it via `--extras-only`, leaving the full-build flow behaviorally identical.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/extras_only.test.sh`:
+
+```bash
+#!/usr/bin/env bash
+# --extras-only guards: requires --prefix + --variant and an existing ET config;
+# fails fast (non-zero) when the prefix has no executorch-config.cmake.
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$here/.."
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+fail=0
+
+# empty prefix (no executorch-config.cmake) must fail fast, not attempt a build
+"$root/build-runtime.sh" --extras-only --variant logging --prefix "$tmp/empty" 2>"$tmp/err"
+rc=$?
+[ "$rc" -ne 0 ] || { echo "expected non-zero on missing ET config"; fail=1; }
+grep -qi 'executorch-config.cmake' "$tmp/err" || { echo "expected a clear config-missing error"; fail=1; }
+
+# missing --prefix must fail with usage/required error
+"$root/build-runtime.sh" --extras-only --variant logging 2>"$tmp/err2"
+[ "$?" -ne 0 ] || { echo "expected non-zero on missing --prefix"; fail=1; }
+
+[ "$fail" -eq 0 ] && echo "OK: --extras-only guards" || exit 1
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `bash test/extras_only.test.sh`
+Expected: FAIL (`--extras-only` is an unknown arg today → exit 2 but wrong error text; and the config-missing path does not exist).
+
+- [ ] **Step 3: Extract `build_extras()` in `build-runtime.sh`**
+
+Replace the inline extras block (`build-runtime.sh:134-143`) with a call, and define the function near the top (after the arg parse, before `# ---- SKIP_ET_BUILD` at line ~69). New function:
+
+```bash
+# Phase 2: build + install the extras (custom ops) against an already-installed prefix.
+# Reachable standalone via --extras-only (used by the PR gate to rebuild extras from a
+# branch against a downloaded release prefix, skipping the ~15min ET compile).
+build_extras() {
+  echo ">> building extras (custom ops) against the installed prefix"
+  local extras_build="${BUILD_DIR:-$(dirname "$PREFIX")}/etnp-extras-$VARIANT"
+  cmake -B "$extras_build" -S "$HERE/extras" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DCMAKE_PREFIX_PATH="$PREFIX" \
+    -DCMAKE_INSTALL_PREFIX="$PREFIX"
+  # Building the link probe runs the POST_BUILD nm-guard (registrar survived).
+  cmake --build "$extras_build" -j"$(nproc)"
+  cmake --install "$extras_build" --prefix "$PREFIX"
+  EXTRAS_BUILD="$extras_build"   # exported for the full-build Highway-license step
+}
+```
+
+At the former location (lines 134-143) leave just:
+
+```bash
+build_extras
+```
+
+(The Highway-license block at 185-194 still runs in the full path and reads `$EXTRAS_BUILD`, which `build_extras` sets.)
+
+- [ ] **Step 4: Add the `--extras-only` flag + guard**
+
+In the arg-parse loop, add a case (alongside `--print-flags`):
+
+```bash
+    --extras-only) EXTRAS_ONLY=1; shift ;;
+```
+
+Initialize it with the other vars (line 32): add `EXTRAS_ONLY=0`.
+
+After the `--print-flags` early-exit block (after line 64) and after `PREFIX` is validated + `CONFIG` is set (lines 66-67), add:
+
+```bash
+# ---- --extras-only: rebuild ONLY the extras against an existing prefix ----
+# Used by the PR gate: a downloaded release tarball is the ET install; we rebuild the
+# branch's custom ops on top of it. No ET compile, no --et-src, no license/reloc steps.
+if [ "${EXTRAS_ONLY:-0}" -eq 1 ]; then
+  test -f "$CONFIG" \
+    || { echo "--extras-only but $CONFIG is missing; provide a built/extracted ET prefix" >&2; exit 1; }
+  build_extras
+  echo ">> --extras-only done: $PREFIX"
+  exit 0
+fi
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `bash test/extras_only.test.sh`
+Expected: `OK: --extras-only guards`
+
+- [ ] **Step 6: Regression-check the rest of the shell suite**
+
+Run: `bash test/run.sh`
+Expected: `ALL UNIT TESTS PASS` (the extraction must not disturb existing tests).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add build-runtime.sh test/extras_only.test.sh
+git commit -m "feat(gate): build-runtime.sh --extras-only (phase-2-only rebuild)"
+```
+
+---
+
+### Task 3: Fixture single-source (`lstm_case.py`) + round-trip refactor + shared runner helper
+
+**Files:**
+- Create: `extras/lstm/test/lstm_case.py` (torch; the single source of dims/seed/weights/assertions)
+- Create: `extras/lstm/test/_runner.py` (torch-free cmake build/run helpers)
+- Modify: `extras/lstm/test/test_lstm_roundtrip.py` (become a thin wrapper over `lstm_case` + `_runner`)
+
+**Interfaces:**
+- Produces: `lstm_case.DIMS` → `{"T":5,"B":2,"I":4,"H":3}`.
+- Produces: `lstm_case.build_case()` → `(pte_bytes: bytes, in_bytes: bytes, golden_bytes: bytes, dims: dict)`. Deterministic (`torch.manual_seed(0)`). `golden_bytes` is the **eager** `nn.LSTM` output `[T,B,H]` as flat float32. Raises `AssertionError` on unexpected export arity (≠3 user inputs) or if the lowered program's op is not `etnp::lstm`/`out`.
+- Produces: `_runner.build_runner(here: Path, prefix: Path, build_dir: Path) -> Path` and `_runner.run_runner(runner: Path, model: Path, inbin: Path, outbin: Path, dims: dict) -> None`.
+- Consumed by: Task 4 (`emit_fixtures.py`), Task 5 (`consumer_smoke.py` uses `_runner`).
+
+- [ ] **Step 1: Create `extras/lstm/test/_runner.py`** (torch-free)
+
+```python
+"""Torch-free helpers to build + run lstm_runner against an installed prefix.
+Shared by the live round-trip (test_lstm_roundtrip.py) and the consumer smoke."""
+import os
+import pathlib
+import subprocess
+
+
+def build_runner(here: pathlib.Path, prefix: pathlib.Path, build_dir: pathlib.Path) -> pathlib.Path:
+    subprocess.run(["cmake", "-B", str(build_dir), "-S", str(here), "-G", "Ninja",
+                    f"-DCMAKE_PREFIX_PATH={prefix}", f"-DETNP_PREFIX={prefix}"], check=True)
+    subprocess.run(["cmake", "--build", str(build_dir), "--target", "lstm_runner"], check=True)
+    return build_dir / "lstm_runner"
+
+
+def run_runner(runner: pathlib.Path, model: pathlib.Path, inbin: pathlib.Path,
+               outbin: pathlib.Path, dims: dict) -> None:
+    env = {**os.environ,
+           "LSTM_T": str(dims["T"]), "LSTM_B": str(dims["B"]),
+           "LSTM_I": str(dims["I"]), "LSTM_H": str(dims["H"])}
+    subprocess.run([str(runner), str(model), str(inbin), str(outbin)], check=True, env=env)
+```
+
+- [ ] **Step 2: Create `extras/lstm/test/lstm_case.py`** (torch)
+
+```python
+"""Single source of truth for the LSTM QA case: dims, seed, weights, export recipe,
+and the arity / op-name assertions. Both the live round-trip and the published-fixture
+emitter call build_case(), so the .pte/golden the gate consumes can never drift from
+what the live test would produce.
+
+NOTE on input arity: the 4 LSTM weights are plain (non-Parameter) attributes closed
+over by forward, so torch.export lifts them as CONSTANTS baked into the .pte, NOT graph
+inputs. The exported forward therefore takes only (x, h0, c0). build_case() asserts this
+so a future export-recipe change that flips it back fails loudly here.
+"""
+import pathlib
+import struct
+import sys
+
+import torch
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[2]))          # repo root, for extras.*
+import extras.lstm.aot.etnp_lstm_op  # noqa: E402,F401  registers torch.ops.etnp.lstm
+
+DIMS = {"T": 5, "B": 2, "I": 4, "H": 3}
+
+
+class Wrap(torch.nn.Module):
+    def __init__(self, wih, whh, bih, bhh):
+        super().__init__()
+        self.wih, self.whh, self.bih, self.bhh = wih, whh, bih, bhh
+
+    def forward(self, x, h0, c0):
+        return torch.ops.etnp.lstm(x, h0, c0, self.wih, self.whh, self.bih, self.bhh)
+
+
+def _flat(*ts) -> bytes:
+    return b"".join(struct.pack(f"{t.numel()}f", *t.flatten().tolist()) for t in ts)
+
+
+def build_case():
+    """(pte_bytes, in_bytes, golden_bytes, dims). golden = eager nn.LSTM output."""
+    from executorch.exir import to_edge_transform_and_lower
+    T, B, I, H = DIMS["T"], DIMS["B"], DIMS["I"], DIMS["H"]
+    torch.manual_seed(0)
+    lstm = torch.nn.LSTM(I, H, num_layers=1, batch_first=False)
+    wih, whh = lstm.weight_ih_l0.detach(), lstm.weight_hh_l0.detach()
+    bih, bhh = lstm.bias_ih_l0.detach(), lstm.bias_hh_l0.detach()
+    x = torch.randn(T, B, I)
+    h0 = torch.zeros(B, H)
+    c0 = torch.zeros(B, H)
+
+    eager_out, _ = lstm(x, (h0.unsqueeze(0), c0.unsqueeze(0)))
+
+    ep = torch.export.export(Wrap(wih, whh, bih, bhh), (x, h0, c0))
+    user_inputs = [s for s in ep.graph_signature.input_specs
+                   if s.kind == torch.export.graph_signature.InputKind.USER_INPUT]
+    assert len(user_inputs) == 3, (
+        f"expected 3 user inputs (x,h0,c0) with weights baked as constants, "
+        f"got {len(user_inputs)}: {[s.arg.name for s in user_inputs]}")
+
+    pte = to_edge_transform_and_lower(ep).to_executorch()
+    ops = pte.executorch_program.execution_plan[0].operators
+    assert any(op.name == "etnp::lstm" and op.overload == "out" for op in ops), ops
+
+    return (pte.buffer, _flat(x, h0, c0),
+            _flat(eager_out.detach()), dict(DIMS))
+```
+
+- [ ] **Step 3: Refactor `test_lstm_roundtrip.py` to use them**
+
+Replace the whole file with the thin wrapper (behavior identical — build the case, run the runner against `ETNP_PREFIX`, compare to golden):
+
+```python
+"""Live round-trip: nn.LSTM -> export+lower through etnp::lstm -> run vs a C++ runner
+built against the installed prefix -> compare to torch eager @ 1e-4.
+Requires: torch + executorch (AOT), a built/installed prefix (ETNP_PREFIX), cmake, ninja.
+The case (dims/seed/weights/assertions) lives once in lstm_case.py — the same source the
+published fixtures are minted from, so live and frozen paths cannot drift."""
+import os
+import pathlib
+import tempfile
+
+import numpy as np
+
+from _runner import build_runner, run_runner
+import lstm_case
+
+HERE = pathlib.Path(__file__).resolve().parent
+
+
+def test_roundtrip_matches_eager():
+    prefix = pathlib.Path(os.environ["ETNP_PREFIX"]).resolve()
+    pte, in_bytes, golden, dims = lstm_case.build_case()
+
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    (tmp / "lstm.pte").write_bytes(pte)
+    (tmp / "in.bin").write_bytes(in_bytes)
+
+    runner = build_runner(HERE, prefix, tmp / "rbuild")
+    run_runner(runner, tmp / "lstm.pte", tmp / "in.bin", tmp / "out.bin", dims)
+
+    got = np.frombuffer((tmp / "out.bin").read_bytes(), dtype=np.float32)
+    ref = np.frombuffer(golden, dtype=np.float32)
+    assert got.shape == ref.shape and np.allclose(got, ref, rtol=1e-4, atol=1e-4), \
+        np.abs(got - ref).max()
+```
+
+Note: pytest runs with `rootdir` at repo root but imports `_runner`/`lstm_case` as top-level modules because they sit next to the test; `conftest`-free sibling import works since pytest adds the test file's dir to `sys.path` (rootdir insertion). If the runner env already relied on that for `extras.lstm.aot`, it is preserved via `lstm_case`'s `sys.path` insert.
+
+- [ ] **Step 4: Verify import wiring without torch**
+
+Run: `python -c "import ast; ast.parse(open('extras/lstm/test/lstm_case.py').read()); ast.parse(open('extras/lstm/test/_runner.py').read()); ast.parse(open('extras/lstm/test/test_lstm_roundtrip.py').read()); print('syntax ok')"`
+Expected: `syntax ok`
+
+(The full round-trip needs torch + executorch + a built prefix; it is exercised end-to-end by the Tier 2 / full-build workflow jobs and the local docker loop, not in the plain dev shell. See Task 8's manual dry-run.)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add extras/lstm/test/lstm_case.py extras/lstm/test/_runner.py extras/lstm/test/test_lstm_roundtrip.py
+git commit -m "refactor(gate): extract lstm_case single-source + shared runner helper"
+```
+
+---
+
+### Task 4: `emit_fixtures.py` (mint the published fixture set)
+
+**Files:**
+- Create: `extras/lstm/test/emit_fixtures.py` (torch)
+- Test: `extras/lstm/test/test_emit_fixtures.py` (guarded: skips without torch)
+
+**Interfaces:**
+- Consumes: `lstm_case.build_case()`, `lstm_case.DIMS`.
+- Produces: `python extras/lstm/test/emit_fixtures.py <outdir>` writes `lstm.pte`, `in.bin`, `out.bin` (golden), and `shape` (lines `LSTM_T=5` … `LSTM_H=3`) into `<outdir>`.
+- Produces (importable): `emit_fixtures.shape_text(dims: dict) -> str`.
+- Consumed by: Task 5 (`consumer_smoke.parse_shape` parses the same `shape` format), Task 6 (release workflow), Task 8 (full-build dry-run).
+
+- [ ] **Step 1: Write the failing test**
+
+Create `extras/lstm/test/test_emit_fixtures.py`:
+
+```python
+import importlib.util
+import pathlib
+import sys
+
+import pytest
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import emit_fixtures  # noqa: E402
+
+
+def test_shape_text_format():
+    txt = emit_fixtures.shape_text({"T": 5, "B": 2, "I": 4, "H": 3})
+    assert txt == "LSTM_T=5\nLSTM_B=2\nLSTM_I=4\nLSTM_H=3\n"
+
+
+@pytest.mark.skipif(importlib.util.find_spec("torch") is None,
+                    reason="torch not installed in this env")
+def test_emit_writes_all_members(tmp_path):
+    emit_fixtures.main(tmp_path)
+    for m in ("lstm.pte", "in.bin", "out.bin", "shape"):
+        assert (tmp_path / m).stat().st_size > 0, m
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest extras/lstm/test/test_emit_fixtures.py::test_shape_text_format -v`
+Expected: FAIL (`emit_fixtures` does not exist).
+
+- [ ] **Step 3: Create `extras/lstm/test/emit_fixtures.py`**
+
+```python
+"""Mint the published LSTM fixture set from lstm_case.build_case() (the same source the
+live round-trip uses). Writes lstm.pte, in.bin, out.bin (golden eager output), and a
+shape file (LSTM_<dim>=<n> lines) the torch-free consumer smoke reads."""
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+
+def shape_text(dims: dict) -> str:
+    return "".join(f"LSTM_{k}={v}\n" for k, v in dims.items())
+
+
+def main(outdir: pathlib.Path) -> None:
+    import lstm_case  # torch import deferred so shape_text stays torch-free
+    pte, in_bytes, golden, dims = lstm_case.build_case()
+    outdir = pathlib.Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / "lstm.pte").write_bytes(pte)
+    (outdir / "in.bin").write_bytes(in_bytes)
+    (outdir / "out.bin").write_bytes(golden)
+    (outdir / "shape").write_text(shape_text(dims))
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.stderr.write("usage: emit_fixtures.py <outdir>\n")
+        sys.exit(2)
+    main(pathlib.Path(sys.argv[1]))
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python -m pytest extras/lstm/test/test_emit_fixtures.py -v`
+Expected: `test_shape_text_format` PASS; `test_emit_writes_all_members` PASS or SKIP (skips if torch absent).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add extras/lstm/test/emit_fixtures.py extras/lstm/test/test_emit_fixtures.py
+git commit -m "feat(gate): emit_fixtures.py mints published .pte/golden/shape"
+```
+
+---
+
+### Task 5: `consumer_smoke.py` (torch-free run of published .pte vs golden)
+
+**Files:**
+- Create: `extras/lstm/test/consumer_smoke.py` (numpy-only)
+- Test: `extras/lstm/test/test_consumer_smoke.py` (numpy-only pure-logic tests)
+
+**Interfaces:**
+- Consumes: `_runner.build_runner`/`run_runner`; a fixtures dir (`lstm.pte`, `in.bin`, `out.bin`, `shape`); `ETNP_PREFIX`.
+- Produces (importable, testable without a prefix): `consumer_smoke.parse_shape(path) -> dims`; `consumer_smoke.within_tol(got, ref) -> bool`.
+- Produces (CLI): `FIXTURES_DIR=<dir> ETNP_PREFIX=<prefix> python extras/lstm/test/consumer_smoke.py` → builds `lstm_runner`, runs the published `.pte`, compares to golden `out.bin` at 1e-4; exits non-zero on mismatch.
+- Consumed by: Task 8 (Tier 1 job).
+
+- [ ] **Step 1: Write the failing test**
+
+Create `extras/lstm/test/test_consumer_smoke.py`:
+
+```python
+import pathlib
+import sys
+
+import numpy as np
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import consumer_smoke  # noqa: E402
+
+
+def test_parse_shape_roundtrip(tmp_path):
+    (tmp_path / "shape").write_text("LSTM_T=5\nLSTM_B=2\nLSTM_I=4\nLSTM_H=3\n")
+    assert consumer_smoke.parse_shape(tmp_path / "shape") == {"T": 5, "B": 2, "I": 4, "H": 3}
+
+
+def test_within_tol():
+    a = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    assert consumer_smoke.within_tol(a, a + 1e-6)
+    assert not consumer_smoke.within_tol(a, a + 1e-2)
+    assert not consumer_smoke.within_tol(a, a[:2])   # shape mismatch
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest extras/lstm/test/test_consumer_smoke.py -v`
+Expected: FAIL (`consumer_smoke` does not exist).
+
+- [ ] **Step 3: Create `extras/lstm/test/consumer_smoke.py`**
+
+```python
+"""Torch-free consumer smoke: build lstm_runner against an installed prefix, run a
+PUBLISHED .pte over its in.bin, and compare to the published golden out.bin @ 1e-4.
+This is the same contract the downstream numpy runtime will exercise. No torch."""
+import os
+import pathlib
+import sys
+import tempfile
+
+import numpy as np
+
+from _runner import build_runner, run_runner
+
+HERE = pathlib.Path(__file__).resolve().parent
+
+
+def parse_shape(path) -> dict:
+    d = {}
+    for line in pathlib.Path(path).read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        k, v = line.split("=", 1)
+        d[k] = v
+    return {"T": int(d["LSTM_T"]), "B": int(d["LSTM_B"]),
+            "I": int(d["LSTM_I"]), "H": int(d["LSTM_H"])}
+
+
+def within_tol(got, ref, rtol: float = 1e-4, atol: float = 1e-4) -> bool:
+    return got.shape == ref.shape and bool(np.allclose(got, ref, rtol=rtol, atol=atol))
+
+
+def main(fixtures_dir: pathlib.Path, prefix: pathlib.Path) -> None:
+    dims = parse_shape(fixtures_dir / "shape")
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    runner = build_runner(HERE, prefix, tmp / "rbuild")
+    run_runner(runner, fixtures_dir / "lstm.pte", fixtures_dir / "in.bin", tmp / "out.bin", dims)
+
+    got = np.frombuffer((tmp / "out.bin").read_bytes(), dtype=np.float32)
+    ref = np.frombuffer((fixtures_dir / "out.bin").read_bytes(), dtype=np.float32)
+    if not within_tol(got, ref):
+        sys.stderr.write(
+            "consumer smoke MISMATCH: the branch kernel does not reproduce the published "
+            "golden. If this is an INTENTIONAL numeric change, re-bless the fixtures via the "
+            f"live round-trip (see docs/extras-gate.md). max|diff|={np.abs(got - ref).max()}\n")
+        sys.exit(1)
+    print("consumer smoke OK")
+
+
+if __name__ == "__main__":
+    main(pathlib.Path(os.environ["FIXTURES_DIR"]).resolve(),
+         pathlib.Path(os.environ["ETNP_PREFIX"]).resolve())
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python -m pytest extras/lstm/test/test_consumer_smoke.py -v`
+Expected: both tests PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add extras/lstm/test/consumer_smoke.py extras/lstm/test/test_consumer_smoke.py
+git commit -m "feat(gate): torch-free consumer_smoke over published fixtures"
+```
+
+---
+
+### Task 6: Publish fixtures from the release build
+
+**Files:**
+- Modify: `.github/workflows/release.yml` (add fixture emit + package steps in the `logging`/`linux-x86_64` cell, before Package/Attest)
+
+**Interfaces:**
+- Consumes: `emit_fixtures.py` (Task 4), `scripts/package-fixtures.sh` (Task 1), the round-trip step's already-installed torch/executorch + built `out` prefix.
+- Produces: `dist/etnp-lstm-fixtures-<etver>.tar.gz` + `.sha256` in that one matrix cell, which the **existing** `Attest build provenance` (`subject-path: dist/*.tar.gz`) and `upload-artifact` (`path: dist/*`) steps then attest + publish automatically. The `pin` job's name-specific globbing ignores the extra file; the `release` job's `gh release create dist/*` includes it.
+
+**Context:** the round-trip step (`release.yml:69-85`) runs `if: matrix.variant == 'logging'` on both platforms. Fixtures are arch-independent, so emit them in **x86_64 logging only**.
+
+- [ ] **Step 1: Add the fixture emit + package step**
+
+Insert immediately **after** the `LSTM round-trip gate` step (after `release.yml:85`) and **before** the `Package` step:
+
+```yaml
+      - name: Emit + package LSTM fixtures (arch-independent; x86_64 logging only)
+        if: matrix.variant == 'logging' && matrix.combo.platform == 'linux-x86_64'
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          # torch + executorch are already installed by the round-trip step above; the
+          # built prefix is $PWD/out. Mint the fixtures from the SAME lstm_case source.
+          python extras/lstm/test/emit_fixtures.py "$PWD/fixtures"
+          mkdir -p "$PWD/dist"
+          ./scripts/package-fixtures.sh --dir "$PWD/fixtures" \
+            --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
+```
+
+The subsequent `Package` step also writes into `$PWD/dist`; both the runtime tarball and the fixtures tarball land there, so the existing `Attest`/`upload-artifact` steps cover both.
+
+- [ ] **Step 2: Validate the workflow parses**
+
+Run: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/release.yml')); print('yaml ok')"`
+Expected: `yaml ok`
+(If `actionlint` is installed: `actionlint .github/workflows/release.yml` → no errors.)
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add .github/workflows/release.yml
+git commit -m "feat(gate): publish + attest LSTM fixtures from the release build"
+```
+
+---
+
+### Task 7: `classify-gate.sh` (tier decision)
+
+**Files:**
+- Create: `scripts/classify-gate.sh`
+- Test: `test/classify_gate.test.sh`
+
+**Interfaces:**
+- Produces: `scripts/classify-gate.sh <changed-files-file>` → prints `mode=<tier1|tier2|full>`, `etver=<x.y.z>`, `release_tag=<v..-..|>` (three `key=value` lines, `$GITHUB_OUTPUT`-appendable).
+- Decision order: (1) any `build-runtime.sh` change → `full`; (2) else resolve newest `v<etver>-*` release — none → `full`; (3) else any AOT/schema file changed → `tier2`; (4) else → `tier1`.
+- AOT/schema match: a changed path matching `^extras/([^/]+/)?aot/`, or basename `generate_schema_header.py`, or basename `extra.yaml`.
+- Test hooks (env): `GATE_ET_TAG` overrides the `DEFAULT_ET_TAG` parse; `GATE_RELEASE_TAG` (set, possibly empty) overrides the `gh` lookup — empty string means "no release". When unset, uses `gh release list`.
+- Consumed by: Task 8 (`classify` job).
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/classify_gate.test.sh`:
+
+```bash
+#!/usr/bin/env bash
+# classify-gate.sh picks tier1/tier2/full from a changed-files list, with the gh
+# release lookup stubbed via GATE_RELEASE_TAG and the ET tag via GATE_ET_TAG.
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$here/.."
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+fail=0
+
+run() {  # run <changed-lines> ; sets $out (mode/etver/release_tag)
+  printf '%s\n' "$1" > "$tmp/ch"
+  out="$(GATE_ET_TAG="${GATE_ET_TAG:-v1.3.1}" "$root/scripts/classify-gate.sh" "$tmp/ch")"
+}
+mode() { printf '%s\n' "$out" | sed -n 's/^mode=//p'; }
+check() { [ "$(mode)" = "$2" ] || { echo "FAIL [$1]: mode=$(mode) want=$2"; fail=1; }; }
+
+# a build-runtime.sh change is always full, even with a release present
+GATE_RELEASE_TAG="v1.3.1-2" run "build-runtime.sh"                ; check buildsh full
+# pure kernel edit, release exists -> tier1
+GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/runtime/lstm_cell.cc"; check kernel tier1
+# AOT change -> tier2
+GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/aot/etnp_lstm_op.py" ; check aot   tier2
+# schema generator -> tier2
+GATE_RELEASE_TAG="v1.3.1-2" run "extras/generate_schema_header.py"; check schema tier2
+# extra.yaml (op name/schema) -> tier2
+GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/extra.yaml"          ; check yaml  tier2
+# no matching release -> full (even for a pure kernel edit)
+GATE_RELEASE_TAG="" run "extras/lstm/runtime/lstm_cell.cc"        ; check norelease full
+# etver is derived from the ET tag
+GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/runtime/lstm_cell.cc"
+printf '%s\n' "$out" | grep -q '^etver=1.3.1$' || { echo "FAIL etver parse"; fail=1; }
+
+[ "$fail" -eq 0 ] && echo "OK: classify-gate" || exit 1
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `bash test/classify_gate.test.sh`
+Expected: FAIL (script does not exist).
+
+- [ ] **Step 3: Create `scripts/classify-gate.sh`**
+
+```bash
+#!/usr/bin/env bash
+# Decide the extras-gate mode from a PR's changed-files list.
+#   classify-gate.sh <changed-files-file>   # prints mode=/etver=/release_tag=
+# Order: build-runtime.sh change -> full ; no matching release -> full ;
+#        AOT/schema change -> tier2 ; else -> tier1.
+# Test hooks: GATE_ET_TAG overrides the DEFAULT_ET_TAG parse; GATE_RELEASE_TAG (set,
+# maybe empty) overrides the gh lookup (empty = no release).
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+CHANGED="${1:?usage: classify-gate.sh <changed-files-file>}"
+
+# etver from the branch's ET pin (v1.3.1 -> 1.3.1)
+ettag="${GATE_ET_TAG:-$(sed -n 's/^DEFAULT_ET_TAG="\(v[0-9.]*\)".*/\1/p' "$ROOT/build-runtime.sh")}"
+etver="${ettag#v}"
+
+emit() { printf 'mode=%s\netver=%s\nrelease_tag=%s\n' "$1" "$etver" "${2:-}"; }
+
+# (1) any build-runtime.sh change forces a full build (it owns phase 1 + packaging)
+if grep -qx 'build-runtime.sh' "$CHANGED"; then
+  emit full ""; exit 0
+fi
+
+# (2) resolve the newest matching package release
+if [ -n "${GATE_RELEASE_TAG+x}" ]; then
+  release_tag="$GATE_RELEASE_TAG"
+else
+  release_tag="$(gh release list --limit 100 --json tagName -q \
+    ".[].tagName | select(test(\"^v${etver}-\"))" 2>/dev/null | sort -V | tail -n1 || true)"
+fi
+if [ -z "$release_tag" ]; then
+  emit full ""; exit 0
+fi
+
+# (3) AOT / schema change -> tier2 (the live round-trip must run)
+if grep -qE '^extras/([^/]+/)?aot/|(^|/)generate_schema_header\.py$|(^|/)extra\.yaml$' "$CHANGED"; then
+  emit tier2 "$release_tag"; exit 0
+fi
+
+# (4) default: pure-kernel / runtime / test edit
+emit tier1 "$release_tag"
+```
+
+Make executable: `chmod +x scripts/classify-gate.sh`
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `bash test/classify_gate.test.sh`
+Expected: `OK: classify-gate`
+
+- [ ] **Step 5: Full shell-suite regression**
+
+Run: `bash test/run.sh`
+Expected: `ALL UNIT TESTS PASS`
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/classify-gate.sh test/classify_gate.test.sh
+git commit -m "feat(gate): classify-gate.sh tier decision"
+```
+
+---
+
+### Task 8: The `extras-gate.yml` PR workflow
+
+**Files:**
+- Create: `.github/workflows/extras-gate.yml`
+
+**Interfaces:**
+- Consumes: `scripts/classify-gate.sh` (Task 7), `build-runtime.sh --extras-only` (Task 2), `consumer_smoke.py` (Task 5), `test_lstm_roundtrip.py` (Task 3), `emit_fixtures.py` (Task 4), and the published tarball/fixtures (Task 6).
+- Jobs: `classify` (ubuntu) → `fetch` (ubuntu, tier1|tier2: gh download+verify, upload `gate-inputs`) → `fast-gate` (manylinux matrix, both arches: scrub + `--extras-only` + consumer_smoke), `live-roundtrip` (manylinux x86_64, tier2 only), `full-build` (manylinux x86_64, full only).
+
+**Context / rationale baked into comments:** `gh` is unavailable in manylinux → all `gh` use is confined to the ubuntu `fetch`/`classify` jobs; container jobs receive artifacts via `actions/download-artifact`. Tier 1 + Tier 2 both **rebuild extras from the branch** so the kernel under test is the branch's, not the shipped one.
+
+- [ ] **Step 1: Create `.github/workflows/extras-gate.yml`**
+
+```yaml
+name: extras-gate
+on:
+  pull_request:
+    paths:
+      - 'extras/**'
+      - 'build-runtime.sh'
+      - 'scripts/classify-gate.sh'
+      - '.github/workflows/extras-gate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.c.outputs.mode }}
+      etver: ${{ steps.c.outputs.etver }}
+      release_tag: ${{ steps.c.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0            # need the merge base to diff against base_ref
+      - name: Changed files vs base
+        run: git diff --name-only "origin/${{ github.base_ref }}...HEAD" > changed.txt
+      - id: c
+        env:
+          GH_TOKEN: ${{ github.token }}   # classify-gate.sh's gh release lookup
+        run: ./scripts/classify-gate.sh changed.txt | tee -a "$GITHUB_OUTPUT"
+
+  # Download + verify (sha256 + attestation) the logging tarballs (both arches) and the
+  # fixtures in an ubuntu job, because `gh` is not present in the manylinux containers.
+  fetch:
+    needs: classify
+    if: needs.classify.outputs.mode == 'tier1' || needs.classify.outputs.mode == 'tier2'
+    runs-on: ubuntu-latest
+    env:
+      ETVER: ${{ needs.classify.outputs.etver }}
+      RELEASE_TAG: ${{ needs.classify.outputs.release_tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download + verify runtime tarballs + fixtures
+        run: |
+          set -euo pipefail
+          mkdir gate-inputs
+          fx="etnp-lstm-fixtures-${ETVER}.tar.gz"
+          assets=("$fx" "$fx.sha256")
+          for plat in linux-x86_64 linux-aarch64; do
+            tb="executorch-runtime-${ETVER}-logging-${plat}.tar.gz"
+            assets+=("$tb" "$tb.sha256")
+          done
+          ( cd gate-inputs && gh release download "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" $(printf ' -p %q' "${assets[@]}") )
+          cd gate-inputs
+          for f in *.tar.gz; do
+            sha256sum -c "$f.sha256"
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gate-inputs
+          path: gate-inputs/*
+
+  # Tier 1: torch-free consumer smoke on BOTH arches. Rebuilds extras from the branch
+  # against the downloaded prefix, then runs the published .pte vs golden.
+  fast-gate:
+    needs: [classify, fetch]
+    if: needs.classify.outputs.mode == 'tier1' || needs.classify.outputs.mode == 'tier2'
+    runs-on: ${{ matrix.combo.runs_on }}
+    container:
+      image: ${{ matrix.combo.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        combo:
+          - { platform: linux-x86_64,  container: "quay.io/pypa/manylinux_2_28_x86_64",  runs_on: ubuntu-latest }
+          - { platform: linux-aarch64, container: "quay.io/pypa/manylinux_2_28_aarch64", runs_on: ubuntu-24.04-arm }
+    env:
+      ETVER: ${{ needs.classify.outputs.etver }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: gate-inputs
+          path: gate-inputs
+      - name: Extract prefix + fixtures
+        run: |
+          set -euo pipefail
+          mkdir prefix fixtures
+          tar -C prefix   -xzf "gate-inputs/executorch-runtime-${ETVER}-logging-${{ matrix.combo.platform }}.tar.gz" --strip-components=1
+          tar -C fixtures -xzf "gate-inputs/etnp-lstm-fixtures-${ETVER}.tar.gz"
+      - name: Scrub shipped extras (so a rename/removal cannot false-pass)
+        run: |
+          rm -f  prefix/lib/libetnp_ops_*.a
+          rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
+      - name: Rebuild extras from branch (phase 2 only) + consumer smoke
+        run: |
+          set -euo pipefail
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          pip install ninja numpy    # cmake is present in the manylinux image (as in release.yml)
+          ./build-runtime.sh --extras-only --variant logging --prefix "$PWD/prefix"
+          FIXTURES_DIR="$PWD/fixtures" ETNP_PREFIX="$PWD/prefix" \
+            python extras/lstm/test/consumer_smoke.py
+
+  # Tier 2: the live torch round-trip (AOT<->runtime drift), reusing the downloaded
+  # prefix so it STILL skips the ~15min ET compile — only torch/export is added.
+  live-roundtrip:
+    needs: [classify, fetch]
+    if: needs.classify.outputs.mode == 'tier2'
+    runs-on: ubuntu-latest
+    container:
+      image: "quay.io/pypa/manylinux_2_28_x86_64"
+    env:
+      ETVER: ${{ needs.classify.outputs.etver }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout ExecuTorch source (for the export python package)
+        uses: actions/checkout@v7
+        with:
+          repository: pytorch/executorch
+          ref: v${{ needs.classify.outputs.etver }}
+          submodules: recursive
+          path: executorch
+      - uses: actions/download-artifact@v8
+        with:
+          name: gate-inputs
+          path: gate-inputs
+      - name: Extract prefix + rebuild extras from branch
+        run: |
+          set -euo pipefail
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          mkdir prefix
+          tar -C prefix -xzf "gate-inputs/executorch-runtime-${ETVER}-logging-linux-x86_64.tar.gz" --strip-components=1
+          rm -f  prefix/lib/libetnp_ops_*.a
+          rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
+          pip install ninja
+          ./build-runtime.sh --extras-only --variant logging --prefix "$PWD/prefix"
+      - name: Live round-trip (export -> run vs eager)
+        run: |
+          set -euo pipefail
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          (cd executorch && ./install_executorch.sh)
+          pip install numpy pytest ninja
+          ETNP_PREFIX="$PWD/prefix" python -m pytest extras/lstm/test/test_lstm_roundtrip.py -v
+
+  # Fallback: any build-runtime.sh change (or no matching release) → a full-build
+  # release DRY-RUN. Full ET compile + live round-trip + fixture-emit (not published),
+  # so a green gate means the eventual release tag will build — before spending a pkgrev.
+  full-build:
+    needs: classify
+    if: needs.classify.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    container:
+      image: "quay.io/pypa/manylinux_2_28_x86_64"
+    env:
+      ETVER: ${{ needs.classify.outputs.etver }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout ExecuTorch source
+        uses: actions/checkout@v7
+        with:
+          repository: pytorch/executorch
+          ref: v${{ needs.classify.outputs.etver }}
+          submodules: recursive
+          path: executorch
+      - name: Full build + live round-trip + fixture-emit dry-run
+        run: |
+          set -euo pipefail
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          ./build-runtime.sh --variant logging --prefix "$PWD/out" \
+            --et-src "$PWD/executorch" --et-tag "v${ETVER}"
+          (cd executorch && ./install_executorch.sh)
+          pip install numpy pytest ninja
+          ETNP_PREFIX="$PWD/out" python -m pytest extras/lstm/test/test_lstm_roundtrip.py -v
+          python extras/lstm/test/emit_fixtures.py "$PWD/fixtures-dryrun"   # prove emit works; not published
+```
+
+- [ ] **Step 2: Validate the workflow parses**
+
+Run: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/extras-gate.yml')); print('yaml ok')"`
+Expected: `yaml ok`
+(If `actionlint` is installed: `actionlint .github/workflows/extras-gate.yml` → no errors.)
+
+- [ ] **Step 3: Local Tier-1 dry-run (manual, documents the mechanism)**
+
+This proves the Tier-1 mechanics without CI, using the local docker loop from the design doc. Requires a published release to exist for the pinned ET version (or a locally-built+packaged tarball + fixtures). Record the outcome in the PR description.
+
+```bash
+# given a downloaded/extracted logging tarball at ./prefix and fixtures at ./fixtures:
+docker run --rm -v "$PWD":/work -w /work quay.io/pypa/manylinux_2_28_x86_64 bash -lc '
+  export PATH=/opt/python/cp312-cp312/bin:$PATH
+  pip install ninja numpy
+  rm -f prefix/lib/libetnp_ops_*.a; rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
+  ./build-runtime.sh --extras-only --variant logging --prefix /work/prefix
+  FIXTURES_DIR=/work/fixtures ETNP_PREFIX=/work/prefix python extras/lstm/test/consumer_smoke.py'
+```
+Expected: `consumer smoke OK`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .github/workflows/extras-gate.yml
+git commit -m "feat(gate): extras-gate.yml path-filtered PR gate (tier1/tier2/full)"
+```
+
+---
+
+### Task 9: Usage & troubleshooting documentation
+
+**Files:**
+- Create: `docs/extras-gate.md`
+
+**Interfaces:** none (contributor-facing doc). Required deliverable per spec §6.
+
+- [ ] **Step 1: Create `docs/extras-gate.md`**
+
+Write the guide covering exactly the spec §6 checklist. Use this structure and fill each section with real content (no placeholders):
+
+````markdown
+# The extras (custom-code) QA gate
+
+## What it is / why it looks unusual
+- The runtime build has two phases: a slow ExecuTorch compile (~10–15 min) that installs
+  a prefix, and a fast **extras** phase that compiles the custom LSTM op against that
+  prefix. A *released tarball is a prebuilt phase-1 prefix*.
+- The PR gate downloads an **attested** release tarball, scrubs the shipped extras out,
+  rebuilds extras **from your branch** (`build-runtime.sh --extras-only`), and runs your
+  kernel against a **published `.pte` + golden** fixture set — so it never pays the ET
+  compile.
+
+## Which tier runs (I changed X → …)
+| You changed | Gate | Cost |
+|---|---|---|
+| kernel / runtime / test under `extras/**` (not `aot/`) | **tier1** — torch-free consumer smoke, both arches | cheap |
+| AOT def / schema (`extras/**/aot/**`, `generate_schema_header.py`, `extra.yaml`) | **tier1 + tier2** — adds the live round-trip | + torch/export |
+| **`build-runtime.sh`** (any change), or no release exists for the pinned ET | **full** — a full-build release dry-run | ~15 min |
+
+Decision logic lives in `scripts/classify-gate.sh` (unit-tested in `test/classify_gate.test.sh`).
+
+## Reading a result
+- **tier1 green:** the branch kernel reproduces the published golden on both arches, and
+  the static-registration/whole-archive guard passed.
+- **tier1 `consumer smoke MISMATCH`:** either a real kernel regression **or** an
+  *intentional* numeric change. Never loosen the tolerance — **re-bless** (below).
+- **tier2:** additionally proves AOT↔runtime agreement (the "exports fine / op-not-found
+  at runtime" class). Only tier2/full re-derive the `.pte` from your AOT source.
+- **full:** a faithful dry-run of the release build; green means the release tag will build.
+
+## Reproduce locally
+Use the manylinux docker loop (same two caller-owned boundaries as CI):
+```bash
+# tier1 mechanics against a local ./prefix (extracted logging tarball) + ./fixtures:
+docker run --rm -v "$PWD":/work -w /work quay.io/pypa/manylinux_2_28_x86_64 bash -lc '
+  export PATH=/opt/python/cp312-cp312/bin:$PATH; pip install ninja numpy
+  rm -f prefix/lib/libetnp_ops_*.a; rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
+  ./build-runtime.sh --extras-only --variant logging --prefix /work/prefix
+  FIXTURES_DIR=/work/fixtures ETNP_PREFIX=/work/prefix python extras/lstm/test/consumer_smoke.py'
+```
+For the full build / live round-trip, mount an ExecuTorch checkout and run
+`build-runtime.sh --variant logging --prefix … --et-src …` then the round-trip (see the
+design/handover docs).
+
+## Re-blessing fixtures (intentional numeric or AOT change)
+The published `.pte`/golden come from `extras/lstm/test/lstm_case.py` via
+`emit_fixtures.py`. To change them:
+1. Update `lstm_case.py` (and the kernel/AOT as needed).
+2. In an env with torch + executorch installed against the pinned ET, run the **live**
+   round-trip to confirm agreement: `ETNP_PREFIX=<prefix> pytest extras/lstm/test/test_lstm_roundtrip.py`.
+3. Cut a release — the release build re-mints and publishes
+   `etnp-lstm-fixtures-<etver>.tar.gz` from the same source. The next PR's tier1 then
+   compares against the new golden.
+
+## Troubleshooting
+- **`gh attestation verify` fails:** the asset is not provenance-attested for this repo —
+  do not proceed; re-cut the release. `gh` runs only in the ubuntu `fetch`/`classify`
+  jobs (it is absent from manylinux).
+- **No matching release / first release:** classify falls back to **full**; expect ~15 min.
+- **Stale-extras false pass:** the scrub step removes `lib/libetnp_ops_*.a`,
+  `lib/cmake/ETNPExtras/`, `include/etnp/` before the rebuild — if you add op artifacts,
+  extend the scrub list.
+- **Toolchain/ABI mismatch:** the gate compiles inside manylinux_2_28 on purpose; do not
+  run the extras rebuild on the host toolchain.
+- **aarch64 runner:** tier1's aarch64 leg uses `ubuntu-24.04-arm` + the aarch64 manylinux
+  image; the `.pte`/golden are arch-independent, so the same fixtures drive both arches.
+
+## What a green gate does NOT prove
+- AOT↔runtime drift on a **pure-kernel** PR (frozen `.pte`) — covered by the AOT path
+  trigger and every release.
+- Release packaging / license harvest / attestation — only the release build + full-build
+  fallback exercise those.
+- ET-version compatibility — an ET bump always takes the full-build fallback.
+````
+
+- [ ] **Step 2: Sanity-check the doc renders / links**
+
+Run: `python3 -c "p=open('docs/extras-gate.md').read(); assert 'consumer smoke MISMATCH' in p and '--extras-only' in p; print('doc ok')"`
+Expected: `doc ok`
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/extras-gate.md
+git commit -m "docs(gate): usage & troubleshooting guide for the extras QA gate"
+```
+
+---
+
+## Self-Review
+
+**Spec coverage:**
+- §1 trigger / three tiers → Tasks 7 (classify) + 8 (workflow). ✓ (`build-runtime.sh`→full rule in classify Step 3 (1); AOT→tier2 (3); default tier1 (4).)
+- §2 Tier 1 fast gate (download+verify+scrub+extras-only+consumer smoke, both arches) → Tasks 2, 5, 8 (`fetch`+`fast-gate`). ✓ Attestation in `fetch`. ✓ Scrub list matches Global Constraints. ✓
+- §3 published fixtures (arch-independent, attested, single-source) → Tasks 1, 3, 4, 6. ✓ Attest via release.yml's existing `dist/*.tar.gz` step.
+- §4 Tier 2 live round-trip reusing downloaded prefix → Task 8 `live-roundtrip`. ✓
+- §5 full-build release dry-run (build + round-trip + emit) → Task 8 `full-build`. ✓
+- §6 documentation → Task 9. ✓ (mirrors the §6 checklist section-for-section.)
+- §7 files list → all created: extras-gate.yml (T8), consumer harness (T5), fixture-emit (T4), release.yml change (T6), docs (T9). ✓ Plus the necessary `--extras-only` (T2), `lstm_case`/`_runner` (T3), `classify-gate.sh` (T7), `package-fixtures.sh`/naming (T1) the spec implied.
+- Open items resolved: shape format = `LSTM_*=<n>` (T4); scrub list fixed (Global Constraints, T8). ✓
+
+**Placeholder scan:** no TBD/TODO/"handle edge cases"/"similar to Task N"; every code step shows full content. ✓
+
+**Type/name consistency:** `build_case()` 4-tuple `(pte_bytes,in_bytes,golden_bytes,dims)` produced in T3, consumed identically in T4/T3-test; `parse_shape`/`within_tol` names match between T5 code and test; `shape_text` format `LSTM_T=5\n…` identical in T4 (producer) and T5/T7 (consumers) and the runner's `LSTM_*` env names (`lstm_runner.cpp:43-46`); `fixtures_name` used by T1 script and referenced by T6/T8 asset names; `classify-gate.sh` output keys `mode/etver/release_tag` consumed by T8 job outputs. ✓
+
+---
+
+## Execution Handoff
+
+(Presented to the user after saving.)
