@@ -143,7 +143,8 @@ git commit -m "feat(gate): fixtures naming + package-fixtures.sh"
 
 **Interfaces:**
 - Produces: `build-runtime.sh --extras-only --variant <v> --prefix <existing-prefix>` → rebuilds + installs only the extras (custom ops) against an existing ET install; requires `<prefix>/lib/cmake/ExecuTorch/executorch-config.cmake` (fails fast otherwise); does **not** need `--et-src` and does not clone. It **does** run the Highway license passthrough (so `libhwy.a` never ships without its license — parity with the full build), but not the ET-side license/relocatability steps (those belong to `--et-src`). Non-zero on a missing/invalid prefix or a missing Highway license.
-- Consumed by: Task 8 (Tier 1 + Tier 2 rebuild-from-branch steps).
+- Produces: `build-runtime.sh --print-et-tag` → prints the pinned ET tag (`$ET_TAG`, default `DEFAULT_ET_TAG`) and exits; needs no `--variant`/`--prefix`. Lets `classify-gate.sh` (Task 7) read the ET pin via the shell that defines it — no brittle regex over the source.
+- Consumed by: Task 8 (Tier 1 + Tier 2 rebuild-from-branch steps); `classify-gate.sh` (Task 7, via `--print-et-tag`).
 
 **Context:** today the extras build is lines `build-runtime.sh:134-143`. `SKIP_ET_BUILD=1` exits at line 76 *before* it, so there is no phase-2-only path. This task factors 134-143 into `build_extras()` **and** the Highway-license block (185-194) into `install_highway_license()`, reaching both via `--extras-only`. The full-build flow stays behaviorally identical — it calls the same two functions in the same order/positions. The license extraction closes a compliance gap: without it, `--extras-only` would install `libhwy.a` (fetched by the extras build) while skipping its license, so a *distributed local build* against a bare prefix could ship `libhwy.a` unlicensed.
 
@@ -171,13 +172,18 @@ grep -qi 'executorch-config.cmake' "$tmp/err" || { echo "expected a clear config
 "$root/build-runtime.sh" --extras-only --variant logging 2>"$tmp/err2"
 [ "$?" -ne 0 ] || { echo "expected non-zero on missing --prefix"; fail=1; }
 
-[ "$fail" -eq 0 ] && echo "OK: --extras-only guards" || exit 1
+# --print-et-tag echoes the pinned default tag by letting the shell parse its own var
+# (no brittle regex over the source; robust to any valid quoting) — used by classify-gate.sh
+tag="$("$root/build-runtime.sh" --print-et-tag)"
+[ "$tag" = "v1.3.1" ] || { echo "expected --print-et-tag=v1.3.1, got '$tag'"; fail=1; }
+
+[ "$fail" -eq 0 ] && echo "OK: --extras-only guards + --print-et-tag" || exit 1
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash test/extras_only.test.sh`
-Expected: FAIL (`--extras-only` is an unknown arg today → exit 2 but wrong error text; and the config-missing path does not exist).
+Expected: FAIL (`--extras-only` and `--print-et-tag` are unknown args today → exit 2 / empty output; neither the config-missing path nor the tag print exists yet).
 
 - [ ] **Step 3: Extract `build_extras()` in `build-runtime.sh`**
 
@@ -243,15 +249,25 @@ between the two paths.)
 
 - [ ] **Step 4: Add the `--extras-only` flag + guard**
 
-In the arg-parse loop, add a case (alongside `--print-flags`):
+In the arg-parse loop, add two cases (alongside `--print-flags`):
 
 ```bash
-    --extras-only) EXTRAS_ONLY=1; shift ;;
+    --extras-only)   EXTRAS_ONLY=1; shift ;;
+    --print-et-tag)  PRINT_ET_TAG=1; shift ;;
 ```
 
-Initialize it with the other vars (line 32): add `EXTRAS_ONLY=0`.
+Initialize both with the other vars (line 32): add `EXTRAS_ONLY=0; PRINT_ET_TAG=0`.
 
-After the `--print-flags` early-exit block (after line 64) and after `PREFIX` is validated + `CONFIG` is set (lines 66-67), add:
+Immediately **after the arg-parse `while` loop** (before the `[ -n "$VARIANT" ]` check, so it needs no `--variant`), add the `--print-et-tag` early-exit. This is the robust, single-source way for `classify-gate.sh` to read the ET pin: the shell that *defines* `DEFAULT_ET_TAG` reports it, so any valid quoting (single/double/none) works — no brittle regex over the source file:
+
+```bash
+if [ "${PRINT_ET_TAG:-0}" -eq 1 ]; then
+  printf '%s\n' "$ET_TAG"   # ET_TAG defaults to DEFAULT_ET_TAG (overridable via --et-tag)
+  exit 0
+fi
+```
+
+Then, after the `--print-flags` early-exit block (after line 64) and after `PREFIX` is validated + `CONFIG` is set (lines 66-67), add the `--extras-only` block:
 
 ```bash
 # ---- --extras-only: rebuild ONLY the extras against an existing prefix ----
@@ -803,7 +819,7 @@ git commit -m "feat(gate): checkout-executorch + lstm-roundtrip composite action
 - Produces: `scripts/classify-gate.sh <changed-files-file>` → prints `mode=<tier1|tier2|full>`, `etver=<x.y.z>`, `release_tag=<v..-..|>` (three `key=value` lines, `$GITHUB_OUTPUT`-appendable).
 - Decision order: (1) any `build-runtime.sh` change → `full`; (2) else resolve newest `v<etver>-*` release — none → `full`; (3) else any AOT/schema file changed → `tier2`; (4) else → `tier1`.
 - AOT/schema match: a changed path matching `^extras/([^/]+/)?aot/`, or basename `generate_schema_header.py`, or basename `extra.yaml`. The `aot/` arm deliberately covers `extras/lstm/aot/lstm_case.py` and `extras/lstm/aot/emit_fixtures.py` — the fixture-defining files were placed under `aot/` (Tasks 3–4) precisely so a change to them forces tier2, rather than needing a special-case rule here.
-- Test hooks (env): `GATE_ET_TAG` overrides the `DEFAULT_ET_TAG` parse; `GATE_RELEASE_TAG` (set, possibly empty) overrides the `gh` lookup — empty string means "no release"; `GATE_GH_CMD` overrides the `gh` binary (inject a stub/`false`); `GATE_RETRY_SLEEP` overrides the retry backoff (set `0` in tests). When the `gh` lookup is used and **fails** after 3 attempts (as opposed to returning no rows), the script exits non-zero (code 3) rather than emitting `full` — a transient infra error must not masquerade as a build-recipe change.
+- Test hooks (env): `GATE_ET_TAG` overrides the ET-pin read (else `build-runtime.sh --print-et-tag`); `GATE_RELEASE_TAG` (set, possibly empty) overrides the `gh` lookup — empty string means "no release"; `GATE_GH_CMD` overrides the `gh` binary (inject a stub/`false`); `GATE_RETRY_SLEEP` overrides the retry backoff (set `0` in tests). When the `gh` lookup is used and **fails** after 3 attempts (as opposed to returning no rows), the script exits non-zero (code 3) rather than emitting `full` — a transient infra error must not masquerade as a build-recipe change.
 - Consumed by: Task 8 (`classify` job).
 
 **Note (accepted gap):** a PR that edits **only `extras/lstm/test/test_lstm_roundtrip.py`** (the live-round-trip test itself, not the case/kernel/AOT) classifies **tier1** — it is a `test/` file and defines no fixtures — so the live round-trip does not re-run to validate the edited test. This is accepted as low-risk: it is the test harness, not shipped source or the published fixtures. If a future change makes this matter, add a narrow `test_lstm_roundtrip.py → tier2` clause to the AOT/schema match. Documented for contributors in `docs/extras-gate.md` (Task 9).
@@ -844,9 +860,15 @@ GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/aot/lstm_case.py"    ; check case  
 GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/aot/emit_fixtures.py"; check emit  tier2
 # no matching release -> full (even for a pure kernel edit)
 GATE_RELEASE_TAG="" run "extras/lstm/runtime/lstm_cell.cc"        ; check norelease full
-# etver is derived from the ET tag
+# etver is derived from the ET tag (GATE_ET_TAG override, via run())
 GATE_RELEASE_TAG="v1.3.1-2" run "extras/lstm/runtime/lstm_cell.cc"
 printf '%s\n' "$out" | grep -q '^etver=1.3.1$' || { echo "FAIL etver parse"; fail=1; }
+
+# etver derived from the REAL build-runtime.sh --print-et-tag when GATE_ET_TAG is unset
+# (integration: proves classify reads the pin without regex-scraping the source)
+printf 'extras/lstm/runtime/lstm_cell.cc\n' > "$tmp/ch"
+out="$(GATE_RELEASE_TAG="v1.3.1-2" "$root/scripts/classify-gate.sh" "$tmp/ch")"
+printf '%s\n' "$out" | grep -q '^etver=1.3.1$' || { echo "FAIL: etver via --print-et-tag"; fail=1; }
 
 # transient gh failure (no GATE_RELEASE_TAG) exits non-zero — must NOT silently emit full
 printf 'extras/lstm/runtime/lstm_cell.cc\n' > "$tmp/ch"
@@ -883,7 +905,8 @@ Expected: FAIL (script does not exist).
 #        AOT/schema change -> tier2 ; else -> tier1.
 # A gh lookup FAILURE (distinct from an empty result) exits non-zero rather than silently
 # falling back to full — an infra error is re-runnable, not a build-recipe change.
-# Test hooks: GATE_ET_TAG overrides the DEFAULT_ET_TAG parse; GATE_RELEASE_TAG (set,
+# Test hooks: GATE_ET_TAG overrides the ET-pin read (else `build-runtime.sh --print-et-tag`);
+#             GATE_RELEASE_TAG (set,
 # maybe empty) overrides the gh lookup entirely (empty = no release); GATE_GH_CMD
 # overrides the `gh` binary; GATE_RETRY_SLEEP overrides the retry backoff (0 in tests).
 set -euo pipefail
@@ -891,8 +914,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 CHANGED="${1:?usage: classify-gate.sh <changed-files-file>}"
 
-# etver from the branch's ET pin (v1.3.1 -> 1.3.1)
-ettag="${GATE_ET_TAG:-$(sed -n 's/^DEFAULT_ET_TAG="\(v[0-9.]*\)".*/\1/p' "$ROOT/build-runtime.sh")}"
+# etver from the branch's ET pin (v1.3.1 -> 1.3.1). Ask build-runtime.sh to PRINT the tag
+# rather than regex-scraping the source: the script that defines DEFAULT_ET_TAG reports it
+# through the shell, so any valid quoting (single/double/none) works and a brittle sed can't
+# silently yield an empty tag.
+ettag="${GATE_ET_TAG:-$("$ROOT/build-runtime.sh" --print-et-tag)}"
 etver="${ettag#v}"
 
 emit() { printf 'mode=%s\netver=%s\nrelease_tag=%s\n' "$1" "$etver" "${2:-}"; }
@@ -1343,6 +1369,7 @@ git commit -m "docs(gate): usage & troubleshooting guide for the extras QA gate"
 - Classification correctness: `lstm_case.py`/`emit_fixtures.py` live under `extras/lstm/aot/` (T3/T4) so the existing tier2 `aot/` rule catches fixture-defining changes — guarded by classify test cases (T7). Residual `test_lstm_roundtrip.py`-only edits documented as an accepted tier1 gap (T7 note, T9 docs). ✓
 - `gh` robustness (T7/T8): download args built as a bash array (no `printf %q` injection); `gh release list` failure retried then surfaced as a non-zero classify (never a silent full build) — tested via `GATE_GH_CMD`/`GATE_RETRY_SLEEP`; `gh attestation verify` gated to same-repo PRs with sha256 mandatory everywhere, so fork PRs aren't blocked. ✓
 - DRY across workflows (T6/T8): the ET checkout and the live round-trip — each duplicated 3× (release build + gate `live-roundtrip` + gate `full-build`) — are hoisted into the `checkout-executorch` and `lstm-roundtrip` composite actions (Task 6), consumed by both workflows. Task 8 declares the dependency on Task 6's actions. Intra-gate scrub+`--extras-only` duplicate left inline, recorded in Deferred / future work. ✓
+- ET-pin read robustness (T2/T7): `classify-gate.sh` reads the pin via `build-runtime.sh --print-et-tag` (the shell that defines `DEFAULT_ET_TAG` reports it), replacing a brittle `sed` that silently yielded an empty tag on any non-`"…"` quoting. Covered by a `--print-et-tag` unit test (T2) and a real-derivation classify test (T7). Keeps the pin inside `build-runtime.sh`, preserving the "any change → full build" coupling. ✓
 
 **Placeholder scan:** no TBD/TODO/"handle edge cases"/"similar to Task N"; every code step shows full content. ✓
 
