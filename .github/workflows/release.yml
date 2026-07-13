@@ -54,18 +54,34 @@ jobs:
         id: ver
         run: ./scripts/derive-version.sh >> "$GITHUB_OUTPUT"
       - name: Checkout ExecuTorch source
-        uses: actions/checkout@v7
+        uses: ./.github/actions/checkout-executorch
         with:
-          repository: pytorch/executorch
           ref: ${{ steps.ver.outputs.ettag }}
-          submodules: recursive
-          path: executorch
       - name: Build runtime
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           ./build-runtime.sh --variant "${{ matrix.variant }}" \
-            --prefix "$PWD/out" --et-src "$PWD/executorch" \
+            --prefix "$PWD/out" --et-src "$PWD/et-src/executorch" \
             --et-tag "${{ steps.ver.outputs.ettag }}"
+      - name: LSTM round-trip gate (export -> run vs eager)
+        # Variant-identical kernel: gate on `logging` only (both platforms). The round-trip
+        # recipe now lives in the composite action, shared with the extras-gate workflow.
+        if: matrix.variant == 'logging'
+        uses: ./.github/actions/lstm-roundtrip
+        with:
+          # workspace-relative (built at $PWD/out above); the action re-roots onto $PWD, the
+          # real container workspace — the github.workspace expression is the host path here.
+          prefix: out
+      - name: Emit + package LSTM fixtures (arch-independent; x86_64 logging only)
+        if: matrix.variant == 'logging' && matrix.combo.platform == 'linux-x86_64'
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          # torch + executorch are already installed by the round-trip action above; the
+          # built prefix is $PWD/out. Mint the fixtures from the SAME lstm_case source.
+          python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures"
+          mkdir -p "$PWD/dist"
+          ./scripts/package-fixtures.sh --dir "$PWD/fixtures" \
+            --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
       - name: Package
         run: |
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \

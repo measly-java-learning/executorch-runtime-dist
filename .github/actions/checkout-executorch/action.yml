@@ -1,0 +1,23 @@
+name: Checkout ExecuTorch
+description: Check out pytorch/executorch at a tag with submodules, into ./et-src/executorch
+inputs:
+  ref:
+    description: ExecuTorch git ref/tag (e.g. v1.3.1)
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        repository: pytorch/executorch
+        ref: ${{ inputs.ref }}
+        submodules: recursive
+        # Nested on purpose. Two upstream constraints collide:
+        #  (1) install_executorch.sh hard-requires the checkout's LEAF dir be named exactly
+        #      'executorch' (open since v0.4.0), and
+        #  (2) a top-level ./executorch shadows the installed wheel — the round-trip runs
+        #      `python -m pytest` from the workspace root (cwd on sys.path), so `import
+        #      executorch` would bind the un-built source tree (no exir/_serialize/program.fbs).
+        # Nesting satisfies both: leaf is 'executorch' (ET happy) while the workspace root holds
+        # only 'et-src', so `import executorch` resolves to site-packages. See pytorch/executorch#5766.
+        path: et-src/executorch

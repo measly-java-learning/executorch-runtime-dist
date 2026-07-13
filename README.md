@@ -23,6 +23,19 @@ THIRD-PARTY-NOTICES/
 BUILDINFO
 ```
 
+## Bundled first-party op & dependencies
+
+This runtime ships the custom `etnp::lstm.out` operator in every variant (see
+`docs/lstm-op-consumer-guide.md`). Building it pulls one additional pinned
+dependency beyond ExecuTorch's own third-party set:
+
+- **Google Highway 1.4.0** (SIMD; SHA256 `e72241ac9524bb653ae52ced768b508045d4438726a303f10181a38f764a453c`)
+  — fetched by the `extras/` build and linked into `libetnp_ops_lstm.a`. Its license
+  is passed through into the tarball's `THIRD-PARTY-NOTICES/`.
+
+XNNPACK (already part of ExecuTorch) is reused from the built prefix; no new XNNPACK
+dependency is introduced.
+
 ## Cutting a release
 
 Releases are built once per ExecuTorch version and published as attested,

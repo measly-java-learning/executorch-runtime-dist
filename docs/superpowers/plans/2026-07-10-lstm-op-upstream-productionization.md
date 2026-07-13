@@ -1,0 +1,1387 @@
+# LSTM Op Upstream Productionization — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Ship the custom `etnp::lstm.out` operator inside every variant of the relocatable ExecuTorch tarball this repo builds, with an AOT definition and a live torch round-trip test proving export→lower→run matches `torch.nn.LSTM`.
+
+**Architecture:** A new standalone `extras/` CMake project builds the torch-free LSTM kernel into `libetnp_ops_lstm.a` *after* the pure-ET install, links it against the just-built prefix (XNNPACK comes from the prefix; Highway 1.4.0 is hash-pinned/fetched), and installs the archive + header + a self-describing `ETNPExtras.cmake` (whose helper applies the correct per-OS whole-archive flags) into the prefix. `package.sh` tars it as today. A static nm-guard runs on every build; a live torch round-trip gates the executable target(s).
+
+**Tech Stack:** C++17, CMake ≥ 3.24, ExecuTorch 1.3.1 runtime, XNNPACK f32 FC, Google Highway 1.4.0 (SIMD), PyTorch 2.12.0+cpu (AOT + test only), bash, GitHub Actions, manylinux_2_28.
+
+## Global Constraints
+
+- **Op namespace is frozen:** `etnp::lstm.out` (and functional `etnp::lstm`). Baked into `.pte`s — never rename. (Strategy Decision 1 / 4.)
+- **Op scope is frozen — do not widen:** single-layer, unidirectional, `batch_first=False`, float32, contiguous. `input [T,B,I]`, `h0/c0 [B,H]`, `w_ih [4H,I]`, `w_hh [4H,H]`, optional biases `[4H]`; `output [T,B,H]`, `hn/cn [B,H]`. Gate row order **i,f,g,o** (PyTorch).
+- **Canonical schema (byte-identical across faces):**
+  ```
+  lstm(Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh, Tensor? b_ih, Tensor? b_hh) -> (Tensor, Tensor, Tensor)
+  lstm.out(Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh, Tensor? b_ih, Tensor? b_hh, *, Tensor(a!) output, Tensor(b!) hn, Tensor(c!) cn) -> (Tensor(a!), Tensor(b!), Tensor(c!))
+  ```
+- **Always-on in every variant** (bare/logging/devtools) — not behind a build flag.
+- **Highway pin:** `1.4.0`, `SHA256=e72241ac9524bb653ae52ced768b508045d4438726a303f10181a38f764a453c`. A SHA change is the supply-chain review gate.
+- **Parity tolerance:** rtol/atol **1e-4** vs torch eager.
+- **Position-independent** (`-DCMAKE_POSITION_INDEPENDENT_CODE=ON`) and **relocatable** (no absolute build-prefix in any installed `*.cmake`) — same C2 guarantees as the ET tree.
+- **Port, don't rewrite.** Source repo `SRC=/home/corey/workspace/executorch-numpy-runtime`, pinned commit **`95a5efd`**. Resolve any file with `git -C $SRC show 95a5efd:<path>`.
+- **Do NOT** edit `docs/handover-to-engine.md` (frozen, different work item); reintroduce torch into the numpy repo; port the throwaway bench/feasibility/advisor tooling; or build a plugin framework (LSTM is extra #1 — glob + convention only).
+
+---
+
+### Task 1: De-risk spikes (no production code)
+
+Resolve the version-sensitive unknowns and record the Highway dependency rationale before porting. Output is a committed findings note.
+
+**Files:**
+- Create: `docs/superpowers/notes/2026-07-10-lstm-derisk-findings.md`
+
+- [ ] **Step 1: Check the `make_boxed` output cap in our ET version**
+
+The op has 3 mutable outputs; if `make_boxed_from_unboxed_functor.h` still `static_assert`s a 1-output cap, we keep the hand-rolled boxed registrar (expected).
+
+Run:
+```bash
+grep -rn "num_nonconst_tensors\|static_assert" \
+  /home/corey/workspace/executorch/runtime/kernel/make_boxed_from_unboxed_functor.h \
+  /home/corey/workspace/executorch/extension/kernel_util/make_boxed_from_unboxed_functor.h 2>/dev/null
+```
+Expected: a `static_assert(... num_nonconst_tensors == 1 ...)`. Record the exact file+line and the assertion text.
+
+- [ ] **Step 2: Confirm XNNPACK is exposed by a built prefix**
+
+Run:
+```bash
+ls out-logging/lib/libXNNPACK.a out-logging/lib/libpthreadpool.a \
+   out-logging/include/xnnpack.h out-logging/include/pthreadpool.h
+```
+Expected: all four exist (already verified). Record.
+
+- [ ] **Step 3: Determine whether the `linux-aarch64` CI runner executes natively**
+
+Inspect `.github/workflows/release.yml`: the aarch64 combo uses `runs_on: ubuntu-24.04-arm` (a native ARM runner), so it *can* execute a built binary. Record this conclusion (it decides whether the round-trip in Task 8 runs on aarch64 too, not only x86_64).
+
+- [ ] **Step 4: Record the Highway-vs-ET-optimized (`at::vec`) dependency rationale**
+
+Before adding Highway (a new third-party dep), confirm we are not reinventing a
+building block ExecuTorch already ships torch-free. Conclusion: ET's optimized
+elementwise SIMD (`sigmoid`/`tanh`/arithmetic — what the fused cell needs) is
+`at::vec::Vectorized`, reached via `executorch::vec`
+(`kernels/optimized/vec/functional.h` → `#include <ATen/cpu/vec/vec.h>`). Those vec
+headers are a **torch/ATen build dependency** and are **absent from our relocatable
+prefix**, whereas the runtime kernel is **torch-free by contract** (Face 1). So
+`at::vec` is not usable here without dragging torch/ATen headers into the kernel;
+Highway (self-contained, hash-pinned, torch-free SIMD) is the correct substitute, and
+XNNPACK — already in the prefix — is reused for the projections rather than ET's
+Eigen-backed `cpublas::gemm`. Verify the two facts the conclusion rests on:
+```bash
+# at::vec headers are NOT in our relocatable prefix (empty output expected) ...
+find out-logging/include -path '*ATen/cpu/vec*' -o -path '*optimized/vec*' 2>/dev/null
+# ... they exist only under torch's includes (torch-coupled)
+find /home/corey/workspace/executorch -path '*ATen/cpu/vec/vec.h' 2>/dev/null | head -1
+```
+Expected: the first command prints nothing (no ATen vec in the prefix); the second
+prints a path under `.../torch/include/...`. Record this as the dependency rationale.
+
+- [ ] **Step 5: Write and commit the findings note**
+
+Write `docs/superpowers/notes/2026-07-10-lstm-derisk-findings.md` capturing Steps 1–4 (boxed-registrar decision, XNNPACK availability, aarch64-executes decision, and the Highway-vs-`at::vec` dependency rationale).
+
+```bash
+git add docs/superpowers/notes/2026-07-10-lstm-derisk-findings.md
+git commit -m "docs: LSTM productionization de-risk findings (boxed cap, xnnpack, aarch64, highway rationale)"
+```
+
+---
+
+### Task 2: `extras/` manifest + schema-header generator (single source of truth)
+
+Establish the bundle skeleton and the mechanism that makes op-name drift impossible: one `extra.yaml`, from which both the C++ op-name constant and the Python AOT schema derive.
+
+**Files:**
+- Create: `extras/lstm/extra.yaml`
+- Create: `extras/generate_schema_header.py`
+- Test: `extras/test_generate_schema_header.py`
+
+**Interfaces:**
+- Produces: `extras/lstm/extra.yaml` with keys `namespace: etnp`, `op: lstm`, `variants: [all]`, `schema.functional`, `schema.out`.
+- Produces: `generate_schema_header.py <extra.yaml> <out_header>` → writes a header defining `namespace etnp::schema { inline constexpr char kLstmName[]="etnp::lstm"; inline constexpr char kLstmOutName[]="etnp::lstm.out"; }` (consumed by Task 3's registrar) and reading it back (`load_schema(extra_yaml) -> dict`, consumed by Task 6's AOT).
+
+- [ ] **Step 1: Write `extras/lstm/extra.yaml`**
+
+```yaml
+# One op = one bundle. This file is the SINGLE SOURCE OF TRUTH for the op name
+# and schema; both the C++ registrar (via a generated header) and the Python AOT
+# read from here so the two faces cannot drift.
+namespace: etnp
+op: lstm
+# variants this op ships in. [all] => every tarball variant (bare/logging/devtools).
+# RESERVED / unused today: everything is always-on, so only [all] is honored. The
+# field is designed in now (annoying to retrofit) and VALIDATED at consumption
+# (load_schema rejects anything but [all]) so a stray value fails loudly rather than
+# being silently ignored. Per-op variant gating is future work.
+variants: [all]
+schema:
+  functional: >-
+    lstm(Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh,
+    Tensor? b_ih, Tensor? b_hh) -> (Tensor, Tensor, Tensor)
+  out: >-
+    lstm.out(Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh,
+    Tensor? b_ih, Tensor? b_hh, *, Tensor(a!) output, Tensor(b!) hn,
+    Tensor(c!) cn) -> (Tensor(a!), Tensor(b!), Tensor(c!))
+```
+
+- [ ] **Step 2: Write the failing test `extras/test_generate_schema_header.py`**
+
+```python
+import subprocess, sys, pathlib, tempfile
+HERE = pathlib.Path(__file__).parent
+
+def test_header_has_qualified_op_names():
+    out = pathlib.Path(tempfile.mkdtemp()) / "etnp_lstm_schema.h"
+    subprocess.run([sys.executable, str(HERE / "generate_schema_header.py"),
+                    str(HERE / "lstm" / "extra.yaml"), str(out)], check=True)
+    text = out.read_text()
+    assert 'constexpr char kLstmName[] = "etnp::lstm";' in text
+    assert 'constexpr char kLstmOutName[] = "etnp::lstm.out";' in text
+    assert "#pragma once" in text
+
+def test_load_schema_roundtrip():
+    sys.path.insert(0, str(HERE))
+    from generate_schema_header import load_schema
+    s = load_schema(HERE / "lstm" / "extra.yaml")
+    assert s["qualified_name"] == "etnp::lstm"
+    assert s["functional"].startswith("lstm(")
+    assert s["out"].startswith("lstm.out(")
+    assert s["variants"] == ["all"]
+
+
+def test_non_all_variants_rejected(tmp_path):
+    # Reserved-field guard: only [all] is implemented today, so anything else must
+    # fail loudly at consumption rather than be silently ignored.
+    import yaml, pytest
+    sys.path.insert(0, str(HERE))
+    from generate_schema_header import load_schema
+    bad = tmp_path / "extra.yaml"
+    bad.write_text(yaml.safe_dump({"namespace": "etnp", "op": "lstm",
+                                   "variants": ["logging"]}))
+    with pytest.raises(ValueError, match="variant gating is not yet implemented"):
+        load_schema(bad)
+```
+
+- [ ] **Step 3: Run the test to verify it fails**
+
+Run: `python -m pytest extras/test_generate_schema_header.py -v`
+Expected: FAIL (`generate_schema_header.py` does not exist).
+
+- [ ] **Step 4: Write `extras/generate_schema_header.py`**
+
+```python
+#!/usr/bin/env python3
+"""Emit the C++ op-name header from an extra.yaml (single source of truth).
+
+Usage: generate_schema_header.py <extra.yaml> <out_header.h>
+Also importable: load_schema(path) -> dict for the Python AOT face.
+The generated header defines qualified op-name constants the C++ registrar uses,
+so the name it registers cannot drift from the name the AOT/schema declares.
+"""
+import sys, pathlib, yaml
+
+
+def load_schema(extra_yaml) -> dict:
+    d = yaml.safe_load(pathlib.Path(extra_yaml).read_text())
+    ns, op = d["namespace"], d["op"]
+    variants = d.get("variants", ["all"])
+    # `variants` is reserved for future per-op variant gating. Only [all] is
+    # implemented today (the op is always-on in every tarball variant); validate
+    # here — the single consumption point both faces call — so an unexpected value
+    # fails loudly instead of being silently ignored. Replace when gating lands.
+    if variants != ["all"]:
+        raise ValueError(
+            f"extra.yaml variants={variants!r}: per-op variant gating is not yet "
+            "implemented; only [all] is supported.")
+    return {
+        "namespace": ns,
+        "op": op,
+        "variants": variants,
+        "qualified_name": f"{ns}::{op}",
+        "qualified_out_name": f"{ns}::{op}.out",
+        "functional": " ".join(d["schema"]["functional"].split()),
+        "out": " ".join(d["schema"]["out"].split()),
+    }
+
+
+def render_header(s: dict) -> str:
+    guard_ns = s["namespace"]
+    return (
+        "// GENERATED from extras/{op}/extra.yaml — do not edit.\n"
+        "#pragma once\n"
+        "namespace {ns} {{\n"
+        "namespace schema {{\n"
+        '  inline constexpr char kLstmName[] = "{qn}";\n'
+        '  inline constexpr char kLstmOutName[] = "{qon}";\n'
+        "}}  // namespace schema\n"
+        "}}  // namespace {ns}\n"
+    ).format(op=s["op"], ns=guard_ns, qn=s["qualified_name"],
+             qon=s["qualified_out_name"])
+
+
+def main() -> int:
+    extra_yaml, out_header = sys.argv[1], sys.argv[2]
+    s = load_schema(extra_yaml)
+    p = pathlib.Path(out_header)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(render_header(s))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 5: Run the test to verify it passes**
+
+Run: `python -m pytest extras/test_generate_schema_header.py -v`
+Expected: PASS (3 passed — two header-name/roundtrip tests plus the variants-rejection test).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add extras/lstm/extra.yaml extras/generate_schema_header.py extras/test_generate_schema_header.py
+git commit -m "feat(extras): LSTM bundle manifest + schema-header generator (single source of truth)"
+```
+
+---
+
+### Task 2b: Note on running Python tests
+
+The extras Python tests need `pyyaml` and (later) `torch`. In the manylinux build container `build-runtime.sh` already `pip install`s `pyyaml` and `torch==2.12.0+cpu`. For local runs: `pip install pyyaml pytest`. This is documentation only — no commit.
+
+---
+
+### Task 3: Port Face 1 (runtime kernel) → `libetnp_ops_lstm.a` + analytic unit test
+
+Port the five kernel sources verbatim from the pinned commit, wire the extras runtime CMake (XNNPACK-from-prefix + Highway fetch, header generation), and port the torch-free analytic correctness test.
+
+**Files:**
+- Create (verbatim port): `extras/lstm/runtime/{etnp_lstm.cpp,lstm_cell.h,lstm_cell.cc,xnn_linear.h,xnn_linear_cache.h}`
+- Create: `extras/lstm/runtime/CMakeLists.txt`
+- Create: `extras/CMakeLists.txt`
+- Test (port): `extras/lstm/test/lstm_kernel_test.cpp`
+
+**Interfaces:**
+- Produces target `etnp_ops_lstm` (STATIC, PIC) — the whole-archive registration archive; registrar TU symbol `_GLOBAL__sub_I_etnp_lstm.cpp`.
+- Produces `ETNP_EXTRAS_EXPECT_TUS` in the extras scope: list of registrar TU symbols (for the Task 4 guard).
+- Consumes `generate_schema_header.py` (Task 2) at configure time → generated `etnp_lstm_schema.h`.
+
+- [ ] **Step 1: Port the kernel sources verbatim from `95a5efd`**
+
+```bash
+SRC=/home/corey/workspace/executorch-numpy-runtime
+mkdir -p extras/lstm/runtime
+for f in etnp_lstm.cpp lstm_cell.h lstm_cell.cc xnn_linear.h xnn_linear_cache.h; do
+  git -C "$SRC" show "95a5efd:examples/custom_kernels/lstm/$f" > "extras/lstm/runtime/$f"
+done
+ls extras/lstm/runtime
+```
+Expected: all five files present.
+
+- [ ] **Step 2: Wire the registrar to the generated name constant (Face 2)**
+
+Edit `extras/lstm/runtime/etnp_lstm.cpp`: add the generated-header include next to the other project includes, and replace the literal op name in the registrar.
+
+Add after `#include "xnn_linear_cache.h"`:
+```cpp
+#include "etnp_lstm_schema.h"  // GENERATED — kEtnp... op-name constants (single source of truth)
+```
+Replace:
+```cpp
+const auto etnp_lstm_registrar = executorch::runtime::register_kernel(
+    executorch::runtime::Kernel("etnp::lstm.out", lstm_boxed));
+```
+with:
+```cpp
+const auto etnp_lstm_registrar = executorch::runtime::register_kernel(
+    executorch::runtime::Kernel(etnp::schema::kLstmOutName, lstm_boxed));
+```
+
+- [ ] **Step 3: Write `extras/lstm/runtime/CMakeLists.txt`**
+
+```cmake
+# Builds the LSTM op into libetnp_ops_lstm.a: a pure static-initializer
+# registration archive, like libxnnpack_backend.a. Consumers MUST whole-archive
+# it (see the installed ETNPExtras.cmake helper). Include AFTER find_package(ExecuTorch).
+#
+# XNNPACK (headers + libs) comes from the installed ExecuTorch prefix. Highway is
+# hash-pinned/fetched (ET does not vendor it). Sets ETNP_EXTRAS_EXPECT_TUS in the
+# parent scope for the nm-guard.
+
+# --- generate the op-name header from extra.yaml (single source of truth) ---
+# BUILD-time generation (not execute_process at configure time): DEPENDS on BOTH
+# the YAML and the generator script, so editing either regenerates the header on the
+# next `cmake --build`. execute_process would only re-run on reconfigure, letting a
+# local iterative build compile against a header out of sync with extra.yaml.
+set(_extra_yaml "${CMAKE_CURRENT_LIST_DIR}/../extra.yaml")
+set(_gen_script "${CMAKE_CURRENT_LIST_DIR}/../../generate_schema_header.py")
+set(_gen_header "${CMAKE_CURRENT_BINARY_DIR}/gen/etnp_lstm_schema.h")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_command(
+  OUTPUT "${_gen_header}"
+  COMMAND "${Python3_EXECUTABLE}" "${_gen_script}" "${_extra_yaml}" "${_gen_header}"
+  DEPENDS "${_extra_yaml}" "${_gen_script}"
+  COMMENT "Generating etnp_lstm_schema.h from extra.yaml (single source of truth)"
+  VERBATIM)
+
+# Listing the generated header as a target source wires the custom command's OUTPUT
+# into the target's dependency graph, so it regenerates before etnp_lstm.cpp (which
+# #includes it) compiles — correct under Ninja parallel builds too.
+add_library(etnp_ops_lstm STATIC
+  "${CMAKE_CURRENT_LIST_DIR}/etnp_lstm.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/lstm_cell.cc"
+  "${_gen_header}")
+set_property(TARGET etnp_ops_lstm PROPERTY POSITION_INDEPENDENT_CODE ON)
+target_compile_features(etnp_ops_lstm PRIVATE cxx_std_17)
+
+# Own dir (sibling headers by bare name + Highway foreach_target re-include of
+# lstm_cell.cc) and the generated-header dir.
+target_include_directories(etnp_ops_lstm PRIVATE
+  "${CMAKE_CURRENT_LIST_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/gen")
+
+# executorch: kernel-registration + core headers. extension_threadpool: the
+# batched input projection uses the shared runtime pool. XNNPACK + pthreadpool:
+# imported from the ExecuTorch prefix (find_package brought them in).
+target_link_libraries(etnp_ops_lstm PUBLIC executorch extension_threadpool)
+target_link_libraries(etnp_ops_lstm PRIVATE XNNPACK pthreadpool)
+
+# --- Highway 1.4.0, hash-pinned (SHA change = supply-chain review gate) ---
+set(HWY_ENABLE_CONTRIB OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+include(FetchContent)
+FetchContent_Declare(highway
+  URL "https://github.com/google/highway/archive/refs/tags/1.4.0.tar.gz"
+  URL_HASH "SHA256=e72241ac9524bb653ae52ced768b508045d4438726a303f10181a38f764a453c")
+FetchContent_MakeAvailable(highway)
+target_link_libraries(etnp_ops_lstm PRIVATE hwy)
+
+# Registrar TU the nm-guard must find post whole-archive link. etnp_lstm.cpp
+# registers (register_kernel); lstm_cell.cc is an aux SIMD source (no registrar).
+set(ETNP_EXTRAS_EXPECT_TUS "_GLOBAL__sub_I_etnp_lstm.cpp" PARENT_SCOPE)
+```
+
+- [ ] **Step 4: Write `extras/CMakeLists.txt` (glob driver)**
+
+```cmake
+# Standalone extras build, configured by build-runtime.sh AFTER the ET install.
+# Globs each op bundle under extras/*/runtime and aggregates their registrar TUs.
+# One op today (lstm); a glob now, a manifest/codegen only once ops #2-3 exist.
+cmake_minimum_required(VERSION 3.24)
+project(etnp_extras LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# ExecuTorch from the prefix we were just installed next to.
+find_package(ExecuTorch CONFIG REQUIRED)
+
+# ExecuTorch link set shared by every test/probe target below. Defined here in the
+# driver core — NOT in a later appended block — so no target depends on the order in
+# which the test/probe sections were appended to this file.
+set(_ET_LINK
+  executorch optimized_native_cpu_ops_lib xnnpack_backend
+  extension_module_static extension_data_loader extension_tensor)
+
+set(ETNP_EXTRAS_LIBS "")
+set(ETNP_EXTRAS_ALL_EXPECT_TUS "")
+file(GLOB _op_dirs RELATIVE "${CMAKE_CURRENT_LIST_DIR}" "${CMAKE_CURRENT_LIST_DIR}/*")
+foreach(_d IN LISTS _op_dirs)
+  set(_rt "${CMAKE_CURRENT_LIST_DIR}/${_d}/runtime/CMakeLists.txt")
+  if(EXISTS "${_rt}")
+    # Mechanism refuses to build an extra with no test (strategy Decision 3).
+    if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/${_d}/test")
+      message(FATAL_ERROR "extra '${_d}' has no test/ dir — every extra must ship a test")
+    endif()
+    add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/${_d}/runtime" "${CMAKE_BINARY_DIR}/${_d}")
+    list(APPEND ETNP_EXTRAS_LIBS "etnp_ops_${_d}")
+    list(APPEND ETNP_EXTRAS_ALL_EXPECT_TUS ${ETNP_EXTRAS_EXPECT_TUS})
+  endif()
+endforeach()
+
+# no-duplicate-op-names guard: one etnp_ops_<op> per op dir, so a dup dir name is
+# impossible; assert the TU list has no repeats (dup registrar => dup op name).
+list(LENGTH ETNP_EXTRAS_ALL_EXPECT_TUS _n)
+list(REMOVE_DUPLICATES ETNP_EXTRAS_ALL_EXPECT_TUS)
+list(LENGTH ETNP_EXTRAS_ALL_EXPECT_TUS _nd)
+if(NOT _n EQUAL _nd)
+  message(FATAL_ERROR "duplicate registrar TU across extras: ${ETNP_EXTRAS_ALL_EXPECT_TUS}")
+endif()
+message(STATUS "etnp_extras: libs=[${ETNP_EXTRAS_LIBS}] expect_tus=[${ETNP_EXTRAS_ALL_EXPECT_TUS}]")
+```
+
+- [ ] **Step 5: Port the analytic kernel test**
+
+```bash
+mkdir -p extras/lstm/test
+git -C /home/corey/workspace/executorch-numpy-runtime \
+  show 95a5efd:native_tests/lstm_kernel_test.cpp > extras/lstm/test/lstm_kernel_test.cpp
+```
+This test is torch-free: zero weights ⇒ analytic recurrence `c_t=0.5·c_{t-1}`, `h_t=0.5·tanh(c_t)`. It supplies a 4 MiB temp allocator (Gotcha D). No edit needed.
+
+- [ ] **Step 6: Add the test target to the extras build**
+
+Append to `extras/CMakeLists.txt` (inside the file, after the loop). `_ET_LINK` is
+defined in the driver core (Step 4), so this block does not redefine it:
+```cmake
+# --- per-op tests (built against the extras libs, whole-archived) ---
+if(TARGET etnp_ops_lstm)
+  add_executable(lstm_kernel_test lstm/test/lstm_kernel_test.cpp)
+  target_link_libraries(lstm_kernel_test PRIVATE
+    ${_ET_LINK} "$<LINK_LIBRARY:WHOLE_ARCHIVE,etnp_ops_lstm>")
+endif()
+```
+
+- [ ] **Step 7: Build and run the analytic test in the container**
+
+Run (from a manylinux shell with a built `out-logging` prefix; see Task 5 for how `build-runtime.sh` drives this — for now configure standalone against an existing prefix):
+```bash
+cmake -B /tmp/extras-build -S extras -G Ninja \
+  -DCMAKE_PREFIX_PATH="$PWD/out-logging" \
+  -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+cmake --build /tmp/extras-build --target lstm_kernel_test
+/tmp/extras-build/lstm_kernel_test
+```
+Expected: `OK: etnp::lstm.out analytic recurrence correct`.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add extras/lstm/runtime extras/lstm/test/lstm_kernel_test.cpp extras/CMakeLists.txt
+git commit -m "feat(extras): port LSTM kernel -> libetnp_ops_lstm.a + analytic test"
+```
+
+---
+
+### Task 4: Generalized manifest/nm guard (registrar survives whole-archive)
+
+Port and generalize the shim's nm-guard so the build fails if a manifested op's registrar TU is dropped at link, or op names collide. A tiny link probe exercises it on every build (static, host-side — runs even on cross-compiled targets).
+
+**Files:**
+- Create: `cmake/assert_extras_registered.cmake`
+- Create: `extras/link_probe.cpp`
+- Modify: `extras/CMakeLists.txt` (probe target + POST_BUILD guard)
+
+**Interfaces:**
+- Consumes `ETNP_EXTRAS_ALL_EXPECT_TUS` (Task 3).
+- The guard: `cmake -DSO=<bin> -DNM=nm -DEXPECT_TUS="<list>" -P cmake/assert_extras_registered.cmake` → fatal error if any TU absent or if a TU count implies a dropped/duplicated registrar.
+
+- [ ] **Step 1: Write `cmake/assert_extras_registered.cmake`**
+
+```cmake
+# Post-link guard: prove each manifested op's registrar static-init TU survived
+# --gc-sections/whole-archive at the final link. A dropped registrar is invisible
+# until "operator not found" at model-load time. Generalized from the shim's
+# assert_kernels_registered.cmake: one registrar TU per manifested op, no dups.
+# Invoke: cmake -DSO=<bin> -DNM=<nm> -DEXPECT_TUS="<;-list>" -P this
+if(NOT SO OR NOT EXISTS "${SO}")
+  message(FATAL_ERROR "assert_extras_registered: SO not found: '${SO}'")
+endif()
+if(NOT NM)
+  set(NM "nm")
+endif()
+execute_process(COMMAND "${NM}" "${SO}" OUTPUT_VARIABLE _syms
+                RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+if(NOT _rc EQUAL 0)
+  message(FATAL_ERROR "assert_extras_registered: '${NM} ${SO}' failed (rc=${_rc}): ${_err}")
+endif()
+foreach(_tu IN LISTS EXPECT_TUS)
+  # Strip first: a whitespace-only entry (e.g. a mis-scoped/blank op variable that
+  # expands to spaces) would otherwise become a regex that trivially matches the
+  # spacing in nm output -> a silent false PASS that defeats the guard's purpose.
+  string(STRIP "${_tu}" _tu)
+  if(_tu STREQUAL "")
+    continue()
+  endif()
+  string(REGEX REPLACE "\\." "\\\\." _tu_re "${_tu}")
+  string(REGEX MATCHALL "${_tu_re}" _m "${_syms}")
+  list(LENGTH _m _cnt)
+  if(_cnt LESS 1)
+    message(FATAL_ERROR
+      "extras registrar '${_tu}' was dropped from ${SO}: static-init TU absent. "
+      "whole-archive regressed -> custom op not found at model-load time.")
+  endif()
+endforeach()
+message(STATUS "assert_extras_registered: all extras registrar TUs present in ${SO}: [${EXPECT_TUS}]")
+```
+
+- [ ] **Step 2: Write `extras/link_probe.cpp`**
+
+```cpp
+// Minimal link probe: exists only so the nm-guard can assert the extras'
+// registrar TUs survive a real whole-archive link. Never run; linking is enough.
+int main() { return 0; }
+```
+
+- [ ] **Step 3: Add the probe target + POST_BUILD guard to `extras/CMakeLists.txt`**
+
+Append (after the test block from Task 3):
+```cmake
+# --- static registration guard (every build, incl. cross-compiled targets) ---
+add_executable(etnp_extras_link_probe link_probe.cpp)
+set(_probe_whole "")
+foreach(_lib IN LISTS ETNP_EXTRAS_LIBS)
+  list(APPEND _probe_whole "$<LINK_LIBRARY:WHOLE_ARCHIVE,${_lib}>")
+endforeach()
+target_link_libraries(etnp_extras_link_probe PRIVATE ${_ET_LINK} ${_probe_whole})
+add_custom_command(TARGET etnp_extras_link_probe POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -DSO=$<TARGET_FILE:etnp_extras_link_probe> -DNM=nm
+          "-DEXPECT_TUS=${ETNP_EXTRAS_ALL_EXPECT_TUS}"
+          -P ${CMAKE_CURRENT_LIST_DIR}/../cmake/assert_extras_registered.cmake
+  VERBATIM)
+
+# --- negative-control probe (Task 4 Step 5 only) ---
+# SAME ET deps as the real probe, but the extras archives are linked PLAIN (no
+# whole-archive), so this is a VALID, fully-resolved binary in which the linker
+# legitimately omits the unreferenced registrar TU. It exists to prove the guard
+# fails for the RIGHT reason (dropped registrar in a valid binary) — NOT because of
+# an unresolved-symbol link error like a bare `.a`-only link would give.
+# EXCLUDE_FROM_ALL: normal builds never build it; no POST_BUILD guard attached.
+add_executable(etnp_extras_neg_probe EXCLUDE_FROM_ALL link_probe.cpp)
+target_link_libraries(etnp_extras_neg_probe PRIVATE ${_ET_LINK} ${ETNP_EXTRAS_LIBS})
+target_link_options(etnp_extras_neg_probe PRIVATE -Wl,--gc-sections)
+```
+
+- [ ] **Step 4: Build the probe — guard passes on a correct link**
+
+Run:
+```bash
+cmake -B /tmp/extras-build -S extras -G Ninja \
+  -DCMAKE_PREFIX_PATH="$PWD/out-logging" -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+cmake --build /tmp/extras-build --target etnp_extras_link_probe
+```
+Expected: build succeeds; STATUS line `assert_extras_registered: all extras registrar TUs present ... [_GLOBAL__sub_I_etnp_lstm.cpp]`.
+
+- [ ] **Step 5: Prove the guard actually fails on a dropped registrar (negative test)**
+
+Build the negative-control probe (from Step 3) — same ET deps, extras archive linked
+**plain** so `--gc-sections` legitimately drops the unreferenced registrar — and run
+the guard on that *valid* binary. Reuse the `/tmp/extras-build` configured in Step 4:
+```bash
+cmake --build /tmp/extras-build --target etnp_extras_neg_probe
+# sanity: it IS a valid, runnable binary (a broken link would fail before this) ...
+/tmp/extras-build/etnp_extras_neg_probe; echo "neg probe ran rc=$?"
+# ... and nm confirms the registrar TU really is absent from it
+nm /tmp/extras-build/etnp_extras_neg_probe | grep -c '_GLOBAL__sub_I_etnp_lstm.cpp' || true
+# the guard must fail — for the RIGHT reason (dropped registrar, not a link error)
+cmake -DSO=/tmp/extras-build/etnp_extras_neg_probe -DNM=nm \
+  "-DEXPECT_TUS=_GLOBAL__sub_I_etnp_lstm.cpp" \
+  -P cmake/assert_extras_registered.cmake; echo "guard rc=$?"
+```
+Expected: the probe builds and runs (`rc=0`), the `nm | grep -c` prints `0` (registrar
+absent), and the guard exits non-zero with FATAL_ERROR `"registrar ... was dropped"` —
+proving on a *valid* binary that the guard is not a no-op.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add cmake/assert_extras_registered.cmake extras/link_probe.cpp extras/CMakeLists.txt
+git commit -m "feat(extras): generalized nm-guard — registrar TUs survive whole-archive"
+```
+
+---
+
+### Task 5: Install `ETNPExtras.cmake` (whole-archive helper) + wire into `build-runtime.sh`
+
+Install the archive, header, and a self-describing `ETNPExtras.cmake` into the prefix; make `build-runtime.sh` build+install the extras after the ET install (so every variant ships the op) and pass Highway's license through. Verified by a consumer-style shell test.
+
+**Files:**
+- Create: `extras/cmake/ETNPExtras.cmake.in`
+- Modify: `extras/lstm/runtime/CMakeLists.txt` (install rules for the archive + header)
+- Modify: `extras/CMakeLists.txt` (install the config + set install of headers)
+- Modify: `build-runtime.sh` (extras build/install step; Highway license passthrough)
+- Test: `test/extras_members.test.sh`
+
+**Interfaces:**
+- Produces installed `lib/libetnp_ops_lstm.a`, `include/etnp/lstm.h`, `lib/cmake/ETNPExtras/ETNPExtras.cmake`.
+- `ETNPExtras.cmake` provides: imported target `etnp_ops_lstm`; `set(ETNP_EXTRAS_WHOLE_ARCHIVE_LIBS etnp_ops_lstm)`; function `etnp_extras_whole_archive(<consumer_target>)`.
+
+- [ ] **Step 1: Add install rules to `extras/lstm/runtime/CMakeLists.txt`**
+
+Append:
+```cmake
+# Install the archive + a public header carrying the op-name constants.
+install(TARGETS etnp_ops_lstm ARCHIVE DESTINATION lib)
+install(FILES "${_gen_header}" DESTINATION include/etnp RENAME lstm.h)
+
+# Highway's compiled runtime (lstm_cell.cc uses HWY_DYNAMIC_DISPATCH -> hwy::GetChosenTarget
+# + per-target trampolines) must ship too, or an external consumer whole-archiving
+# etnp_ops_lstm gets undefined Highway symbols at link. ETNPExtras.cmake wires it as
+# etnp_ops_lstm's plain link dependency (NOT whole-archived).
+install(TARGETS hwy ARCHIVE DESTINATION lib)
+```
+
+- [ ] **Step 2: Write `extras/cmake/ETNPExtras.cmake.in`**
+
+```cmake
+# ETNPExtras.cmake — shipped INSIDE the tarball. Self-describing whole-archive
+# contract for the first-party custom ops in this runtime (extras-only; ET's own
+# backend/ops archives still need whole-archiving per ET's guidance — see the
+# consumer guide). Include AFTER find_package(executorch).
+#
+#   find_package(executorch CONFIG REQUIRED PATHS "<prefix>/lib/cmake/ExecuTorch")
+#   include("<prefix>/lib/cmake/ETNPExtras/ETNPExtras.cmake")
+#   etnp_extras_whole_archive(my_consumer_target)
+#
+# Paths are relative to THIS file, so the tree stays relocatable.
+get_filename_component(_etnp_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+add_library(etnp_ops_lstm STATIC IMPORTED)
+set_target_properties(etnp_ops_lstm PROPERTIES
+  IMPORTED_LOCATION "${_etnp_prefix}/lib/libetnp_ops_lstm.a"
+  INTERFACE_INCLUDE_DIRECTORIES "${_etnp_prefix}/include")
+
+# Highway's compiled runtime ships alongside the op (dynamic dispatch). Declare it and
+# make it etnp_ops_lstm's link dependency so consumers pull it transitively — plain-linked,
+# NOT whole-archived (only the registrar archive needs whole-archiving). Named etnp_hwy to
+# avoid colliding with a consumer's own `hwy` target.
+add_library(etnp_hwy STATIC IMPORTED)
+set_target_properties(etnp_hwy PROPERTIES
+  IMPORTED_LOCATION "${_etnp_prefix}/lib/libhwy.a")
+set_target_properties(etnp_ops_lstm PROPERTIES
+  INTERFACE_LINK_LIBRARIES etnp_hwy)
+
+# The archives a consumer MUST whole-archive (pure static-init registration TUs).
+# Future extras append here automatically; consumers never edit a link line.
+set(ETNP_EXTRAS_WHOLE_ARCHIVE_LIBS @ETNP_EXTRAS_INSTALL_LIBS@)
+
+# Apply the correct per-OS whole-archive wrapping to <target>'s link.
+function(etnp_extras_whole_archive target)
+  foreach(_lib IN LISTS ETNP_EXTRAS_WHOLE_ARCHIVE_LIBS)
+    if(APPLE)
+      target_link_libraries(${target} PRIVATE
+        "-Wl,-force_load,$<TARGET_PROPERTY:${_lib},IMPORTED_LOCATION>")
+    elseif(MSVC)
+      target_link_libraries(${target} PRIVATE ${_lib}
+        "/WHOLEARCHIVE:$<TARGET_PROPERTY:${_lib},IMPORTED_LOCATION>")
+    else()  # GNU ld / Linux
+      target_link_libraries(${target} PRIVATE
+        "$<LINK_LIBRARY:WHOLE_ARCHIVE,${_lib}>")
+    endif()
+  endforeach()
+endfunction()
+```
+
+- [ ] **Step 3: Configure + install the config from `extras/CMakeLists.txt`**
+
+Append:
+```cmake
+# Render ETNPExtras.cmake with the concrete whole-archive lib list and install it.
+string(REPLACE ";" " " ETNP_EXTRAS_INSTALL_LIBS "${ETNP_EXTRAS_LIBS}")
+configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/ETNPExtras.cmake.in"
+               "${CMAKE_BINARY_DIR}/ETNPExtras.cmake" @ONLY)
+install(FILES "${CMAKE_BINARY_DIR}/ETNPExtras.cmake"
+        DESTINATION lib/cmake/ETNPExtras)
+```
+
+- [ ] **Step 4: Wire the extras build/install into `build-runtime.sh`**
+
+In `build-runtime.sh`, immediately AFTER the `cmake --install "$ET_BUILD" --prefix "$PREFIX"` line and BEFORE the `>> measuring relocatability` block (so the relocatability + syslib rewrites also cover `ETNPExtras.cmake`), insert:
+
+```bash
+echo ">> building extras (custom ops) against the installed prefix"
+EXTRAS_BUILD="$ET_BUILD/../etnp-extras-$VARIANT"
+cmake -B "$EXTRAS_BUILD" -S "$HERE/extras" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+  -DCMAKE_PREFIX_PATH="$PREFIX" \
+  -DCMAKE_INSTALL_PREFIX="$PREFIX"
+# Building the link probe runs the POST_BUILD nm-guard (registrar survived).
+cmake --build "$EXTRAS_BUILD" -j"$(nproc)"
+cmake --install "$EXTRAS_BUILD" --prefix "$PREFIX"
+```
+
+- [ ] **Step 5: Pass Highway's license through in `build-runtime.sh`**
+
+The existing license passthrough only scans ET's `third-party/`/`backends/`. Highway is fetched by the extras build. In the `>> license passthrough` block, after the ET license loop, add:
+
+```bash
+# Highway (fetched by the extras build) — its LICENSE is not in ET's tree.
+hwy_lic="$(find "$EXTRAS_BUILD" -path '*highway-src/LICENSE' -type f 2>/dev/null | head -n1 || true)"
+if [ -n "$hwy_lic" ]; then
+  cp "$hwy_lic" "$PREFIX/THIRD-PARTY-NOTICES/highway_LICENSE"
+else
+  echo ">> WARNING: Highway LICENSE not found under $EXTRAS_BUILD" >&2
+fi
+```
+
+- [ ] **Step 6: Write the failing consumer-members shell test `test/extras_members.test.sh`**
+
+```bash
+#!/usr/bin/env bash
+# Asserts a built prefix ships the extras members and that ETNPExtras.cmake is
+# relocatable (no absolute build-prefix leaked). PREFIX defaults to out-logging.
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+PREFIX="${PREFIX:-$here/../out-logging}"
+fail=0
+for m in lib/libetnp_ops_lstm.a lib/libhwy.a include/etnp/lstm.h lib/cmake/ETNPExtras/ETNPExtras.cmake \
+         THIRD-PARTY-NOTICES/highway_LICENSE; do
+  if [ ! -e "$PREFIX/$m" ]; then echo "MISSING: $m"; fail=1; fi
+done
+# op name baked into the header matches the frozen contract
+grep -q 'etnp::lstm.out' "$PREFIX/include/etnp/lstm.h" || { echo "op-name constant missing"; fail=1; }
+# relocatable: no absolute prefix path in the shipped config
+if grep -q "$(cd "$PREFIX" && pwd)" "$PREFIX/lib/cmake/ETNPExtras/ETNPExtras.cmake" 2>/dev/null; then
+  echo "ETNPExtras.cmake leaked an absolute prefix path"; fail=1
+fi
+[ "$fail" -eq 0 ] && echo "OK: extras members present + relocatable" || exit 1
+```
+
+- [ ] **Step 7: Run a full variant build, then the test**
+
+Run (in manylinux, with an ET checkout at `./executorch`):
+```bash
+export PATH=/opt/python/cp312-cp312/bin:$PATH
+./build-runtime.sh --variant logging --prefix "$PWD/out-logging" --et-src "$PWD/executorch"
+PREFIX="$PWD/out-logging" bash test/extras_members.test.sh
+```
+Expected: build succeeds (extras built + guard passed + installed); test prints `OK: extras members present + relocatable`.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add extras/cmake/ETNPExtras.cmake.in extras/lstm/runtime/CMakeLists.txt \
+        extras/CMakeLists.txt build-runtime.sh test/extras_members.test.sh
+git commit -m "feat(extras): install ETNPExtras.cmake whole-archive helper; wire into build-runtime.sh"
+```
+
+---
+
+### Task 5B: Provision the `executorch` Python package for AOT export (prerequisite for Task 7)
+
+`build-runtime.sh`'s pip bootstrap installs only `pyyaml`/`ninja`/`torch==2.12.0+cpu` —
+**not** the `executorch` Python package. Task 7's round-trip does
+`from executorch.exir import to_edge_transform_and_lower`, so the export venv needs
+`executorch` installed **from the same `--et-src` checkout at the pinned commit**, so
+the AOT lowering passes (`ToOutVarPass`, `to_edge_transform_and_lower`) match the
+built runtime exactly — no `.pte` skew. (Task 6's AOT module itself uses only
+`torch.library`; the `executorch` dep is strictly Task 7's, provisioned here early.)
+
+**Files:**
+- Create: `extras/README.md` (dev guide: provisioning the export venv, building `.pte`s)
+
+**Interfaces:**
+- Produces a Python environment where `import executorch` and
+  `from executorch.exir import to_edge_transform_and_lower` succeed. Consumed by
+  Task 7 (local) and Task 8 (CI). Creating this env is a **prerequisite** — the plan
+  does not depend on any pre-existing venv in the workspace.
+
+- [ ] **Step 1: Create a fresh export venv and install `executorch` from `--et-src`**
+
+Create a virtual environment and install the `executorch` package from the same
+pinned ET checkout the runtime is built from, via the canonical from-source installer
+`./install_executorch.sh` (delegates to `install_executorch.py`; installs its own
+pinned torch + `executorch` into the active environment).
+
+**Local (fast path — `uv`):** use `uv` to create the venv. `install_executorch.sh`
+shells out to pip, so seed pip into the venv with `--seed`:
+```bash
+uv venv --seed --python 3.12 .export-venv
+. .export-venv/bin/activate
+(cd executorch && ./install_executorch.sh)   # from the --et-src checkout
+```
+(Plain-stdlib fallback if `uv` is unavailable: `python3.12 -m venv .export-venv`.)
+
+**CI:** the ephemeral manylinux container python **is** the environment — Task 8
+installs `executorch` into it directly (no venv, **no `uv`**). `uv` stays a
+local-only convenience so CI takes on no new dependency or risk.
+
+- [ ] **Step 2: Verify the AOT surface imports (let executorch's torch stick)**
+
+`install_executorch.py` pins its own torch. **Let it win** — do not re-pin it.
+`build-runtime.sh`'s `torch==2.12.0+cpu` is only a shortcut mirroring ExecuTorch's
+pin for the *runtime* build; the export env's torch is whatever executorch dictates,
+and the C++ runtime is built from ET source independently, so there is no skew to
+guard against. Just confirm the AOT surface imports:
+```bash
+python -c "import torch, executorch; \
+  from executorch.exir import to_edge_transform_and_lower; \
+  print('exir ok; torch', torch.__version__)"
+```
+Expected: `exir ok; torch <whatever executorch pinned>` (informational — no assertion).
+
+- [ ] **Step 3: Write `extras/README.md` (dev guide)**
+
+```markdown
+# extras/ — first-party custom ops
+
+Each subdirectory is one op bundle (LSTM is extra #1): `runtime/` (torch-free C++
+kernel + registrar), `aot/` (torch export definition), `test/` (mandatory tests),
+and `extra.yaml` (the single source of truth for the op name + schema).
+
+## Building the runtime archive
+`build-runtime.sh` builds `extras/` against the installed ExecuTorch prefix after
+the ET install and installs `libetnp_ops_lstm.a` + `include/etnp/lstm.h` +
+`lib/cmake/ETNPExtras/ETNPExtras.cmake` into the prefix. No separate step needed.
+
+## Building `.pte` artifacts / running the round-trip (needs an export venv)
+The AOT export path needs the `executorch` Python package installed **from the same
+ExecuTorch source (`--et-src`) at the pinned commit** the runtime is built from, so
+lowering passes match the runtime exactly. Create the env fresh — it's a prerequisite:
+
+- **Local (fast):** `uv venv --seed --python 3.12 .export-venv && . .export-venv/bin/activate`,
+  then `(cd executorch && ./install_executorch.sh)`. (`--seed` gives the venv pip, which
+  the installer uses; plain `python3.12 -m venv` works too if `uv` is unavailable.)
+- **CI:** install into the container python directly (no venv, no `uv`).
+
+`./install_executorch.sh` pins its own torch — let that version stick (don't re-pin;
+the C++ runtime is built from ET source independently, so there's no skew). Then
+confirm `from executorch.exir import to_edge_transform_and_lower` imports.
+
+Then: `ETNP_PREFIX=<built-prefix> python -m pytest extras/lstm/test/test_lstm_roundtrip.py`.
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add extras/README.md
+git commit -m "docs(extras): provision export venv (executorch python from --et-src) + bundle README"
+```
+
+---
+
+### Task 6: Port Face 3 (AOT definition), schema read from `extra.yaml`
+
+Port the torch AOT op so a model calling `etnp::lstm` lowers to a `.pte` referencing `etnp::lstm.out`, with schema strings sourced from `extra.yaml` (no drift).
+
+**Files:**
+- Create (port + modify): `extras/lstm/aot/etnp_lstm_op.py`
+- Test: `extras/lstm/test/test_aot_defines_op.py`
+
+**Interfaces:**
+- Produces importable module `etnp_lstm_op` that, on import, registers `etnp::lstm` + `etnp::lstm.out` (CompositeExplicitAutograd + fake). Consumed by Task 7's round-trip.
+
+- [ ] **Step 1: Port the AOT source**
+
+```bash
+mkdir -p extras/lstm/aot
+git -C /home/corey/workspace/executorch-numpy-runtime \
+  show 95a5efd:tools/etnp_lstm_op.py > extras/lstm/aot/etnp_lstm_op.py
+```
+
+- [ ] **Step 2: Modify the two `_lib.define(...)` calls to read `extra.yaml`**
+
+In `extras/lstm/aot/etnp_lstm_op.py`, replace the hardcoded define strings with values from the single source. Replace:
+```python
+_lib = Library("etnp", "DEF")
+_lib.define(
+    "lstm(Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh, "
+    "Tensor? b_ih, Tensor? b_hh) -> (Tensor, Tensor, Tensor)")
+_lib.define(
+    "lstm.out(Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh, "
+    "Tensor? b_ih, Tensor? b_hh, *, Tensor(a!) output, Tensor(b!) hn, Tensor(c!) cn) "
+    "-> (Tensor(a!), Tensor(b!), Tensor(c!))")
+```
+with:
+```python
+import pathlib, sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))  # extras/
+from generate_schema_header import load_schema
+_schema = load_schema(pathlib.Path(__file__).resolve().parents[1] / "extra.yaml")
+_lib = Library(_schema["namespace"], "DEF")
+_lib.define(_schema["functional"])
+_lib.define(_schema["out"])
+```
+(The docstring, `_lstm_ref`, the two `@impl` CompositeExplicitAutograd registrations, and `@register_fake("etnp::lstm")` are unchanged — that is the proven "survives lowering" recipe, Gotcha C.)
+
+- [ ] **Step 3: Write the failing test `extras/lstm/test/test_aot_defines_op.py`**
+
+```python
+import torch  # noqa: F401  (registers the dispatcher)
+
+def test_import_registers_lstm_out():
+    import extras.lstm.aot.etnp_lstm_op  # noqa: F401  side-effect: defines the op
+    # The .out overload must exist under the frozen name, else exports won't lower.
+    assert hasattr(torch.ops.etnp, "lstm")
+    # functional fake shape-propagates
+    T, B, I, H = 3, 2, 4, 5
+    inp = torch.randn(T, B, I)
+    h0 = torch.zeros(B, H); c0 = torch.zeros(B, H)
+    w_ih = torch.randn(4 * H, I); w_hh = torch.randn(4 * H, H)
+    out, hn, cn = torch.ops.etnp.lstm(inp, h0, c0, w_ih, w_hh, None, None)
+    assert tuple(out.shape) == (T, B, H)
+    assert tuple(hn.shape) == (B, H) and tuple(cn.shape) == (B, H)
+```
+
+- [ ] **Step 4: Run the test (needs torch)**
+
+Run: `python -m pytest extras/lstm/test/test_aot_defines_op.py -v`
+Expected: PASS (run in the export/build venv with `torch==2.12.0+cpu`).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add extras/lstm/aot/etnp_lstm_op.py extras/lstm/test/test_aot_defines_op.py
+git commit -m "feat(extras): port LSTM AOT op; schema read from extra.yaml"
+```
+
+---
+
+### Task 7: Face 4 — live torch round-trip test + C++ runner
+
+The definitive proof: export an `nn.LSTM` through the custom op to a `.pte`, run it against the *built tarball* via a C++ runner that uses the shipped whole-archive helper, and compare to torch eager at 1e-4.
+
+**Files:**
+- Create: `extras/lstm/test/lstm_runner.cpp`
+- Create: `extras/lstm/test/CMakeLists.txt`
+- Create: `extras/lstm/test/test_lstm_roundtrip.py`
+
+**Interfaces:**
+- Consumes: the installed prefix (`etnp_ops_lstm`, `ETNPExtras.cmake`), `etnp_lstm_op.py` (Task 6).
+- `lstm_runner <model.pte> <inputs.bin> <out.bin>`: loads the `.pte`, runs it with the given flat float inputs, writes flat float outputs.
+
+> **Correction to an earlier draft of this task (found during implementation):**
+> the `Wrap` module below stores the LSTM weights as plain tensor *attributes*
+> (`self.wih = ...`, not `nn.Parameter`/`register_buffer`) and `forward(x, h0, c0)`
+> takes only the 3 runtime tensors. `torch.export` therefore traces `self.wih`
+> etc. as closed-over tensors and **lifts them as `InputKind.CONSTANT_TENSOR`s
+> baked into the `.pte`** — they are NOT part of the exported `forward`'s
+> argument list. Verified empirically via `ep.graph_signature.input_specs`:
+> `[CONSTANT_TENSOR c_wih, CONSTANT_TENSOR c_whh, CONSTANT_TENSOR c_bih,
+> CONSTANT_TENSOR c_bhh, USER_INPUT x, USER_INPUT h0, USER_INPUT c0]`. So the
+> exported method's **arity is 3** (`x`, `h0`, `c0`); `lstm_runner` and
+> `test_lstm_roundtrip.py` build a 3-tensor `in.bin` and pass only those 3 to
+> `module.forward` — NOT the 7-tensor version an earlier draft assumed. Also:
+> the flatbuffer stores the op's name (`"etnp::lstm"`) and overload
+> (`"out"`) as separate string fields, not one contiguous `"etnp::lstm.out"` run
+> of bytes, so the sanity check below inspects
+> `executorch_program.execution_plan[0].operators` instead of doing a raw
+> substring search on `pte.buffer`.
+
+- [ ] **Step 1: Write the C++ runner `extras/lstm/test/lstm_runner.cpp`**
+
+```cpp
+// Loads a .pte using etnp::lstm.out and runs it against the BUILT tarball —
+// the first real exercise of the shipped consumer contract (whole-archived via
+// ETNPExtras.cmake). Reads flat little-endian float32 inputs, writes float32 output.
+//   lstm_runner <model.pte> <inputs.bin> <out.bin>
+// inputs.bin = concat of input,h0,c0 (row-major). The exported .pte bakes the LSTM
+// weights (w_ih, w_hh, b_ih, b_hh) as CONSTANTS (plain tensor attributes on the
+// traced nn.Module, not graph inputs) -- torch.export lifts them out of forward's
+// argument list, so the exported method takes only (x, h0, c0).
+#include <cstdint>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+
+#include <executorch/extension/module/module.h>
+#include <executorch/extension/tensor/tensor_ptr.h>
+
+using executorch::extension::Module;
+using executorch::extension::make_tensor_ptr;
+using executorch::runtime::EValue;
+
+static std::vector<float> read_floats(const char* p) {
+  std::ifstream f(p, std::ios::binary | std::ios::ate);
+  if (!f) { std::fprintf(stderr, "cannot open %s\n", p); std::exit(2); }
+  const std::streamsize n = f.tellg(); f.seekg(0);
+  std::vector<float> v(static_cast<size_t>(n) / sizeof(float));
+  f.read(reinterpret_cast<char*>(v.data()), n);
+  return v;
+}
+
+int main(int argc, char** argv) {
+  if (argc != 4) { std::fprintf(stderr, "usage: lstm_runner model inputs out\n"); return 2; }
+  // Shapes are fixed by the test that generates inputs.bin (see the .py).
+  // T,B,I,H are passed via env to keep the runner tiny and shape-agnostic.
+  const int T = std::atoi(std::getenv("LSTM_T"));
+  const int B = std::atoi(std::getenv("LSTM_B"));
+  const int I = std::atoi(std::getenv("LSTM_I"));
+  const int H = std::atoi(std::getenv("LSTM_H"));
+
+  std::vector<float> blob = read_floats(argv[2]);
+  size_t off = 0;
+  auto take = [&](size_t n) { const float* p = blob.data() + off; off += n; return p; };
+  auto in  = take((size_t)T * B * I);
+  auto h0  = take((size_t)B * H);
+  auto c0  = take((size_t)B * H);
+
+  auto t_in  = make_tensor_ptr({T, B, I}, const_cast<float*>(in));
+  auto t_h0  = make_tensor_ptr({B, H},   const_cast<float*>(h0));
+  auto t_c0  = make_tensor_ptr({B, H},   const_cast<float*>(c0));
+
+  Module module(argv[1]);
+  std::vector<EValue> inputs = {*t_in, *t_h0, *t_c0};
+  const auto res = module.forward(inputs);
+  if (!res.ok()) { std::fprintf(stderr, "forward failed\n"); return 1; }
+  const auto out = res.get()[0].toTensor();  // output [T,B,H]
+
+  std::ofstream of(argv[3], std::ios::binary);
+  of.write(reinterpret_cast<const char*>(out.const_data_ptr<float>()),
+           (std::streamsize)out.numel() * sizeof(float));
+  return 0;
+}
+```
+
+- [ ] **Step 2: Write `extras/lstm/test/CMakeLists.txt` (runner links via the installed helper)**
+
+```cmake
+# The runner links the INSTALLED extras exactly as a downstream consumer would:
+# find_package(executorch) + include the shipped ETNPExtras.cmake + call the helper.
+cmake_minimum_required(VERSION 3.24)
+project(etnp_lstm_runner LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(executorch CONFIG REQUIRED)
+include("${ETNP_PREFIX}/lib/cmake/ETNPExtras/ETNPExtras.cmake")
+
+add_executable(lstm_runner lstm_runner.cpp)
+target_link_libraries(lstm_runner PRIVATE
+  executorch optimized_native_cpu_ops_lib xnnpack_backend
+  extension_module_static extension_data_loader extension_tensor)
+etnp_extras_whole_archive(lstm_runner)   # shipped helper wraps etnp_ops_lstm
+```
+
+- [ ] **Step 3: Write the round-trip test `extras/lstm/test/test_lstm_roundtrip.py`**
+
+```python
+"""Live round-trip: nn.LSTM -> export+lower through etnp::lstm -> run vs a C++
+runner built against the installed tarball -> compare to torch eager @ 1e-4.
+Requires: torch, a built+installed prefix (ETNP_PREFIX), cmake, a C++ compiler.
+Replaces the MVP committed-golden workaround.
+
+NOTE on input arity: `Wrap` stores the LSTM weights as plain tensor attributes
+(not graph inputs). torch.export traces `self.wih` etc. as closed-over tensors
+and lifts them as CONSTANTS baked into the .pte (not part of forward's argument
+list), rather than as extra graph inputs. The exported/lowered `forward` method
+therefore takes only the 3 runtime tensors (x, h0, c0) -- verified empirically by
+inspecting `ep.graph_signature`/`pte` and by running the C++ runner. The 4 weight
+tensors are NOT part of in.bin and are NOT passed to `module.forward`.
+"""
+import os, pathlib, struct, subprocess, sys, tempfile
+import numpy as np
+import torch
+
+HERE = pathlib.Path(__file__).resolve().parent
+PREFIX = pathlib.Path(os.environ["ETNP_PREFIX"]).resolve()
+
+sys.path.insert(0, str(HERE.parents[2]))          # repo root, for extras.*
+import extras.lstm.aot.etnp_lstm_op  # noqa: F401  registers the op
+
+T, B, I, H = 5, 2, 4, 3
+
+
+def _weights(lstm):
+    # torch.nn.LSTM single-layer names: weight_ih_l0 [4H,I], weight_hh_l0 [4H,H],
+    # bias_ih_l0/bias_hh_l0 [4H]. Gate order i,f,g,o matches the kernel.
+    return (lstm.weight_ih_l0.detach(), lstm.weight_hh_l0.detach(),
+            lstm.bias_ih_l0.detach(), lstm.bias_hh_l0.detach())
+
+
+class Wrap(torch.nn.Module):
+    def __init__(self, wih, whh, bih, bhh):
+        super().__init__()
+        self.wih, self.whh, self.bih, self.bhh = wih, whh, bih, bhh
+
+    def forward(self, x, h0, c0):
+        return torch.ops.etnp.lstm(x, h0, c0, self.wih, self.whh, self.bih, self.bhh)
+
+
+def _build_runner(build_dir):
+    subprocess.run(["cmake", "-B", str(build_dir), "-S", str(HERE), "-G", "Ninja",
+                    f"-DCMAKE_PREFIX_PATH={PREFIX}", f"-DETNP_PREFIX={PREFIX}"], check=True)
+    subprocess.run(["cmake", "--build", str(build_dir), "--target", "lstm_runner"], check=True)
+    return build_dir / "lstm_runner"
+
+
+def test_roundtrip_matches_eager():
+    torch.manual_seed(0)
+    lstm = torch.nn.LSTM(I, H, num_layers=1, batch_first=False)
+    wih, whh, bih, bhh = _weights(lstm)
+    x = torch.randn(T, B, I)
+    h0 = torch.zeros(B, H); c0 = torch.zeros(B, H)
+
+    # eager reference (nn.LSTM wants h/c as [num_layers, B, H])
+    eager_out, _ = lstm(x, (h0.unsqueeze(0), c0.unsqueeze(0)))
+
+    # export + lower (no partitioner -> op stays opaque -> ToOutVarPass -> lstm.out)
+    from executorch.exir import to_edge_transform_and_lower
+    ep = torch.export.export(Wrap(wih, whh, bih, bhh), (x, h0, c0))
+
+    # The 4 weight tensors are plain (non-Parameter) attributes closed over by
+    # forward, so torch.export lifts them as constants, NOT graph inputs. Assert
+    # the observed arity so a future torch/export-recipe change that flips this
+    # back to lifting weights as inputs fails loudly here instead of silently
+    # mismatching the runner's 3-input contract.
+    user_inputs = [
+        s for s in ep.graph_signature.input_specs
+        if s.kind == torch.export.graph_signature.InputKind.USER_INPUT
+    ]
+    assert len(user_inputs) == 3, (
+        f"expected export to bake weights as constants (3 user inputs: x,h0,c0), "
+        f"got {len(user_inputs)}: {[s.arg.name for s in user_inputs]}")
+
+    pte = to_edge_transform_and_lower(ep).to_executorch()
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    model = tmp / "lstm.pte"
+    model.write_bytes(pte.buffer)
+
+    # sanity: the lowered program references exactly our out op. The flatbuffer
+    # stores the op name ("etnp::lstm") and overload ("out") as separate string
+    # fields (verified via executorch_program.execution_plan[0].operators), so
+    # they are NOT one contiguous "etnp::lstm.out" byte run in pte.buffer --
+    # check via the structured API instead of a raw substring search.
+    ops = pte.executorch_program.execution_plan[0].operators
+    assert any(op.name == "etnp::lstm" and op.overload == "out" for op in ops), ops
+
+    # flat inputs, runtime tensors only (x, h0, c0) -- schema order for what's
+    # actually left as a forward() argument after weight-baking.
+    def flat(*ts):
+        return b"".join(struct.pack(f"{t.numel()}f", *t.flatten().tolist()) for t in ts)
+    (tmp / "in.bin").write_bytes(flat(x, h0, c0))
+
+    runner = _build_runner(tmp / "rbuild")
+    env = {**os.environ, "LSTM_T": str(T), "LSTM_B": str(B),
+           "LSTM_I": str(I), "LSTM_H": str(H)}
+    subprocess.run([str(runner), str(model), str(tmp / "in.bin"), str(tmp / "out.bin")],
+                   check=True, env=env)
+
+    got = np.frombuffer((tmp / "out.bin").read_bytes(), dtype=np.float32).reshape(T, B, H)
+    ref = eager_out.detach().numpy()
+    assert np.allclose(got, ref, rtol=1e-4, atol=1e-4), np.abs(got - ref).max()
+```
+
+- [ ] **Step 4: Run the round-trip against a built prefix**
+
+Run with the **export venv from Task 5B** activated (the one where `executorch.exir`
+imports), after Task 5's `build-runtime.sh` produced `out-logging`:
+```bash
+. .export-venv/bin/activate
+ETNP_PREFIX="$PWD/out-logging" python -m pytest \
+  extras/lstm/test/test_lstm_roundtrip.py -v
+```
+Expected: PASS — the `.pte`'s execution plan references op `etnp::lstm` overload `out`, the runner loads+runs it (with only `x`, `h0`, `c0` as inputs — the weights are baked in as constants) against the tarball, and output matches eager within 1e-4 (observed max|diff| ~3e-8).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add extras/lstm/test/lstm_runner.cpp extras/lstm/test/CMakeLists.txt \
+        extras/lstm/test/test_lstm_roundtrip.py
+git commit -m "feat(extras): live torch round-trip test + C++ runner (consumer contract)"
+```
+
+---
+
+### Task 8: CI — gate the release on the round-trip (executable targets)
+
+The static guard already runs inside every `build` matrix cell (Task 4/5). Add the live round-trip as a gating step in `release.yml`'s `build` job, only on targets that can execute a built binary.
+
+**Files:**
+- Modify: `.github/workflows/release.yml`
+
+- [ ] **Step 1: Add a round-trip gate step to the `build` job**
+
+In `.github/workflows/release.yml`, after the `Build runtime` step and before `Package`, insert (both current linux combos use native runners — x86_64 and `ubuntu-24.04-arm` — so both execute; if a future build-only/cross target is added, gate this step on it):
+
+```yaml
+      - name: LSTM round-trip gate (export -> run vs eager)
+        # The LSTM op is variant-identical (bare/logging/devtools compile the same
+        # kernel), so gate on the `logging` variant only rather than all 3 — this
+        # cuts the ~15min in-container executorch install from 6x/release to
+        # 2x/release with no coverage loss. Both platforms still run, for
+        # aarch64 SIMD parity coverage.
+        if: matrix.variant == 'logging'
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          # AOT export needs the executorch python package from the SAME pinned ET
+          # source we built the runtime from (Task 5B). It pins its own torch —
+          # let that version stick; the C++ runtime is built from ET source
+          # independently, so there is no skew to guard against.
+          (cd executorch && ./install_executorch.sh)
+          pip install numpy pytest ninja   # ninja: round-trip builds lstm_runner with -G Ninja; not in the base image
+          ETNP_PREFIX="$PWD/out" python -m pytest \
+            extras/lstm/test/test_lstm_roundtrip.py -v
+```
+
+Notes for the implementer:
+- The `executorch` python package is installed here from the checked-out ET source (`./executorch`) via `install_executorch.sh` (Task 5B) — it is **not** part of `build-runtime.sh`'s bootstrap.
+- `install_executorch.sh` pins its own torch; do not re-pin. The step adds `numpy`/`pytest` (compare + test runner) and `ninja` (the round-trip builds `lstm_runner` with `-G Ninja`, which is not in the base manylinux image).
+- `--prefix "$PWD/out"` is what the `Build runtime` step used, so `ETNP_PREFIX=$PWD/out`.
+- The op is variant-identical (bare/logging/devtools compile the same kernel), so
+  the step is gated to the `logging` variant only via `if: matrix.variant ==
+  'logging'` at the step level — this avoids paying the ~15min in-container
+  `install_executorch.sh` cost 6x/release (3 variants x 2 platforms) when 2x
+  (1 variant x 2 platforms) gives identical coverage. Both platforms still run,
+  preserving aarch64 SIMD parity coverage.
+
+- [ ] **Step 2: Validate the workflow YAML**
+
+Run:
+```bash
+python -c "import yaml,sys; yaml.safe_load(open('.github/workflows/release.yml')); print('yaml ok')"
+```
+Expected: `yaml ok`.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add .github/workflows/release.yml
+git commit -m "ci: gate release build on the LSTM live round-trip (logging variant only)"
+```
+
+---
+
+### Task 9: Docs + third-party notice + tarball re-roll
+
+Ship the consumer contract as a self-contained doc, surface the new Highway dependency in top-level docs, and note the re-roll mechanics. (Highway's LICENSE passthrough was wired in Task 5.)
+
+**Files:**
+- Create: `docs/lstm-op-consumer-guide.md`
+- Modify: `README.md`
+- Test: `test/extras_members.test.sh` already asserts `THIRD-PARTY-NOTICES/highway_LICENSE` (Task 5) — no new test.
+
+- [ ] **Step 1: Write `docs/lstm-op-consumer-guide.md`**
+
+Content (self-contained; do NOT diff against `handover-to-engine.md`):
+```markdown
+# Consumer Guide: `etnp::lstm.out`
+
+This runtime ships a first-party custom LSTM operator, `etnp::lstm.out`, inside
+**every variant** of the tarball (bare/logging/devtools) on every platform. Any
+consumer that links the runtime and whole-archives the op gets it registered at
+load time — no build flag.
+
+## The op
+- **Name (frozen, baked into `.pte`s):** `etnp::lstm.out` (functional `etnp::lstm`).
+- **Schema:** single-layer, unidirectional, `batch_first=False`, float32, contiguous.
+  `input [T,B,I]`, `h0/c0 [B,H]`, `w_ih [4H,I]`, `w_hh [4H,H]`, optional biases `[4H]`;
+  `output [T,B,H]`, `hn/cn [B,H]`. Gate order i,f,g,o.
+- Produce a `.pte` with the AOT definition in `extras/lstm/aot/etnp_lstm_op.py`
+  (`to_edge_transform_and_lower` with **no** partitioner keeps the op opaque;
+  `ToOutVarPass` yields `etnp::lstm.out`).
+
+## Linking (the whole-archive requirement)
+`libetnp_ops_lstm.a` is a pure static-initializer registration archive: unless it
+is whole-archived at your final link it is GC'd away and you get
+"operator etnp::lstm.out not found" at model-load time. The tarball ships a helper
+so you don't hand-roll the per-OS flags:
+
+    find_package(executorch CONFIG REQUIRED PATHS "<prefix>/lib/cmake/ExecuTorch")
+    include("<prefix>/lib/cmake/ETNPExtras/ETNPExtras.cmake")
+    add_library(my_consumer SHARED ...)
+    target_link_libraries(my_consumer PRIVATE executorch ...)
+    etnp_extras_whole_archive(my_consumer)   # applies --whole-archive / -force_load / /WHOLEARCHIVE:
+
+**ET's own archives still need whole-archiving too.** `ETNPExtras` covers only the
+first-party extras (`etnp_ops_lstm`). ExecuTorch's `xnnpack_backend`,
+`portable_ops_lib`/`optimized_native_cpu_ops_lib`, etc. must likewise be
+whole-archived per ExecuTorch's guidance — `ETNPExtras` deliberately does not
+enumerate them (they drift across ET versions).
+
+## Performance envelope (why it exists)
+Versus the naive decomposition ExecuTorch emits: the custom `.pte` is **constant in
+T** (naive grows with T; 2.8×–27× smaller over T=16→256 at H=32), **faster at every
+benchmarked (T,H)** (1.66×–9.78× across H∈{32,64,128}, T∈{16,64,256}), and exports
+shapes the naive path cannot complete (T=256,H=128 never finishes a 120s budget).
+The custom op is the default choice for the supported LSTM shape.
+
+## Cross-platform note
+The live round-trip test gates every *executable* CI target (today linux-x86_64 and
+linux-aarch64, both native runners). When macOS/Windows/arm64 targets gain runners,
+run the round-trip there too — the per-OS whole-archive path in the helper above is
+exactly what it validates.
+```
+
+- [ ] **Step 2: Surface Highway in `README.md`**
+
+Add a short dependency note to `README.md` (place near the existing build/dependency description):
+```markdown
+## Bundled first-party op & dependencies
+
+This runtime ships the custom `etnp::lstm.out` operator in every variant (see
+`docs/lstm-op-consumer-guide.md`). Building it pulls one additional pinned
+dependency beyond ExecuTorch's own third-party set:
+
+- **Google Highway 1.4.0** (SIMD; SHA256 `e72241ac9524bb653ae52ced768b508045d4438726a303f10181a38f764a453c`)
+  — fetched by the `extras/` build and linked into `libetnp_ops_lstm.a`. Its license
+  is passed through into the tarball's `THIRD-PARTY-NOTICES/`.
+
+XNNPACK (already part of ExecuTorch) is reused from the built prefix; no new XNNPACK
+dependency is introduced.
+```
+
+- [ ] **Step 3: Verify docs reference real, shipped paths**
+
+Run:
+```bash
+grep -q 'etnp_extras_whole_archive' docs/lstm-op-consumer-guide.md && \
+grep -q 'Highway 1.4.0' README.md && echo "docs ok"
+```
+Expected: `docs ok`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add docs/lstm-op-consumer-guide.md README.md
+git commit -m "docs: LSTM op consumer guide + surface Highway 1.4.0 dependency"
+```
+
+- [ ] **Step 5: Re-roll note (no code) — cutting the tarball that ships the op**
+
+The op ships on the next release tag. To cut it: push a new `v<etver>-<pkgrev>` tag
+(bump `pkgrev` for a re-roll of the same ET version). `release.yml` builds all three
+variants × both platforms (each now carrying `etnp_ops_lstm`, gated by the round-trip),
+`package.sh` tars them, `gen-pin.sh` emits `EtRuntimePin.cmake`. The numpy-runtime
+follow-up (pin bump + torch-free consumer smoke test, Strategy Decision 2) happens in
+*that* repo — out of scope here. This step is documentation; nothing to commit.
+
+---
+
+## Immediate follow-up (out of scope for this plan, do next)
+
+**Stand up a dedicated QA gate (push/PR CI).** Today the only workflow is
+`release.yml` (on tag) — appropriate while this repo merely *rebuilt an upstream
+ExecuTorch release*, where correctness was ExecuTorch's to own. That calculus
+changes the moment this repo ships **its own custom code** (`etnp::lstm.out`): we
+now own QA of it, and validating custom code only at release-tag time is too late.
+
+This plan gates the release build (Task 8) and runs the static guard on every build
+(Task 4/5), which is the minimum to ship safely. The follow-up is a separate
+`ci.yml` triggered on push/PR that, inside the local `manylinux_2_28` container,
+builds one variant (`logging`/`linux-x86_64`) and runs the extras test suite — the
+analytic kernel test, the nm-guard, and the live round-trip — so regressions are
+caught on the branch, not at tag time. Scope it as its own brainstorm/plan cycle:
+decide caching/build-time budget (a full ET-from-source build per PR is expensive —
+consider `SKIP_ET_BUILD=1` reuse or a prebuilt-prefix cache), and which subset gates
+vs. runs nightly. Track as the next work item after this plan lands.
+
+## Environment note
+
+The `manylinux_2_28` container is present locally and confirmed working, so the
+container-bound steps (Tasks 3, 5, 7, 8) can be executed directly — no container
+setup is a blocker for this plan.
+
+---
+
+## Self-Review
+
+**Spec coverage:**
+- Objective 1 (kernel compiled/whole-archived/guarded) → Tasks 3, 4, 5. ✓
+- Objective 2 (always-on every variant, name frozen) → Task 5 (extras built inside each `build-runtime.sh` variant call), Global Constraints, Task 3 Step 2. ✓
+- Objective 3 (live round-trip @1e-4) → Task 7. ✓
+- Objective 4 (extras bundle, convention not framework) → Tasks 2–5 (glob, no codegen framework). ✓
+- Face 1 → Task 3; Face 2 → Task 2 + Task 3 Step 2 + Task 6 Step 2; Face 3 → Task 6; Face 4 → Task 7. ✓
+- XNNPACK-from-prefix → Task 3 CMake; Highway fetch → Task 3; Highway license → Task 5; Highway docs → Task 9. ✓
+- Highway dependency rationale (not reinventing ET's torch-coupled `at::vec`; XNNPACK reused for gemm) → Task 1 Step 4 (recorded in the findings note). ✓
+- Shipped whole-archive declaration (extras-only, per-OS helper) → Task 5. ✓
+- Manifest guard (one TU/op, no dup names, static/every build) → Task 4 + Task 3 Step 4 (dup check). ✓
+- Static-guard-everywhere vs execute-per-target split → Task 4 (probe, all builds) vs Task 7/8 (round-trip, executable targets). ✓
+- Consumer doc (clean, not editing handover) → Task 9; `handover-to-engine.md` untouched. ✓
+- `package.sh` unchanged for members (ride lib/include) → confirmed in Task 5 (install into prefix; existing `package.sh` copies `lib/`+`include/`). ✓
+- De-risk unknowns (make_boxed cap, xnnpack, aarch64 executes) → Task 1. ✓
+- `executorch` Python package for AOT export (not in `build-runtime.sh`'s bootstrap) → Task 5B installs it from `--et-src` via `install_executorch.sh`; consumed by Task 7 (local export venv) and Task 8 (CI step installs it in-job). Torch: whatever executorch pins is authoritative — not re-pinned. ✓
+
+**Placeholder scan:** No TBD/TODO; every code step has full content; verbatim ports use exact `git show` commands with verification. ✓
+
+**Type consistency:** `etnp_ops_lstm` target, `ETNP_EXTRAS_WHOLE_ARCHIVE_LIBS`, `etnp_extras_whole_archive()`, `ETNP_EXTRAS_EXPECT_TUS`/`ETNP_EXTRAS_ALL_EXPECT_TUS`, `_GLOBAL__sub_I_etnp_lstm.cpp`, `load_schema()`, `kLstmOutName`, `ETNP_PREFIX`, `LSTM_{T,B,I,H}` env — used consistently across tasks. ✓
+
+**One residual risk to watch during execution:** the exact target names `XNNPACK` / `pthreadpool` exported by the ET prefix's `executorch-config.cmake` (Task 3 Step 3 links them by name). If `find_package(ExecuTorch)` does not export those as targets, link via the installed `lib/libXNNPACK.a` / `lib/libpthreadpool.a` paths instead — confirm at Task 3 Step 7 (the first extras build) and adjust the two `target_link_libraries(... PRIVATE XNNPACK pthreadpool)` names if needed.

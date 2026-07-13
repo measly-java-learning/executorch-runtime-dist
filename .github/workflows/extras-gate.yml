@@ -1,0 +1,191 @@
+name: extras-gate
+on:
+  pull_request:
+    paths:
+      - 'extras/**'
+      - 'build-runtime.sh'
+      - 'scripts/classify-gate.sh'
+      - '.github/workflows/extras-gate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.c.outputs.mode }}
+      etver: ${{ steps.c.outputs.etver }}
+      release_tag: ${{ steps.c.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0            # need the merge base to diff against base_ref
+      - name: Changed files vs base
+        run: git diff --name-only "origin/${{ github.base_ref }}...HEAD" > changed.txt
+      - id: c
+        env:
+          GH_TOKEN: ${{ github.token }}   # classify-gate.sh's gh release lookup
+        run: ./scripts/classify-gate.sh changed.txt | tee -a "$GITHUB_OUTPUT"
+
+  # Download + verify (sha256 + attestation) the logging tarballs (both arches) and the
+  # fixtures in an ubuntu job, because `gh` is not present in the manylinux containers.
+  fetch:
+    needs: classify
+    if: needs.classify.outputs.mode == 'tier1' || needs.classify.outputs.mode == 'tier2'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read        # gh attestation verify (same-repo PRs; fork tokens can't elevate)
+    env:
+      ETVER: ${{ needs.classify.outputs.etver }}
+      RELEASE_TAG: ${{ needs.classify.outputs.release_tag }}
+      GH_TOKEN: ${{ github.token }}
+      # Fork PRs run with a reduced, secret-less read token GitHub does not let the workflow
+      # elevate, so `gh attestation verify` can fail on forks. sha256 is the MANDATORY
+      # integrity gate in every case (the .sha256 is published by our release, so a match
+      # proves the bytes are exactly what we shipped); attestation is defense-in-depth —
+      # enforced for same-repo PRs, best-effort (skipped with a notice) on forks, so
+      # external contributions are never blocked.
+      IS_SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - name: Download + verify runtime tarballs + fixtures
+        run: |
+          set -euo pipefail
+          mkdir gate-inputs
+          # Build the -p pattern list as a bash ARRAY (never via `printf %q` + word-split:
+          # %q emits shell quoting that command-substitution does NOT re-parse, so a quoted
+          # token would reach gh as a literal-quote glob and silently match nothing).
+          fx="etnp-lstm-fixtures-${ETVER}.tar.gz"
+          patterns=( -p "$fx" -p "$fx.sha256" )
+          for plat in linux-x86_64 linux-aarch64; do
+            tb="executorch-runtime-${ETVER}-logging-${plat}.tar.gz"
+            patterns+=( -p "$tb" -p "$tb.sha256" )
+          done
+          ( cd gate-inputs && gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" "${patterns[@]}" )
+          cd gate-inputs
+          for f in *.tar.gz; do
+            sha256sum -c "$f.sha256"                 # mandatory integrity gate (all PRs, incl. forks)
+          done
+          if [ "$IS_SAME_REPO" = "true" ]; then
+            for f in *.tar.gz; do
+              gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"   # provenance (defense-in-depth)
+            done
+          else
+            echo "::notice::fork PR — skipping gh attestation verify (fork token lacks access); sha256 integrity is still enforced. See docs/extras-gate.md."
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gate-inputs
+          path: gate-inputs/*
+
+  # Tier 1: torch-free consumer smoke on BOTH arches. Rebuilds extras from the branch
+  # against the downloaded prefix, then runs the published .pte vs golden.
+  fast-gate:
+    needs: [classify, fetch]
+    if: needs.classify.outputs.mode == 'tier1' || needs.classify.outputs.mode == 'tier2'
+    runs-on: ${{ matrix.combo.runs_on }}
+    container:
+      image: ${{ matrix.combo.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        combo:
+          - { platform: linux-x86_64,  container: "quay.io/pypa/manylinux_2_28_x86_64",  runs_on: ubuntu-latest }
+          - { platform: linux-aarch64, container: "quay.io/pypa/manylinux_2_28_aarch64", runs_on: ubuntu-24.04-arm }
+    env:
+      ETVER: ${{ needs.classify.outputs.etver }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: gate-inputs
+          path: gate-inputs
+      - name: Extract prefix + fixtures
+        run: |
+          set -euo pipefail
+          mkdir prefix fixtures
+          tar -C prefix   -xzf "gate-inputs/executorch-runtime-${ETVER}-logging-${{ matrix.combo.platform }}.tar.gz" --strip-components=1
+          tar -C fixtures -xzf "gate-inputs/etnp-lstm-fixtures-${ETVER}.tar.gz"
+      - name: Scrub shipped extras (so a rename/removal cannot false-pass)
+        run: |
+          rm -f  prefix/lib/libetnp_ops_*.a prefix/lib/libhwy.a
+          rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
+      - name: Rebuild extras from branch (phase 2 only) + consumer smoke
+        run: |
+          set -euo pipefail
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          pip install ninja numpy    # cmake is present in the manylinux image (as in release.yml)
+          ./build-runtime.sh --extras-only --variant logging --prefix "$PWD/prefix"
+          FIXTURES_DIR="$PWD/fixtures" ETNP_PREFIX="$PWD/prefix" \
+            python extras/lstm/test/consumer_smoke.py
+
+  # Tier 2: the live torch round-trip (AOT<->runtime drift), reusing the downloaded
+  # prefix so it STILL skips the ~15min ET compile — only torch/export is added.
+  live-roundtrip:
+    needs: [classify, fetch]
+    if: needs.classify.outputs.mode == 'tier2'
+    runs-on: ubuntu-latest
+    container:
+      image: "quay.io/pypa/manylinux_2_28_x86_64"
+    env:
+      ETVER: ${{ needs.classify.outputs.etver }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout ExecuTorch source (for the export python package)
+        uses: ./.github/actions/checkout-executorch
+        with:
+          ref: v${{ needs.classify.outputs.etver }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: gate-inputs
+          path: gate-inputs
+      - name: Extract prefix + rebuild extras from branch
+        run: |
+          set -euo pipefail
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          mkdir prefix
+          tar -C prefix -xzf "gate-inputs/executorch-runtime-${ETVER}-logging-linux-x86_64.tar.gz" --strip-components=1
+          rm -f  prefix/lib/libetnp_ops_*.a prefix/lib/libhwy.a
+          rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
+          pip install ninja
+          ./build-runtime.sh --extras-only --variant logging --prefix "$PWD/prefix"
+      - name: Live round-trip (export -> run vs eager)
+        uses: ./.github/actions/lstm-roundtrip
+        with:
+          # workspace-relative: the action re-roots onto $PWD (real container workspace),
+          # NOT the github.workspace expression (host path — invisible inside the container).
+          prefix: prefix
+
+  # Fallback: any build-runtime.sh change (or no matching release) → a full-build
+  # release DRY-RUN. Full ET compile + live round-trip + fixture-emit (not published),
+  # so a green gate means the eventual release tag will build — before spending a pkgrev.
+  full-build:
+    needs: classify
+    if: needs.classify.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    container:
+      image: "quay.io/pypa/manylinux_2_28_x86_64"
+    env:
+      ETVER: ${{ needs.classify.outputs.etver }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout ExecuTorch source
+        uses: ./.github/actions/checkout-executorch
+        with:
+          ref: v${{ needs.classify.outputs.etver }}
+      - name: Full build (release dry-run — full ET compile)
+        run: |
+          set -euo pipefail
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          ./build-runtime.sh --variant logging --prefix "$PWD/out" \
+            --et-src "$PWD/et-src/executorch" --et-tag "v${ETVER}"
+      - name: Live round-trip (export -> run vs eager)
+        uses: ./.github/actions/lstm-roundtrip
+        with:
+          # workspace-relative (built at $PWD/out above); see the note in the tier2 job.
+          prefix: out
+      - name: Fixture-emit dry-run (prove emit works; not published)
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures-dryrun"

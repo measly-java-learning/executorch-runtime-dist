@@ -1,0 +1,19 @@
+# One op = one bundle. This file is the SINGLE SOURCE OF TRUTH for the op name
+# and schema; both the C++ registrar (via a generated header) and the Python AOT
+# read from here so the two faces cannot drift.
+namespace: etnp
+op: lstm
+# variants this op ships in. [all] => every tarball variant (bare/logging/devtools).
+# RESERVED / unused today: everything is always-on, so only [all] is honored. The
+# field is designed in now (annoying to retrofit) and VALIDATED at consumption
+# (load_schema rejects anything but [all]) so a stray value fails loudly rather than
+# being silently ignored. Per-op variant gating is future work.
+variants: [all]
+schema:
+  functional: >-
+    lstm(Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh,
+    Tensor? b_ih, Tensor? b_hh) -> (Tensor, Tensor, Tensor)
+  out: >-
+    lstm.out(Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh,
+    Tensor? b_ih, Tensor? b_hh, *, Tensor(a!) output, Tensor(b!) hn,
+    Tensor(c!) cn) -> (Tensor(a!), Tensor(b!), Tensor(c!))
