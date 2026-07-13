@@ -5,11 +5,12 @@ inputs:
     description: ET install prefix to test against (becomes ETNP_PREFIX)
     required: true
   executorch-src:
-    description: Path to the checked-out ExecuTorch source (for install_executorch.sh).
-      Must NOT be named 'executorch' — it sits under the workspace root that `python -m
-      pytest` puts on sys.path, so that name would shadow the installed wheel (pytorch/executorch#5766).
+    description: Path to the checked-out ExecuTorch source (for install_executorch.sh). Its
+      LEAF dir must be named 'executorch' (ET install requirement) but must NOT sit at the
+      workspace root, or that name shadows the installed wheel under `python -m pytest`'s cwd
+      (pytorch/executorch#5766) — hence the nested default.
     required: false
-    default: et-src
+    default: et-src/executorch
 runs:
   using: composite
   steps:

@@ -177,7 +177,7 @@ jobs:
           set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           ./build-runtime.sh --variant logging --prefix "$PWD/out" \
-            --et-src "$PWD/et-src" --et-tag "v${ETVER}"
+            --et-src "$PWD/et-src/executorch" --et-tag "v${ETVER}"
       - name: Live round-trip (export -> run vs eager)
         uses: ./.github/actions/lstm-roundtrip
         with:
