@@ -4,12 +4,15 @@ inputs:
   prefix:
     description: >-
       ET install prefix to test against (becomes ETNP_PREFIX). Pass this
-      WORKSPACE-RELATIVE (e.g. `out`): container jobs must NOT use
-      `${{ github.workspace }}` here — that expression yields the runner HOST
-      path (/home/runner/work/...), but the prefix lives at the in-container
+      WORKSPACE-RELATIVE (e.g. `out`): container jobs must NOT use the
+      github.workspace expression here — it yields the runner HOST path
+      (/home/runner/work/...), but the prefix lives at the in-container
       workspace ($PWD = /__w/...), so an absolute host path makes find_package
       miss the config. A relative value is re-rooted onto $PWD below; an
       absolute value is used as-is (caller owns making it container-correct).
+      (Deliberately no expression syntax in this description — expressions in
+      an input description are evaluated at action load, where the github
+      context is not in scope, which fails the whole action manifest.)
     required: true
   executorch-src:
     description: Path to the checked-out ExecuTorch source (for install_executorch.sh). Its
@@ -26,10 +29,10 @@ runs:
         export PATH=/opt/python/cp312-cp312/bin:$PATH
         # Re-root a workspace-relative prefix onto the REAL in-container workspace ($PWD =
         # /__w/...). The build installed to `$PWD/out` in this same job, so $PWD is the
-        # authoritative root — unlike `${{ github.workspace }}`, which is the host path.
+        # authoritative root — unlike the github.workspace expression, which is the host path.
         prefix="${{ inputs.prefix }}"
         case "$prefix" in /*) ;; *) prefix="$PWD/$prefix" ;; esac
-        [ -d "$prefix" ] || { echo "::error::ETNP_PREFIX '$prefix' not found (cwd=$PWD); pass a workspace-relative prefix, not \${{ github.workspace }}/..."; exit 1; }
+        [ -d "$prefix" ] || { echo "::error::ETNP_PREFIX '$prefix' not found (cwd=$PWD); pass a workspace-relative prefix (e.g. out), not a host absolute path"; exit 1; }
         # AOT export needs the executorch python package from the SAME pinned ET source.
         (cd "${{ inputs.executorch-src }}" && ./install_executorch.sh)
         pip install numpy pytest ninja

@@ -154,7 +154,7 @@ jobs:
         uses: ./.github/actions/lstm-roundtrip
         with:
           # workspace-relative: the action re-roots onto $PWD (real container workspace),
-          # NOT ${{ github.workspace }} (host path — invisible inside the container).
+          # NOT the github.workspace expression (host path — invisible inside the container).
           prefix: prefix
 
   # Fallback: any build-runtime.sh change (or no matching release) → a full-build
