@@ -29,6 +29,10 @@ STEM="$(asset_stem "$ETVER" "$VARIANT" "$PLATFORM")"
 [ -s "$PREFIX/.et_commit" ] || { echo "package.sh: $PREFIX/.et_commit missing or empty (build the runtime first)" >&2; exit 1; }
 ET_COMMIT="$(cat "$PREFIX/.et_commit")"
 
+# .etnp_usdt: written by the extras install (on|off); read for BUILDINFO, never shipped.
+[ -s "$PREFIX/.etnp_usdt" ] || { echo "package.sh: $PREFIX/.etnp_usdt missing or empty (build the extras first)" >&2; exit 1; }
+USDT_STATE="$(cat "$PREFIX/.etnp_usdt")"
+
 # Stage ONLY the C2 members (deterministic) — do NOT ship whatever else the ET install happens to
 # emit (bin/, share/, ...). BUILDINFO is generated into the stage below.
 STAGE_ROOT="$(mktemp -d)"
@@ -43,6 +47,7 @@ CMAKE_FLAGS="$(variant_flags "$VARIANT") $(common_cmake_flags)"
 ET_VERSION="$ETVER" ET_COMMIT="$ET_COMMIT" TORCH_VERSION="2.12.0+cpu" \
   VARIANT="$VARIANT" PLATFORM="$PLATFORM" CMAKE_FLAGS="$CMAKE_FLAGS" \
   TOOLCHAIN="manylinux_2_28 gcc-toolset-14" PACKAGE_TAG="$PACKAGE_TAG" \
+  USDT="$USDT_STATE" \
   "$HERE/gen-buildinfo.sh" > "$STAGE/BUILDINFO"
 
 mkdir -p "$OUTDIR"

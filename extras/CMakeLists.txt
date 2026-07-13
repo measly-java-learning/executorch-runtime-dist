@@ -123,3 +123,8 @@ configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/ETNPExtras.cmake.in"
                "${CMAKE_BINARY_DIR}/ETNPExtras.cmake" @ONLY)
 install(FILES "${CMAKE_BINARY_DIR}/ETNPExtras.cmake"
         DESTINATION lib/cmake/ETNPExtras)
+
+# Provenance marker: records effective USDT state for package.sh -> BUILDINFO usdt=.
+# Written to the prefix root (read at package time, NOT staged into the tarball —
+# same treatment as .et_commit). Value fixed at configure time; path at install time.
+install(CODE "file(WRITE \"\${CMAKE_INSTALL_PREFIX}/.etnp_usdt\" \"${ETNP_USDT_EXPECT_WORD}\\n\")")

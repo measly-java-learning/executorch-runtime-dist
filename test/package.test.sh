@@ -14,6 +14,7 @@ mkdir -p "$p/lib/cmake/ExecuTorch" "$p/include" "$p/THIRD-PARTY-NOTICES" "$p/bin
 : > "$p/bin/pcre2-config"
 : > "$p/share/cpuinfo/cpuinfo-config.cmake"
 echo "deadbeef" > "$p/.et_commit"
+echo "on" > "$p/.etnp_usdt"
 
 out="$(mktemp -d)"
 tb="$(bash "$here/../scripts/package.sh" --prefix "$p" --etver 1.3.1 --variant logging \
@@ -34,5 +35,13 @@ mkdir -p "$p2/lib/cmake/ExecuTorch" "$p2/include" "$p2/THIRD-PARTY-NOTICES"; : >
 bash "$here/../scripts/package.sh" --prefix "$p2" --etver 1.3.1 --variant logging \
   --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$(mktemp -d)" >/dev/null 2>&1
 assert_eq "$?" "1" "missing .et_commit is a hard error"
+
+# A missing .etnp_usdt marker must also be a hard error (provenance completeness).
+p3="$(mktemp -d)/pfx3"
+mkdir -p "$p3/lib/cmake/ExecuTorch" "$p3/include" "$p3/THIRD-PARTY-NOTICES"; : > "$p3/LICENSE"
+echo "deadbeef" > "$p3/.et_commit"   # present, so we fail specifically on .etnp_usdt
+bash "$here/../scripts/package.sh" --prefix "$p3" --etver 1.3.1 --variant logging \
+  --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$(mktemp -d)" >/dev/null 2>&1
+assert_eq "$?" "1" "missing .etnp_usdt is a hard error"
 
 exit "$ASSERT_FAILS"
