@@ -86,6 +86,14 @@ build_extras() {
   echo ">> ensuring USDT probe header (systemtap-sdt-devel)"
   dnf install -y systemtap-sdt-devel \
     || echo ">> WARNING: systemtap-sdt-devel install failed; USDT build will FATAL if enabled"
+  # The extras cmake generates etnp_lstm_schema.h from extra.yaml via
+  # generate_schema_header.py (import yaml). build_extras owns this dep, so every
+  # --extras-only caller is covered — the tier1/tier2 gate jobs run --extras-only
+  # BEFORE install_executorch.sh provides a full env, and the full build already
+  # installed it in phase 1 (redundant here, harmless).
+  echo ">> ensuring extras build deps (pyyaml for schema-gen)"
+  pip install -q pyyaml \
+    || echo ">> WARNING: pyyaml install failed; schema-gen will fail if absent"
   # Place the extras build tree NEXT TO the ET build tree (its sibling), exactly as the
   # pre-refactor inline code did — for both the default and an explicit --build-dir. This
   # keeps the full-build path behaviorally identical (Task 2 review decision).
