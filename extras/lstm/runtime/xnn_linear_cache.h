@@ -21,6 +21,7 @@
 #include <unordered_map>
 
 #include "xnn_linear.h"
+#include "etnp_usdt.h"
 
 namespace etnp {
 
@@ -52,6 +53,7 @@ class XnnLinearCache {
       if (it->second->fingerprint == fp) {
         ++s.hits;
         it->second->stamp = ++s.tick;
+        ETNP_LSTM_CACHE_PROBE_HIT(in_ch, out_ch, s.map.size(), kMaxEntries);
         return it->second;
       }
       s.map.erase(it);  // same address, new content: stale packing
@@ -65,9 +67,17 @@ class XnnLinearCache {
       auto oldest = s.map.begin();
       for (auto jt = s.map.begin(); jt != s.map.end(); ++jt)
         if (jt->second->stamp < oldest->second->stamp) oldest = jt;
+      // occupancy == kMaxEntries here (eviction only happens at the cap); the
+      // victim's key + LRU tick delta (s.tick - stamp) are the diagnostic payload.
+      ETNP_LSTM_CACHE_PROBE_EVICT(in_ch, out_ch, s.map.size(), kMaxEntries,
+                                  oldest->first.ic, oldest->first.oc,
+                                  s.tick - oldest->second->stamp);
       s.map.erase(oldest);  // shared_ptr keeps in-flight users alive
     }
     s.map.emplace(key, entry);
+    // Post-insert occupancy. Fires only on a successful (re)pack, so it equals
+    // s.misses except on the rare XnnLinear::create failure (which returns nullptr).
+    ETNP_LSTM_CACHE_PROBE_MISS(in_ch, out_ch, s.map.size(), kMaxEntries);
     return entry;
   }
 

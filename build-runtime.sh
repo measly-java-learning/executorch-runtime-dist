@@ -79,6 +79,21 @@ CONFIG="$PREFIX/lib/cmake/ExecuTorch/executorch-config.cmake"
 # branch against a downloaded release prefix, skipping the ~15min ET compile).
 build_extras() {
   echo ">> building extras (custom ops) against the installed prefix"
+  # USDT probes need <sys/sdt.h> (systemtap-sdt-devel) at compile time. Install it
+  # unconditionally as provisioning; the CMake option ETNP_ENABLE_USDT stays the
+  # single source of truth for emission. || echo: never abort a deliberate
+  # -DETNP_ENABLE_USDT=OFF build on a box without the package (set -e).
+  echo ">> ensuring USDT probe header (systemtap-sdt-devel)"
+  dnf install -y systemtap-sdt-devel \
+    || echo ">> WARNING: systemtap-sdt-devel install failed; USDT build will FATAL if enabled"
+  # The extras cmake generates etnp_lstm_schema.h from extra.yaml via
+  # generate_schema_header.py (import yaml). build_extras owns this dep, so every
+  # --extras-only caller is covered — the tier1/tier2 gate jobs run --extras-only
+  # BEFORE install_executorch.sh provides a full env, and the full build already
+  # installed it in phase 1 (redundant here, harmless).
+  echo ">> ensuring extras build deps (pyyaml for schema-gen)"
+  pip install -q pyyaml \
+    || echo ">> WARNING: pyyaml install failed; schema-gen will fail if absent"
   # Place the extras build tree NEXT TO the ET build tree (its sibling), exactly as the
   # pre-refactor inline code did — for both the default and an explicit --build-dir. This
   # keeps the full-build path behaviorally identical (Task 2 review decision).

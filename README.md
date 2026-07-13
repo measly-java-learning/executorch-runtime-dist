@@ -36,6 +36,11 @@ dependency beyond ExecuTorch's own third-party set:
 XNNPACK (already part of ExecuTorch) is reused from the built prefix; no new XNNPACK
 dependency is introduced.
 
+On Linux, every variant also emits **USDT tracepoints** for the op's XNNPACK FC cache
+(`etnp:lstm_xnn_cache__hit`/`__miss`/`__evict`) — a zero-dependency way to see cache
+hit/miss/eviction behavior at runtime. See `docs/lstm-xnn-cache-usdt.md`. `BUILDINFO`
+records whether a build carries them (`usdt=on|off`).
+
 ## Cutting a release
 
 Releases are built once per ExecuTorch version and published as attested,
