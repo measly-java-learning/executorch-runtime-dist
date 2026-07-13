@@ -715,7 +715,7 @@ git commit -m "feat(gate): torch-free consumer_smoke over published fixtures"
 
 ```yaml
 name: Checkout ExecuTorch
-description: Check out pytorch/executorch at a tag with submodules, into ./executorch
+description: Check out pytorch/executorch at a tag with submodules, into ./et-src
 inputs:
   ref:
     description: ExecuTorch git ref/tag (e.g. v1.3.1)
@@ -728,7 +728,10 @@ runs:
         repository: pytorch/executorch
         ref: ${{ inputs.ref }}
         submodules: recursive
-        path: executorch
+        # NOT 'executorch': the round-trip's `python -m pytest` runs from the workspace root
+        # (cwd on sys.path), so a dir named `executorch` there shadows the installed wheel with
+        # the un-built source tree (missing exir/_serialize/program.fbs). See pytorch/executorch#5766.
+        path: et-src
 ```
 
 - [ ] **Step 2: Create `.github/actions/lstm-roundtrip/action.yml`**
@@ -743,7 +746,7 @@ inputs:
   executorch-src:
     description: Path to the checked-out ExecuTorch source (for install_executorch.sh)
     required: false
-    default: executorch
+    default: et-src
 runs:
   using: composite
   steps:
@@ -1183,7 +1186,7 @@ jobs:
           set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           ./build-runtime.sh --variant logging --prefix "$PWD/out" \
-            --et-src "$PWD/executorch" --et-tag "v${ETVER}"
+            --et-src "$PWD/et-src" --et-tag "v${ETVER}"
       - name: Live round-trip (export -> run vs eager)
         uses: ./.github/actions/lstm-roundtrip
         with:

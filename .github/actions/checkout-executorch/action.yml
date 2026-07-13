@@ -1,5 +1,5 @@
 name: Checkout ExecuTorch
-description: Check out pytorch/executorch at a tag with submodules, into ./executorch
+description: Check out pytorch/executorch at a tag with submodules, into ./et-src
 inputs:
   ref:
     description: ExecuTorch git ref/tag (e.g. v1.3.1)
@@ -12,4 +12,8 @@ runs:
         repository: pytorch/executorch
         ref: ${{ inputs.ref }}
         submodules: recursive
-        path: executorch
+        # NOT 'executorch': the round-trip runs `python -m pytest` from the workspace root,
+        # which prepends cwd to sys.path — a dir named `executorch` there would shadow the
+        # INSTALLED executorch wheel with the un-built source tree (missing exir/_serialize/
+        # program.fbs), breaking to_executorch(). See pytorch/executorch#5766.
+        path: et-src

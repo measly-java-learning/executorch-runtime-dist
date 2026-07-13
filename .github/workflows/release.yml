@@ -61,7 +61,7 @@ jobs:
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           ./build-runtime.sh --variant "${{ matrix.variant }}" \
-            --prefix "$PWD/out" --et-src "$PWD/executorch" \
+            --prefix "$PWD/out" --et-src "$PWD/et-src" \
             --et-tag "${{ steps.ver.outputs.ettag }}"
       - name: LSTM round-trip gate (export -> run vs eager)
         # Variant-identical kernel: gate on `logging` only (both platforms). The round-trip
