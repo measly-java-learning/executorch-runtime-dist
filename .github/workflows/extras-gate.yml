@@ -153,7 +153,9 @@ jobs:
       - name: Live round-trip (export -> run vs eager)
         uses: ./.github/actions/lstm-roundtrip
         with:
-          prefix: ${{ github.workspace }}/prefix
+          # workspace-relative: the action re-roots onto $PWD (real container workspace),
+          # NOT ${{ github.workspace }} (host path — invisible inside the container).
+          prefix: prefix
 
   # Fallback: any build-runtime.sh change (or no matching release) → a full-build
   # release DRY-RUN. Full ET compile + live round-trip + fixture-emit (not published),
@@ -181,7 +183,8 @@ jobs:
       - name: Live round-trip (export -> run vs eager)
         uses: ./.github/actions/lstm-roundtrip
         with:
-          prefix: ${{ github.workspace }}/out
+          # workspace-relative (built at $PWD/out above); see the note in the tier2 job.
+          prefix: out
       - name: Fixture-emit dry-run (prove emit works; not published)
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH

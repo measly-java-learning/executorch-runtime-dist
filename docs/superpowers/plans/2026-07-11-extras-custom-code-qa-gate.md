@@ -780,7 +780,7 @@ Replace the `LSTM round-trip gate` step (`release.yml:69-85`) — keeping its `i
         if: matrix.variant == 'logging'
         uses: ./.github/actions/lstm-roundtrip
         with:
-          prefix: ${{ github.workspace }}/out
+          prefix: out   # workspace-relative; action re-roots onto $PWD (not the host path from github.workspace)
 ```
 
 - [ ] **Step 4: Add the fixture emit + package step**
@@ -1163,7 +1163,7 @@ jobs:
       - name: Live round-trip (export -> run vs eager)
         uses: ./.github/actions/lstm-roundtrip
         with:
-          prefix: ${{ github.workspace }}/prefix
+          prefix: prefix   # workspace-relative; action re-roots onto $PWD (not the host path from github.workspace)
 
   # Fallback: any build-runtime.sh change (or no matching release) → a full-build
   # release DRY-RUN. Full ET compile + live round-trip + fixture-emit (not published),
@@ -1191,7 +1191,7 @@ jobs:
       - name: Live round-trip (export -> run vs eager)
         uses: ./.github/actions/lstm-roundtrip
         with:
-          prefix: ${{ github.workspace }}/out
+          prefix: out   # workspace-relative; action re-roots onto $PWD (not the host path from github.workspace)
       - name: Fixture-emit dry-run (prove emit works; not published)
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH

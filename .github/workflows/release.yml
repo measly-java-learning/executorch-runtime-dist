@@ -69,7 +69,9 @@ jobs:
         if: matrix.variant == 'logging'
         uses: ./.github/actions/lstm-roundtrip
         with:
-          prefix: ${{ github.workspace }}/out
+          # workspace-relative (built at $PWD/out above); the action re-roots onto $PWD, the
+          # real container workspace — ${{ github.workspace }} is the host path here.
+          prefix: out
       - name: Emit + package LSTM fixtures (arch-independent; x86_64 logging only)
         if: matrix.variant == 'logging' && matrix.combo.platform == 'linux-x86_64'
         run: |
