@@ -126,8 +126,17 @@ jobs:
       - name: Build runtime (MSVC)
         shell: pwsh
         run: |
-          & "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
-          bash ./build-runtime.sh --variant ${{ matrix.variant }} `
+          # Discover the VS install path (edition-agnostic) instead of hardcoding Enterprise, so a
+          # runner-image edition change doesn't silently break the build.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          if (-not $vsPath) { throw "vswhere found no Visual Studio installation" }
+          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+          # Invoke Git-Bash by explicit path (the same bash GitHub's `shell: bash` resolves to) so
+          # PATH order can't select WSL's System32\bash.exe, which would run the recipe in a Linux
+          # environment with no MSVC toolchain.
+          $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
+          & $bash ./build-runtime.sh --variant ${{ matrix.variant }} `
             --prefix "$PWD/out" --et-src "$PWD/et-src/executorch" `
             --et-tag ${{ steps.ver.outputs.ettag }} --platform windows-x86_64
       - name: Package
