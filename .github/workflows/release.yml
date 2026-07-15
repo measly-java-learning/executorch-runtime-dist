@@ -97,15 +97,57 @@ jobs:
           path: dist/*
 
   #
-  # When we're ready to support Windows and macOS it would present as:
-  # 1. New jobs (e.g. `build-windows` and `build-macos`) that use the correct platform instructions for building
-  # 2. The new platforms need to upload their artifacts using the current `dist-variant-platform` pattern seen with Linux today
-  # 3. The `pin` job needs to depend on all the different `build` jobs (Linux, Windows, macOS)
-  # 4. The `pin` job will no longer drive itself from `$PLATFORMS` and will instead identify what artifacts it has from file system discovery
-  # 5. The releases notes would drop `manylinux`
+  # Windows amd64 support is implemented via `build-windows` below (MSVC, logging variant
+  # only, GitHub-hosted windows-2022 runner, no container). macOS remains future work and
+  # would follow the same pattern: a new `build-macos` job, uploading via the same
+  # `dist-variant-platform` naming, added to `pin`'s `needs`.
+
+  build-windows:
+    needs: setup
+    runs-on: windows-2022
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [logging]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Derive versions from tag
+        id: ver
+        shell: bash
+        run: ./scripts/derive-version.sh >> "$GITHUB_OUTPUT"
+      - name: Checkout ExecuTorch source
+        uses: ./.github/actions/checkout-executorch
+        with:
+          ref: ${{ steps.ver.outputs.ettag }}
+      - name: Build runtime (MSVC)
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+          bash ./build-runtime.sh --variant ${{ matrix.variant }} `
+            --prefix "$PWD/out" --et-src "$PWD/et-src/executorch" `
+            --et-tag ${{ steps.ver.outputs.ettag }} --platform windows-x86_64
+      - name: Package
+        shell: bash
+        run: |
+          ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
+            --variant "${{ matrix.variant }}" --platform windows-x86_64 \
+            --package-tag "${GITHUB_REF_NAME}" --outdir "$PWD/dist" \
+            --toolchain "msvc-2022"
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.variant }}-windows-x86_64
+          path: dist/*
 
   pin:
-    needs: build
+    needs: [build, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -151,5 +193,5 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --title "${GITHUB_REF_NAME}" \
-            --notes "ExecuTorch runtime ${GITHUB_REF_NAME} (torch 2.12.0+cpu, manylinux_2_28)." \
+            --notes "ExecuTorch runtime ${GITHUB_REF_NAME} (torch 2.12.0+cpu). Per-artifact toolchain in each BUILDINFO." \
           || gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
