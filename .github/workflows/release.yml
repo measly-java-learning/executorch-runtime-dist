@@ -114,6 +114,19 @@ jobs:
       matrix:
         variant: [logging]
     steps:
+      - name: Configure Git for Windows checkout (long paths + symlinks)
+        # Two Windows-specific git defaults break the recursive ExecuTorch checkout below:
+        #  - longpaths: third-party/ao -> cutlass has CUDA example filenames past the 260-char
+        #    MAX_PATH, so recursive checkout dies with "Filename too long". core.longpaths=true
+        #    makes Git use the \\?\ extended-length prefix.
+        #  - symlinks: Git-for-Windows defaults core.symlinks=false, so ET's symlinked paths would
+        #    materialize as text stub files (containing the target path) and break the build.
+        #    GitHub-hosted windows runners hold SeCreateSymbolicLinkPrivilege, so real symlinks work.
+        # --system so both apply to every git subprocess the checkout action spawns for submodules.
+        shell: pwsh
+        run: |
+          git config --system core.longpaths true
+          git config --system core.symlinks true
       - uses: actions/checkout@v7
       - name: Derive versions from tag
         id: ver
