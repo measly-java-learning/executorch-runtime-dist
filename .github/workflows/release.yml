@@ -159,6 +159,22 @@ jobs:
             --variant "${{ matrix.variant }}" --platform windows-x86_64 \
             --package-tag "${GITHUB_REF_NAME}" --outdir "$PWD/dist" \
             --toolchain "msvc-2022"
+      - name: Relocatability smoke (MSVC link against the packaged tarball)
+        # Gate the artifact before we attest/upload it: prove the tarball we are about to ship is
+        # relocatable (no absolute build path in lib/cmake) and links under MSVC from a moved prefix
+        # via test/consumer's find_package(executorch) probe. Runs on the packaged .tar.gz — the exact
+        # bytes consumers get — so it also catches packaging faults (e.g. lib/cmake not staged).
+        # Same VS-activation -> Git-Bash handoff as the build step; `bash -c` (non-login) inherits the
+        # dev-shell PATH (cmake/ninja/cl) instead of a profile resetting it.
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          if (-not $vsPath) { throw "vswhere found no Visual Studio installation" }
+          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+          $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
+          & $bash -c 'set -euo pipefail; t="$(ls dist/*-windows-x86_64.tar.gz | head -n1)"; ./test/relocatability-windows.sh "$t"'
+          if ($LASTEXITCODE -ne 0) { throw "relocatability smoke failed (exit $LASTEXITCODE)" }
       - name: Attest build provenance
         uses: actions/attest@v4
         with:
