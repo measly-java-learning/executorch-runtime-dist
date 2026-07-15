@@ -208,10 +208,24 @@ if [ "$IS_WINDOWS" -eq 1 ]; then cl 2>&1 | head -1 || true; else gcc --version; 
 ninja --version
 python -V
 
+# On Windows the GitHub runner ships multiple Pythons; cmake's find_package(Python3) picks the
+# newest in the hostedtoolcache (e.g. 3.14.x), but our `pip install pyyaml/torch` above targets
+# whichever `python` is on the Git-Bash PATH (e.g. 3.12.x). ET's codegen (gen_oplist.py) then runs
+# under cmake's interpreter and dies with ModuleNotFoundError: yaml. Pin cmake to the SAME
+# interpreter we installed into so codegen sees our deps. (No-op on Linux: the manylinux container
+# has a single python, so find_package already agrees with our pip.)
+PYTHON_PIN=""
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  py="$(python -c 'import sys; print(sys.executable.replace(chr(92), "/"))')"
+  echo ">> pinning cmake Python to $py (avoids runner multi-interpreter mismatch)"
+  PYTHON_PIN="-DPYTHON_EXECUTABLE=$py -DPython_EXECUTABLE=$py -DPython3_EXECUTABLE=$py"
+fi
+
 echo ">> configuring ($VARIANT, platform=$PLATFORM)"
 # shellcheck disable=SC2086  # deliberate word-splitting of the flag strings
 cmake -B "$ET_BUILD" -S "$ET_SRC" -G Ninja $CONFIGURE_BASE \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+  $PYTHON_PIN \
   $VARIANT_FLAGS $(common_cmake_flags)
 
 echo ">> building"
