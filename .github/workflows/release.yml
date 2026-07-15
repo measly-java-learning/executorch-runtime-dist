@@ -120,12 +120,9 @@ jobs:
           eval "$(./scripts/derive-version.sh)"
           base="${{ github.server_url }}/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}"
           args=(--version "$pkgver" --etver "$etver" --base-url "$base")
-          for platform in $(echo "$PLATFORMS" | jq -r '.[].platform'); do
-            for variant in bare logging devtools; do
-              sha="$(cut -d' ' -f1 "dist/executorch-runtime-${etver}-${variant}-${platform}.tar.gz.sha256")"
-              args+=(--row "$variant" "$platform" "$sha")
-            done
-          done
+          while IFS=$'\t' read -r variant platform sha; do
+            args+=(--row "$variant" "$platform" "$sha")
+          done < <(./scripts/discover-pin-rows.sh --dir dist --etver "$etver")
           ./scripts/gen-pin.sh "${args[@]}" > dist/EtRuntimePin.cmake
           {
             echo '```cmake'
