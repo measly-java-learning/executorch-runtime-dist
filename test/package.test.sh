@@ -44,4 +44,28 @@ bash "$here/../scripts/package.sh" --prefix "$p3" --etver 1.3.1 --variant loggin
   --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$(mktemp -d)" >/dev/null 2>&1
 assert_eq "$?" "1" "missing .etnp_usdt is a hard error"
 
+# --- provenance: --toolchain override + recorded preset (Windows-parity plumbing) ---
+pw="$(mktemp -d)/pfxw"
+mkdir -p "$pw/lib/cmake/ExecuTorch" "$pw/include" "$pw/THIRD-PARTY-NOTICES"
+: > "$pw/lib/cmake/ExecuTorch/executorch-config.cmake"; : > "$pw/include/et.h"; : > "$pw/LICENSE"
+: > "$pw/THIRD-PARTY-NOTICES/xnnpack_LICENSE"; echo deadbeef > "$pw/.et_commit"; echo "n/a" > "$pw/.etnp_usdt"
+outw="$(mktemp -d)"
+tbw="$(bash "$here/../scripts/package.sh" --prefix "$pw" --etver 1.3.1 --variant logging \
+  --platform windows-x86_64 --package-tag v1.3.1-1 --outdir "$outw" --toolchain msvc-2022)"
+bi="$(tar -xzOf "$tbw" executorch-runtime-1.3.1-logging-windows-x86_64/BUILDINFO)"
+assert_contains "$bi" "toolchain=msvc-2022"                        "--toolchain override recorded"
+assert_contains "$bi" "cmake_flags=-DCMAKE_BUILD_TYPE=Release"     "windows flat configure base recorded (not a preset)"
+assert_contains "$bi" "-DEXECUTORCH_BUILD_EXECUTOR_RUNNER=ON"      "windows base flag recorded"
+case "$bi" in *"cmake_flags="*"--preset"*) printf 'FAIL: windows provenance must not record a preset\n' >&2; exit 1 ;; esac
+case "$bi" in *KERNELS_OPTIMIZED*|*KERNELS_QUANTIZED*) printf 'FAIL: windows provenance must not record optimized/quantized kernels\n' >&2; exit 1 ;; esac
+assert_contains "$bi" "usdt=n/a"                                   "core-only usdt sentinel recorded"
+
+# Default toolchain preserved when --toolchain omitted (linux back-compat), and linux preset recorded.
+outl="$(mktemp -d)"
+tbl="$(bash "$here/../scripts/package.sh" --prefix "$p" --etver 1.3.1 --variant logging \
+  --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$outl")"
+bil="$(tar -xzOf "$tbl" executorch-runtime-1.3.1-logging-linux-x86_64/BUILDINFO)"
+assert_contains "$bil" "toolchain=manylinux_2_28 gcc-toolset-14" "default toolchain preserved"
+assert_contains "$bil" "cmake_flags=--preset linux"              "linux preset recorded in provenance"
+
 exit "$ASSERT_FAILS"

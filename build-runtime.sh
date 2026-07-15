@@ -11,6 +11,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/scripts/lib/variants.sh"
 . "$HERE/scripts/lib/cmakeflags.sh"
+. "$HERE/scripts/lib/configure-base.sh"
 
 # As we run as root inside a container, set this flag to avoid log spam
 export PIP_ROOT_USER_ACTION=ignore
@@ -29,7 +30,7 @@ on a mounted volume to inspect artifacts out of the container. Set SKIP_ET_BUILD
 EOF
 }
 
-VARIANT=""; PREFIX=""; ET_SRC=""; ET_TAG="$DEFAULT_ET_TAG"; BUILD_DIR=""; PRINT_FLAGS=0
+VARIANT=""; PREFIX=""; ET_SRC=""; ET_TAG="$DEFAULT_ET_TAG"; BUILD_DIR=""; PRINT_FLAGS=0; PLATFORM="linux-x86_64"
 EXTRAS_ONLY=0; PRINT_ET_TAG=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,6 +40,7 @@ while [ $# -gt 0 ]; do
     --et-tag)    ET_TAG="${2:-}"; shift 2 ;;
     --build-dir) BUILD_DIR="${2:-}"; shift 2 ;;
     --print-flags) PRINT_FLAGS=1; shift ;;
+    --platform)  PLATFORM="${2:-}"; shift 2 ;;
     --extras-only)   EXTRAS_ONLY=1; shift ;;
     --print-et-tag)  PRINT_ET_TAG=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -65,6 +67,15 @@ trap cleanup EXIT
 
 [ -n "$VARIANT" ] || { echo "--variant required" >&2; exit 2; }
 VARIANT_FLAGS="$(variant_flags "$VARIANT")"   # returns 2 on unknown -> set -e aborts with code 2
+CONFIGURE_BASE="$(et_configure_base "$PLATFORM")"   # returns 2 on unknown platform -> set -e aborts
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; *) IS_WINDOWS=0 ;; esac
+# On Windows the pwsh caller passes $PWD with backslashes (C:\...\out), but cmake writes forward-slash
+# paths into lib/cmake/*.cmake. The relocatability leak-scan below (grep -rl "$PREFIX") would then
+# search for a backslash string the forward-slash file content never contains -> a real prefix leak
+# would go undetected, and a backslash PREFIX is unsafe as a grep/sed pattern. Normalize to forward
+# slashes (cmake accepts them as an install prefix) so the scan and any rewrite operate on cmake-shaped
+# paths. Guarded on non-empty PREFIX so the --print-flags path (PREFIX may be unset) is untouched.
+if [ "$IS_WINDOWS" -eq 1 ] && [ -n "$PREFIX" ]; then PREFIX="${PREFIX//\\//}"; fi
 
 if [ "$PRINT_FLAGS" -eq 1 ]; then
   printf '%s\n' "$VARIANT_FLAGS"
@@ -178,6 +189,12 @@ else
   echo "   (nothing to patch — source already patched)"
 fi
 
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  echo ">> patching flatc_ep BUILD_BYPRODUCTS for WIN32 (.exe) — upstream flatc byproduct bug"
+  sed -i 's#\(BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc\)$#\1.exe#' \
+    "$ET_SRC/third-party/CMakeLists.txt" || true
+fi
+
 # Rather than the full `install_requirements.sh` from the ExecuTorch source,
 # just install the minimal set of deps for our build process
 echo ">> installing python deps"
@@ -187,25 +204,30 @@ pip install "$TORCH_SPEC" --index-url https://download.pytorch.org/whl/cpu
 
 echo ">> Toolchain versions"
 cmake --version
-gcc --version
-g++ --version
+if [ "$IS_WINDOWS" -eq 1 ]; then cl 2>&1 | head -1 || true; else gcc --version; g++ --version; fi
 ninja --version
 python -V
 
-echo ">> configuring ($VARIANT)"
+echo ">> configuring ($VARIANT, platform=$PLATFORM)"
 # shellcheck disable=SC2086  # deliberate word-splitting of the flag strings
-cmake -B "$ET_BUILD" -S "$ET_SRC" -G Ninja --preset linux \
+cmake -B "$ET_BUILD" -S "$ET_SRC" -G Ninja $CONFIGURE_BASE \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
   $VARIANT_FLAGS $(common_cmake_flags)
 
 echo ">> building"
-cmake --build "$ET_BUILD" -j"$(nproc)"
+if [ "$IS_WINDOWS" -eq 1 ]; then JOBS="${NUMBER_OF_PROCESSORS:-4}"; else JOBS="$(nproc)"; fi
+cmake --build "$ET_BUILD" -j"$JOBS"
 
 echo ">> installing to $PREFIX"
 mkdir -p "$PREFIX"
 cmake --install "$ET_BUILD" --prefix "$PREFIX"
 
-build_extras
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  echo ">> Windows: core-only build, skipping extras (phase 2)"
+  printf 'n/a\n' > "$PREFIX/.etnp_usdt"   # packaging requires this marker; no extras/USDT on Windows
+else
+  build_extras
+fi
 
 echo ">> measuring relocatability"
 # capture once (`|| true`: grep exits 1 on no match, which must not abort under set -e/pipefail)
@@ -225,13 +247,15 @@ fi
 # though the lib is present. Rewrite each to its bare link name so the consumer's own linker
 # resolves it via -l<name>. Anchored on /usr/lib64/ so project archives under
 # ${PACKAGE_PREFIX_DIR}/lib are never touched. (|| true: grep exits 1 on no match under set -e.)
-echo ">> normalizing absolute system-library paths to -l<name> (portability across host libdirs)"
-syslib="$(grep -rlE '/usr/lib64/lib[a-z0-9_]+\.(so|a)' "$PREFIX/lib/cmake" 2>/dev/null || true)"
-if [ -n "$syslib" ]; then
-  echo ">> WARNING: absolute system-lib paths leaked into cmake configs; rewriting to bare link names"
-  printf '%s\n' "$syslib" | while read -r f; do
-    sed -i -E 's#/usr/lib64/lib([a-z0-9_]+)\.(so|a)#\1#g' "$f"
-  done
+if [ "$IS_WINDOWS" -eq 0 ]; then
+  echo ">> normalizing absolute system-library paths to -l<name> (portability across host libdirs)"
+  syslib="$(grep -rlE '/usr/lib64/lib[a-z0-9_]+\.(so|a)' "$PREFIX/lib/cmake" 2>/dev/null || true)"
+  if [ -n "$syslib" ]; then
+    echo ">> WARNING: absolute system-lib paths leaked into cmake configs; rewriting to bare link names"
+    printf '%s\n' "$syslib" | while read -r f; do
+      sed -i -E 's#/usr/lib64/lib([a-z0-9_]+)\.(so|a)#\1#g' "$f"
+    done
+  fi
 fi
 
 echo ">> license passthrough"
@@ -247,7 +271,7 @@ for d in "$ET_SRC/third-party" "$ET_SRC/backends"; do
   done || true
 done
 
-install_highway_license
+if [ "$IS_WINDOWS" -eq 0 ]; then install_highway_license; fi
 
 # safe.directory='*': the checkout may be owned by a different uid than the container user (mounted
 # tree / CI), which otherwise trips git's "dubious ownership" guard and blocks rev-parse.

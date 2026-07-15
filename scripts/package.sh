@@ -5,8 +5,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/naming.sh"
 . "$HERE/lib/variants.sh"
 . "$HERE/lib/cmakeflags.sh"
+. "$HERE/lib/configure-base.sh"
 
-PREFIX=""; ETVER=""; VARIANT=""; PLATFORM=""; PACKAGE_TAG=""; OUTDIR="."
+PREFIX=""; ETVER=""; VARIANT=""; PLATFORM=""; PACKAGE_TAG=""; OUTDIR="."; TOOLCHAIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --prefix) PREFIX="$2"; shift 2 ;;
@@ -15,12 +16,14 @@ while [ $# -gt 0 ]; do
     --platform) PLATFORM="$2"; shift 2 ;;
     --package-tag) PACKAGE_TAG="$2"; shift 2 ;;
     --outdir) OUTDIR="$2"; shift 2 ;;
+    --toolchain) TOOLCHAIN="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 for v in PREFIX ETVER VARIANT PLATFORM PACKAGE_TAG; do
   [ -n "${!v}" ] || { echo "--${v,,} required" >&2; exit 2; }
 done
+: "${TOOLCHAIN:=manylinux_2_28 gcc-toolset-14}"
 
 STEM="$(asset_stem "$ETVER" "$VARIANT" "$PLATFORM")"
 
@@ -43,10 +46,10 @@ for m in lib include LICENSE THIRD-PARTY-NOTICES; do
   cp -a "$PREFIX/$m" "$STAGE/"
 done
 
-CMAKE_FLAGS="$(variant_flags "$VARIANT") $(common_cmake_flags)"
+CMAKE_FLAGS="$(et_configure_base "$PLATFORM") $(variant_flags "$VARIANT") $(common_cmake_flags)"
 ET_VERSION="$ETVER" ET_COMMIT="$ET_COMMIT" TORCH_VERSION="2.12.0+cpu" \
   VARIANT="$VARIANT" PLATFORM="$PLATFORM" CMAKE_FLAGS="$CMAKE_FLAGS" \
-  TOOLCHAIN="manylinux_2_28 gcc-toolset-14" PACKAGE_TAG="$PACKAGE_TAG" \
+  TOOLCHAIN="$TOOLCHAIN" PACKAGE_TAG="$PACKAGE_TAG" \
   USDT="$USDT_STATE" \
   "$HERE/gen-buildinfo.sh" > "$STAGE/BUILDINFO"
 
