@@ -69,6 +69,13 @@ trap cleanup EXIT
 VARIANT_FLAGS="$(variant_flags "$VARIANT")"   # returns 2 on unknown -> set -e aborts with code 2
 CONFIGURE_BASE="$(et_configure_base "$PLATFORM")"   # returns 2 on unknown platform -> set -e aborts
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; *) IS_WINDOWS=0 ;; esac
+# On Windows the pwsh caller passes $PWD with backslashes (C:\...\out), but cmake writes forward-slash
+# paths into lib/cmake/*.cmake. The relocatability leak-scan below (grep -rl "$PREFIX") would then
+# search for a backslash string the forward-slash file content never contains -> a real prefix leak
+# would go undetected, and a backslash PREFIX is unsafe as a grep/sed pattern. Normalize to forward
+# slashes (cmake accepts them as an install prefix) so the scan and any rewrite operate on cmake-shaped
+# paths. Guarded on non-empty PREFIX so the --print-flags path (PREFIX may be unset) is untouched.
+if [ "$IS_WINDOWS" -eq 1 ] && [ -n "$PREFIX" ]; then PREFIX="${PREFIX//\\//}"; fi
 
 if [ "$PRINT_FLAGS" -eq 1 ]; then
   printf '%s\n' "$VARIANT_FLAGS"
