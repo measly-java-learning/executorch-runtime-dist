@@ -19,8 +19,19 @@
 # Run inside Git-Bash from an activated VS dev shell (Launch-VsDevShell.ps1 -Arch amd64).
 # Usage: relocatability-windows.sh <extracted-prefix-dir | *.tar.gz>
 set -euo pipefail
-IN="${1:?usage: relocatability-windows.sh <extracted-prefix-dir | *.tar.gz>}"
+IN="${1:?usage: relocatability-windows.sh <extracted-prefix-dir | *.tar.gz> [platform]}"
+PLATFORM="${2:-windows-x86_64}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# The consumer probe MUST be built with the same CRT as the artifact. MSVC bakes the CRT into every
+# object and refuses to mix them (LNK4098/LNK2005), so a /MD probe against a /MT artifact fails —
+# and a probe that silently used the wrong CRT would certify an artifact it never actually tested.
+# The mapping lives in scripts/lib/configure-base.sh; do NOT re-derive it here.
+# shellcheck source=../scripts/lib/configure-base.sh
+. "$HERE/../scripts/lib/configure-base.sh"
+CRT="$(crt_for_platform "$PLATFORM")" || {
+  echo "FAIL: no CRT for platform '$PLATFORM'" >&2; exit 2; }
+echo ">> platform under test: $PLATFORM (CRT=$CRT)"
 
 # This gate compiles+links, so it needs the MSVC toolchain on PATH. ninja + cl.exe ship with VS and
 # are only visible after Launch-VsDevShell; fail early with an actionable message if they are not.
@@ -75,6 +86,7 @@ cp -a "$SRC" "$RELO"
 BUILD="$SCRATCH/consumer-build"
 cmake -S "$(winpath "$HERE/consumer")" -B "$(winpath "$BUILD")" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_MSVC_RUNTIME_LIBRARY="$CRT" \
   -DCMAKE_PREFIX_PATH="$(winpath "$RELO")"
 cmake --build "$(winpath "$BUILD")"
-echo "GATE PASS: windows-x86_64 artifact is relocatable AND links under MSVC"
+echo "GATE PASS: $PLATFORM artifact is relocatable AND links under MSVC with CRT=$CRT"
