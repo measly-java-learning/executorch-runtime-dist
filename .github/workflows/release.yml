@@ -87,6 +87,12 @@ jobs:
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
             --variant "${{ matrix.variant }}" --platform "${{ matrix.combo.platform }}" \
             --package-tag "${GITHUB_REF_NAME}" --outdir "$PWD/dist"
+      - name: Relocatability + PIC gate
+        # Producing position-independent static libs is this repo's whole purpose, so prove it on the
+        # real built prefix before the artifact is attested. The script self-provisions inside
+        # manylinux (pip-installs ninja, sources gcc-toolset-14) and links test/consumer as a SHARED
+        # library — a .so link is what actually catches a PIC regression; an executable would not.
+        run: bash test/relocatability.sh "$PWD/out"
       - name: Attest build provenance
         uses: actions/attest@v4
         with:
