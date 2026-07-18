@@ -131,3 +131,34 @@ find_package(ExecuTorch REQUIRED
 Because the pin file records both the download URL and the SHA-256 hash for
 every variant/platform pair, `FetchContent` re-verifies the tarball on every
 build — the same guarantee `sha256sum -c` gives you locally.
+
+### Choosing a Windows artifact: `/MD` vs `/MT`
+
+Windows ships two artifacts that differ **only** in the C runtime they were compiled against. MSVC
+bakes that choice into every object file, and every statically-linked object in your final DLL must
+agree — so pick the one matching how *you* compile:
+
+| Consumer | Platform | CRT | Why |
+|---|---|---|---|
+| CPython extension | `windows-x86_64` | `/MD` (dynamic) | **Required.** CPython is itself `/MD`. A `/MT` extension puts two CRTs and two heaps in one process, corrupting anything allocated on one side and freed on the other. Ship the VC++ runtime DLLs with your wheel (e.g. `delvewheel`) or depend on the redistributable. |
+| Java / JNI | `windows-x86_64-static` | `/MT` (static) | Self-contained: the CRT is folded into your JNI DLL, so end users need no VC++ redistributable. Compile your JNI DLL `/MT` to match. |
+
+Both are correct for JNI — `/MT` is preferred only because it removes the redistributable
+dependency, which matters on locked-down workstations. JNI is safe with either because its ABI is
+pure C and never passes CRT-owned resources across the boundary.
+
+Mixing them is **not reliably caught at link time.** Measured: a `/MD` consumer linked against a
+`/MT` artifact with no `LNK2005` and not even an `LNK4098` warning. `LNK4098` is only a warning even
+when it fires. The failure that matters is at **runtime** — two CRTs mean two heaps, and memory
+allocated on one side and freed on the other corrupts. Match the artifact to your build deliberately;
+do not rely on the linker to tell you.
+
+```cmake
+# JNI consumer: select the static-CRT artifact
+FetchContent_Declare(et_runtime
+  URL       "${ET_RUNTIME_URL_logging_windows-x86_64-static}"
+  URL_HASH  "SHA256=${ET_RUNTIME_SHA256_logging_windows-x86_64-static}"
+)
+# ...and compile your own JNI target to match:
+set_property(TARGET my_jni_lib PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+```

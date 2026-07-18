@@ -12,7 +12,7 @@ repo exists. This repo produces *artifacts*, not a library — there is almost n
 long-lived compiled product here, just a build recipe + packaging + CI + a small set
 of first-party custom ops.
 
-Every release builds three variants for each platform:
+Every release builds three variants **on Linux**; Windows ships `logging` only:
 - `bare` — logging off (smallest)
 - `logging` — logging on (**ship default**)
 - `devtools` — devtools + event tracer (profiling/debug)
@@ -20,7 +20,7 @@ Every release builds three variants for each platform:
 ## Key commands
 
 ```bash
-# Run the full shell unit-test suite (12 *.test.sh files: naming, variants, packaging,
+# Run the full shell unit-test suite (16 *.test.sh files: naming, variants, packaging,
 # gate classification, version derivation, pin generation, buildinfo, perms, extras).
 # These are hermetic — no build, no container needed.
 bash test/run.sh
@@ -28,8 +28,10 @@ bash test/run.sh
 # Run one unit test
 bash test/lib_variants.test.sh
 
-# Print effective cmake flags for a variant without building (dry run)
+# Print the full effective cmake flags (configure base + variant + common, deduped) without
+# building. Platform-aware: this is how you inspect the Windows CRT without a 15-minute build.
 ./build-runtime.sh --print-flags --variant devtools
+./build-runtime.sh --print-flags --variant logging --platform windows-x86_64-static
 
 # Structural smoke-check of an already-built prefix
 bash test/build_smoke.sh /path/to/out
@@ -89,9 +91,13 @@ portable. This is the heart of what makes the artifact usable downstream — tre
 
 `scripts/lib/*.sh` are sourced by both the build and the packaging/CI so the two can
 never drift. When changing anything they define, change it here, not at a call site:
+- `configure-base.sh` — platform → cmake configure base (`--preset linux` vs the flat Windows flag
+  list), **and** `crt_for_platform`, the one platform→CRT mapping consumed by the build, the
+  relocatability gate, and the CI CRT scan.
 - `variants.sh` — variant → cmake flag string (contract C3).
-- `cmakeflags.sh` — common variant-independent cmake flags. Shared by the build **and**
-  recorded into `BUILDINFO` provenance (C5), so build and provenance can't diverge.
+- `cmakeflags.sh` — common variant-independent cmake flags, **and** `effective_cmake_flags`, which
+  composes + dedupes the full set. The build, `--print-flags`, and `BUILDINFO` provenance (C5) all
+  go through it, so they cannot diverge.
 - `naming.sh` — asset/tarball/sha/fixtures naming (contract C1).
 
 ### Custom ops: `extras/`
@@ -117,9 +123,11 @@ C++ kernel + static-init registrar), `aot/` (torch export definition), `test/` (
 
 - **`.github/workflows/release.yml`** — the *only* release trigger is pushing a tag
   `v<etver>-<pkgrev>` (e.g. `v1.3.1-1`; bump `<pkgrev>` to re-roll the same ET version).
-  Matrix of {variant} × {platform}; platforms are a single JSON source-of-truth in the
-  workflow `env.PLATFORMS`. Jobs: `setup` → `build` (per variant/platform, attests each
-  tarball) → `pin` (generates `EtRuntimePin.cmake`) → `release`.
+  Matrix of {variant} × {platform}; the **Linux** platforms are a single JSON source-of-truth in the
+  workflow `env.PLATFORMS`. Windows is a **separate `build-windows` job, not in `env.PLATFORMS`**
+  (it needs MSVC on a non-container runner); it has its own {variant} × {platform} matrix over
+  `windows-x86_64` (/MD) and `windows-x86_64-static` (/MT). Jobs: `setup` → `build` +
+  `build-windows` (attest each tarball) → `pin` (generates `EtRuntimePin.cmake`) → `release`.
 - **`.github/workflows/extras-gate.yml`** — PR gate for `extras/**` / `build-runtime.sh`
   changes. `scripts/classify-gate.sh` picks a mode from the changed files:
   - `tier1` — pure kernel/runtime/test edit → torch-free consumer smoke on both arches.
