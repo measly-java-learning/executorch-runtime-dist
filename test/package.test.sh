@@ -54,7 +54,8 @@ tbw="$(bash "$here/../scripts/package.sh" --prefix "$pw" --etver 1.3.1 --variant
   --platform windows-x86_64 --package-tag v1.3.1-1 --outdir "$outw" --toolchain msvc-2022)"
 bi="$(tar -xzOf "$tbw" executorch-runtime-1.3.1-logging-windows-x86_64/BUILDINFO)"
 assert_contains "$bi" "toolchain=msvc-2022"                        "--toolchain override recorded"
-assert_contains "$bi" "-DCMAKE_BUILD_TYPE=Release"     "windows flat configure base recorded (not a preset)"
+assert_contains "$bi" "cmake_flags=-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=Release"     "windows flat configure base recorded (not a preset)"
+assert_contains "$bi" "-DCMAKE_C_COMPILER=cl"                      "windows compiler pin recorded in provenance (C5)"
 assert_contains "$bi" "-DEXECUTORCH_BUILD_EXECUTOR_RUNNER=ON"      "windows base flag recorded"
 case "$bi" in *"cmake_flags="*"--preset"*) printf 'FAIL: windows provenance must not record a preset\n' >&2; exit 1 ;; esac
 case "$bi" in *KERNELS_OPTIMIZED*|*KERNELS_QUANTIZED*) printf 'FAIL: windows provenance must not record optimized/quantized kernels\n' >&2; exit 1 ;; esac
