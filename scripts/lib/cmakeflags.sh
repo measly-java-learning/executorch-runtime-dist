@@ -8,9 +8,12 @@ common_cmake_flags() {
 }
 
 # Collapse repeated whitespace-separated tokens, keeping the FIRST occurrence and preserving order.
-# Safe here because every flag is a self-contained `-DKEY=VALUE` token and the overlapping flags
-# carry identical values. Two flags sharing a KEY but differing in VALUE are distinct tokens and are
-# both retained (cmake's last-wins behaviour is unchanged).
+# Most flags are self-contained `-DKEY=VALUE` tokens, so dedup is safe for them. However,
+# `--preset linux` (from et_configure_base) is TWO separate tokens; they survive dedup intact only
+# because no current flag set includes a bare word matching `--preset` or `linux`. If a future flag
+# value ever collides with either, dedup would drop a copy and split `--preset` from its argument,
+# corrupting the configure base. Two flags sharing a KEY but differing in VALUE are distinct tokens
+# and are both retained (cmake's last-wins behaviour is unchanged).
 _dedupe_flags() { # <flag string>
   local out="" f
   for f in $1; do
