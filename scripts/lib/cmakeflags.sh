@@ -14,11 +14,19 @@ common_cmake_flags() {
 # value ever collides with either, dedup would drop a copy and split `--preset` from its argument,
 # corrupting the configure base. Two flags sharing a KEY but differing in VALUE are distinct tokens
 # and are both retained (cmake's last-wins behaviour is unchanged).
+# `for f in $1` is an unquoted word-split on purpose (to iterate tokens) but that also activates
+# pathname expansion: no current flag contains a glob metacharacter, but a future one (e.g. a path
+# with `*`) would silently expand against the cwd and corrupt the flag set. Disable globbing for the
+# loop and restore whatever state the caller had.
 _dedupe_flags() { # <flag string>
   local out="" f
+  local _had_noglob=0
+  case "$-" in *f*) _had_noglob=1 ;; esac
+  set -f
   for f in $1; do
     case " $out " in *" $f "*) ;; *) out="${out:+$out }$f" ;; esac
   done
+  [ "$_had_noglob" -eq 1 ] || set +f
   printf '%s' "$out"
 }
 

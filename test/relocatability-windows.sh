@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Windows relocatability acceptance smoke (the go/no-go for the windows-x86_64 artifact).
+# Windows relocatability acceptance smoke (the go/no-go for the windows-x86_64 and
+# windows-x86_64-static artifacts).
 # Proves an extracted Windows prefix is relocatable: its exported lib/cmake configs carry no
 # absolute build path, and a DIFFERENT-directory copy resolves via find_package(executorch) and
 # LINKS under MSVC. This is the artifact-level check to run BEFORE any JVM/JNI integration — a
@@ -17,15 +18,21 @@
 #     accepts and which avoids backslash-escaping in -D arguments.
 #
 # Run inside Git-Bash from an activated VS dev shell (Launch-VsDevShell.ps1 -Arch amd64).
-# Usage: relocatability-windows.sh <extracted-prefix-dir | *.tar.gz>
+# Usage: relocatability-windows.sh <extracted-prefix-dir | *.tar.gz> <platform>
 set -euo pipefail
-IN="${1:?usage: relocatability-windows.sh <extracted-prefix-dir | *.tar.gz> [platform]}"
-PLATFORM="${2:-windows-x86_64}"
+# bash's ${x:?} exits 1 on a missing argument; repo convention reserves 2 for usage errors (matches
+# build-runtime.sh/package.sh/gen-pin.sh), so usage is checked explicitly instead.
+usage_err() { echo "usage: relocatability-windows.sh <extracted-prefix-dir | *.tar.gz> <platform>" >&2; exit 2; }
+IN="${1:-}"; [ -n "$IN" ] || usage_err
+PLATFORM="${2:-}"; [ -n "$PLATFORM" ] || usage_err
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# The consumer probe MUST be built with the same CRT as the artifact. MSVC bakes the CRT into every
-# object and refuses to mix them (LNK4098/LNK2005), so a /MD probe against a /MT artifact fails —
-# and a probe that silently used the wrong CRT would certify an artifact it never actually tested.
+# The consumer probe MUST be built with the same CRT as the artifact. A CRT mismatch is NOT reliably
+# caught at link time — measured on a real /MT prefix, a /MD probe linked cleanly against it with no
+# LNK2005 and not even an LNK4098 warning. A probe that silently used the wrong CRT would therefore
+# certify an artifact it never actually tested; the real hazard is at runtime (two CRTs, two heaps,
+# corruption when an allocation crosses the boundary). This is exactly why the platform argument is
+# REQUIRED above rather than defaulting: a silent default here would reintroduce that fail-open gap.
 # The mapping lives in scripts/lib/configure-base.sh; do NOT re-derive it here.
 # shellcheck source=../scripts/lib/configure-base.sh
 . "$HERE/../scripts/lib/configure-base.sh"

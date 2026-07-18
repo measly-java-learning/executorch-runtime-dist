@@ -12,7 +12,11 @@
 # existing gate catches (issue #10).
 #
 # Windows ships TWO platforms differing only in the C runtime, because MSVC bakes the CRT into every
-# object and all statically-linked objects in a downstream DLL must agree (mismatch => LNK4098/2005):
+# object and all statically-linked objects in a downstream DLL must agree. A mismatch is NOT
+# reliably caught at link time (measured: a /MD consumer linked a /MT artifact clean, no LNK2005,
+# not even an LNK4098 warning) — the real hazard is at runtime: two CRTs, two heaps, corruption when
+# an allocation crosses the boundary. See scripts/check-windows-crt.sh, the gate that actually
+# catches a mismatch.
 #   windows-x86_64         /MD  dynamic CRT — required for CPython extensions (CPython is /MD)
 #   windows-x86_64-static  /MT  static CRT  — self-contained JNI DLLs, no VC++ redist needed
 # Do NOT set CMAKE_POLICY_DEFAULT_CMP0091: it is NEW by default at our cmake floor and only produces
@@ -36,6 +40,7 @@ crt_for_platform() { # <platform>
 _ET_WINDOWS_COMMON='-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXECUTORCH_ENABLE_PROGRAM_VERIFICATION=ON -DEXECUTORCH_BUILD_EXECUTOR_RUNNER=ON -DEXECUTORCH_BUILD_XNNPACK=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON -DEXECUTORCH_BUILD_EXTENSION_EVALUE_UTIL=ON -DEXECUTORCH_BUILD_EXTENSION_FLAT_TENSOR=ON -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_NAMED_DATA_MAP=ON -DEXECUTORCH_BUILD_EXTENSION_RUNNER_UTIL=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON'
 
 et_configure_base() { # <platform>
+  local _crt
   case "$1" in
     linux-*) printf -- '--preset linux' ;;
     windows-*)

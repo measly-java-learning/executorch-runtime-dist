@@ -60,6 +60,17 @@ assert_contains "$bi" "-DEXECUTORCH_BUILD_EXECUTOR_RUNNER=ON"      "windows base
 case "$bi" in *"cmake_flags="*"--preset"*) printf 'FAIL: windows provenance must not record a preset\n' >&2; exit 1 ;; esac
 case "$bi" in *KERNELS_OPTIMIZED*|*KERNELS_QUANTIZED*) printf 'FAIL: windows provenance must not record optimized/quantized kernels\n' >&2; exit 1 ;; esac
 assert_contains "$bi" "usdt=n/a"                                   "core-only usdt sentinel recorded"
+assert_contains "$bi" "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL" "windows-x86_64 records the dynamic CRT in provenance (C5)"
+
+# --- provenance: windows-x86_64-static records the STATIC CRT, distinctly from windows-x86_64 (C5) ---
+outws="$(mktemp -d)"
+tbws="$(bash "$here/../scripts/package.sh" --prefix "$pw" --etver 1.3.1 --variant logging \
+  --platform windows-x86_64-static --package-tag v1.3.1-1 --outdir "$outws" --toolchain msvc-2022)"
+bi_static="$(tar -xzOf "$tbws" executorch-runtime-1.3.1-logging-windows-x86_64-static/BUILDINFO)"
+assert_contains "$bi_static" "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded" "windows-x86_64-static records the static CRT in provenance (C5)"
+# "MultiThreaded" is a strict PREFIX of "MultiThreadedDLL" — assert_contains alone would pass even if
+# package.sh regressed to recording the dynamic CRT, so guard the substring explicitly.
+case "$bi_static" in *MultiThreadedDLL*) printf 'FAIL: static provenance must not record the DLL runtime\n' >&2; exit 1 ;; esac
 
 # Default toolchain preserved when --toolchain omitted (linux back-compat), and linux preset recorded.
 outl="$(mktemp -d)"

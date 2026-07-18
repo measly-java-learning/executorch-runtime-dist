@@ -19,8 +19,11 @@ through `JNIEnv`). Both `/MD` and `/MT` are *correct* for JNI; only `/MT` remove
 
 **One artifact cannot serve both.** MSVC records the CRT choice per-object as `/DEFAULTLIB`
 directives (`LIBCMT`/`LIBCPMT` for `/MT`, `MSVCRT`/`MSVCPRT` for `/MD`). Every statically-linked
-object in a downstream DLL must agree, or the link fails with `LNK4098`/`LNK2005`. Since we ship
-**static** libs, the downstream's CRT is forced to match ours. Hence: two Windows artifacts.
+object in a downstream DLL must agree, but a mismatch is **not reliably caught at link time** — see
+§7: a `/MD` consumer linked cleanly against a `/MT` prefix, no `LNK2005`, not even an `LNK4098`
+warning. The real hazard is at runtime: two CRTs, two heaps, corruption when an allocation crosses
+the boundary. Since we ship **static** libs, the downstream's CRT must still match ours to avoid
+that hazard. Hence: two Windows artifacts.
 
 ## Decisions
 
@@ -72,8 +75,9 @@ flag list; factor the shared body so the two cannot drift.
 builds collide on upload.**
 
 **`test/relocatability-windows.sh`** — must thread the CRT into the consumer configure. It currently
-builds `test/consumer` with cmake defaults (`/MD`); against a `/MT` artifact that fails `LNK4098`.
-Derive the CRT from the platform argument (or accept it explicitly) and pass
+builds `test/consumer` with cmake defaults (`/MD`); a mismatch is not reliably caught at link time
+(see §7), so a `/MD` probe against a `/MT` artifact would link clean and falsely certify it. Derive
+the CRT from the platform argument (required, not defaulted) and pass
 `-DCMAKE_MSVC_RUNTIME_LIBRARY`. **This gate is what proves the `/MT` artifact is actually
 consumable, so it must not be allowed to silently test the wrong CRT.**
 

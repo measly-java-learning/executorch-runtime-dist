@@ -4,8 +4,11 @@
 # MSVC records the CRT choice per-object as /DEFAULTLIB directives:
 #   /MT  (static)  -> LIBCMT  / LIBCPMT
 #   /MD  (dynamic) -> MSVCRT  / MSVCPRT
-# Every statically-linked object in a downstream DLL must agree, so one lib requesting the wrong CRT
-# makes the artifact unlinkable for its intended consumer (LNK4098/LNK2005).
+# Every statically-linked object in a downstream DLL must agree, but a mismatch is NOT reliably
+# caught at link time — measured on a real /MT prefix, a /MD consumer linked cleanly against it with
+# no LNK2005 and not even an LNK4098 warning. The real hazard is at runtime: two CRTs, two heaps, and
+# corruption when an allocation crosses the boundary. That is why this scan inspects /DEFAULTLIB
+# directives directly instead of relying on the linker to notice.
 #
 # This check is deliberately POSITIVE: each lib must CARRY the expected marker. An earlier
 # negative-only version ("no wrong marker found") reported PASS on 18 libs while dumpbin was failing
@@ -18,8 +21,11 @@
 # Run inside Git-Bash from an activated VS dev shell (needs dumpbin).
 # Usage: check-windows-crt.sh <install-prefix> <MultiThreaded|MultiThreadedDLL>
 set -euo pipefail
-PREFIX="${1:?usage: check-windows-crt.sh <install-prefix> <MultiThreaded|MultiThreadedDLL>}"
-CRT="${2:?usage: check-windows-crt.sh <install-prefix> <MultiThreaded|MultiThreadedDLL>}"
+# bash's ${x:?} exits 1 on a missing argument; repo convention reserves 2 for usage errors (matches
+# build-runtime.sh/package.sh/gen-pin.sh), so usage is checked explicitly instead.
+usage_err() { echo "usage: check-windows-crt.sh <install-prefix> <MultiThreaded|MultiThreadedDLL>" >&2; exit 2; }
+PREFIX="${1:-}"; [ -n "$PREFIX" ] || usage_err
+CRT="${2:-}"; [ -n "$CRT" ] || usage_err
 # Argument validation must precede environment checks, so a bad CRT value reports the actionable
 # "CRT must be ..." error (rc=2) rather than an unrelated environment guard failure (rc=1).
 # Markers are mixed-case in real dumpbin output (LIBCMT but libcpmt), so all matching is -i.

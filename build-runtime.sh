@@ -22,7 +22,7 @@ usage() {
   cat <<'EOF'
 Usage: build-runtime.sh --variant <bare|logging|devtools> --prefix <install-dir> --et-src <et-checkout>
                         [--et-tag <label>] [--build-dir <dir>]
-       build-runtime.sh --print-flags --variant <variant>    # dry: print effective cmake flags, no build
+       build-runtime.sh --print-flags --variant <variant> [--platform <platform>]  # dry: print effective cmake flags, no build
 Runs inside manylinux_2_28. --et-src is a checked-out ExecuTorch tree (with submodules); the recipe does not clone.
 --et-tag is the version label (default v1.3.1). --build-dir is the CMake build tree (default:
 <dirname of --prefix>/et-build-<variant>); it persists for inspection and incremental rebuilds — put it
