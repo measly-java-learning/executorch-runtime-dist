@@ -35,6 +35,7 @@
 | `scripts/package.sh` | Consumes `effective_cmake_flags` for `BUILDINFO` provenance. | 3 |
 | `scripts/check-windows-crt.sh` | **New.** `dumpbin` scan asserting CRT consistency, positively. | 4 |
 | `test/relocatability-windows.sh` | Existing Windows gate; becomes CRT-aware via `crt_for_platform`. | 5 |
+| `test/consumer/probe.cpp` | Consumer probe. Must reference a real ET symbol or every gate using it is vacuous. | 5b |
 | `.github/workflows/release.yml` | `build-windows` gains a platform axis; runs the CRT scan. | 6 |
 | `README.md`, `docs/handover-to-engine.md`, `CLAUDE.md` | Consumer + contributor docs. | 7 |
 
@@ -669,6 +670,122 @@ that silently used the wrong CRT would certify an artifact it never tested.
 
 The platform->CRT mapping is sourced from scripts/lib/configure-base.sh rather than re-derived, so
 this gate and the build can never disagree. Unknown platforms are rejected, not defaulted.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
+### Task 5b: Make the consumer probe actually link ExecuTorch code
+
+> **Why this task exists.** `test/consumer/probe.cpp` is `extern "C" int et_pic_probe() { return 0; }`
+> — it references **no** ExecuTorch symbol. Static-archive linking is lazy: objects are pulled only
+> to resolve undefined symbols, so **no ET object ever enters the link**. Both gates that depend on
+> this probe are therefore vacuous, measured not inferred:
+>
+> - **Windows CRT gate (Task 5) is unfalsifiable.** The same `/MT` prefix PASSED as
+>   `windows-x86_64-static` (probe `/MT`, 177,664 B, no CRT DLL imports) *and* as `windows-x86_64`
+>   (probe `/MD`, 47,104 B, importing `VCRUNTIME140.dll`). It passes whichever CRT it selects.
+> - **Linux PIC gate has the same hole**, and that gate is the reason this repo exists. Proven
+>   locally: a shared library linking a deliberately `-fno-PIC` archive links `rc=0` when the probe
+>   references nothing; add one symbol reference and `ld` correctly fails with
+>   `relocation R_X86_64_PC32 ... recompile with -fPIC`.
+>
+> Both are **pre-existing** defects, not introduced by this plan. One probe change fixes both gates.
+
+**Files:**
+- Modify: `test/consumer/probe.cpp`
+
+**Interfaces:**
+- Consumes: the installed prefix's `executorch` imported target and public headers.
+- Produces: no code interface. Both `test/relocatability.sh` (Linux) and
+  `test/relocatability-windows.sh` (Windows) gain real linking power; neither script changes.
+
+- [ ] **Step 1: Verify the symbol is present in a built prefix**
+
+The probe must call something torch-free, public, and defined in the **core** archive so the
+reference forces object extraction. `executorch::runtime::runtime_init()` qualifies: declared in
+`include/executorch/runtime/platform/runtime.h`, defined in `libexecutorch_core.a(runtime.cpp.o)`.
+
+Run against any built prefix (e.g. `out-bare`):
+
+```bash
+nm -C --defined-only -A <prefix>/lib/libexecutorch_core.a | grep runtime_init
+```
+Expected: a line naming `runtime.cpp.o` and `T executorch::runtime::runtime_init()`.
+
+- [ ] **Step 2: Change the probe**
+
+Replace the entire contents of `test/consumer/probe.cpp` with:
+
+```cpp
+// Consumer probe for the relocatability / PIC / CRT gates.
+//
+// This TU MUST reference a real ExecuTorch symbol. Static-archive linking is lazy — the linker
+// extracts an archive member only to resolve an undefined symbol — so a self-contained probe
+// (`return 0;`) pulls in NO ET object and makes every gate built on it vacuous:
+//   * the Linux PIC gate links a non-PIC archive without complaint, and
+//   * the Windows CRT gate passes a /MT artifact against a /MD consumer.
+// Both were verified to pass on artifacts they should have rejected before this reference existed.
+//
+// runtime_init() is chosen because it is public, torch-free, and defined in the core archive
+// (libexecutorch_core.a / executorch_core.lib), so referencing it forces object extraction. It is
+// never called at runtime — the LINK is the test.
+#include <executorch/runtime/platform/runtime.h>
+
+extern "C" int et_pic_probe() {
+  ::executorch::runtime::runtime_init();
+  return 0;
+}
+```
+
+- [ ] **Step 3: Verify the object is now pulled in (Linux)**
+
+Against a built Linux prefix:
+
+```bash
+g++ -fPIC -shared test/consumer/probe.cpp -o /tmp/p.so \
+  -I<prefix>/include <prefix>/lib/libexecutorch_core.a
+nm -C --defined-only /tmp/p.so | grep runtime_init
+```
+Expected: the link succeeds AND `executorch::runtime::runtime_init()` appears in the output — proof
+an archive member was extracted. Before this change the same grep returned nothing.
+
+- [ ] **Step 4: Verify the gates still pass on a real artifact**
+
+The probe now compiles ET headers, so the gate needs the prefix's include dir to resolve —
+`find_package(executorch)` supplies it via the imported target's usage requirements. Confirm the
+consumer still configures and links:
+
+```bash
+bash test/relocatability.sh <built-linux-prefix>
+```
+Expected: `GATE PASS`. If it fails on a missing header, the imported target is not propagating its
+include directories and `test/consumer/CMakeLists.txt` needs
+`target_include_directories`/`target_link_libraries` review — report that rather than working around
+it by hardcoding a path.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add test/consumer/probe.cpp
+git commit -m "$(cat <<'EOF'
+fix: make the consumer probe actually link ExecuTorch code
+
+The probe was `extern "C" int et_pic_probe() { return 0; }` and referenced no ET symbol. Static
+archive linking is lazy, so no ET object was ever pulled into the link and every gate built on this
+probe was vacuous.
+
+Measured, not inferred: the same /MT Windows prefix passed as windows-x86_64-static (probe /MT, no
+CRT DLL imports) AND as windows-x86_64 (probe /MD, importing VCRUNTIME140), so the CRT gate would
+pass whichever CRT it chose. On Linux, a shared library linking a deliberately -fno-PIC archive
+links cleanly when the probe references nothing; adding one symbol reference makes ld correctly
+refuse with "recompile with -fPIC". That PIC gate is the reason this repo exists.
+
+Referencing runtime_init() forces extraction of runtime.cpp.o from the core archive, so both the
+PIC gate and the CRT gate now exercise real ET objects.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 EOF
