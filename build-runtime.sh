@@ -66,6 +66,11 @@ cleanup() {
 trap cleanup EXIT
 
 [ -n "$VARIANT" ] || { echo "--variant required" >&2; exit 2; }
+# Kept even though the cmake invocation below no longer interpolates these directly: calling
+# variant_flags/et_configure_base here is early validation — each returns 2 on an unknown
+# variant/platform, and set -e turns that into an immediate abort before any expensive work
+# (ET compile). effective_cmake_flags (used below) would fail just as fast, but by then we've
+# already parsed --print-flags etc.; keep the fail-fast at the top.
 VARIANT_FLAGS="$(variant_flags "$VARIANT")"   # returns 2 on unknown -> set -e aborts with code 2
 CONFIGURE_BASE="$(et_configure_base "$PLATFORM")"   # returns 2 on unknown platform -> set -e aborts
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; *) IS_WINDOWS=0 ;; esac
@@ -78,7 +83,9 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; *) IS_WINDOWS=0 ;; e
 if [ "$IS_WINDOWS" -eq 1 ] && [ -n "$PREFIX" ]; then PREFIX="${PREFIX//\\//}"; fi
 
 if [ "$PRINT_FLAGS" -eq 1 ]; then
-  printf '%s\n' "$VARIANT_FLAGS"
+  # The EFFECTIVE set, platform-aware — this is the only way to inspect the CRT without a build.
+  effective_cmake_flags "$PLATFORM" "$VARIANT" || exit 2
+  printf '\n'
   exit 0
 fi
 
@@ -223,10 +230,10 @@ fi
 
 echo ">> configuring ($VARIANT, platform=$PLATFORM)"
 # shellcheck disable=SC2086  # deliberate word-splitting of the flag strings
-cmake -B "$ET_BUILD" -S "$ET_SRC" -G Ninja $CONFIGURE_BASE \
+cmake -B "$ET_BUILD" -S "$ET_SRC" -G Ninja \
+  $(effective_cmake_flags "$PLATFORM" "$VARIANT") \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-  $PYTHON_PIN \
-  $VARIANT_FLAGS $(common_cmake_flags)
+  $PYTHON_PIN
 
 echo ">> building"
 if [ "$IS_WINDOWS" -eq 1 ]; then JOBS="${NUMBER_OF_PROCESSORS:-4}"; else JOBS="$(nproc)"; fi
