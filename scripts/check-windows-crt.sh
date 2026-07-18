@@ -47,10 +47,14 @@ while IFS= read -r lib; do
     printf '%s\n' "$out" | sed 's/^/          /' | head -5
     failed=$((failed+1)); continue
   fi
-  if printf '%s' "$out" | grep -Eqi "$bad_re"; then
-    echo "  LEAK  $name -> requests $(printf '%s' "$out" | grep -Eoi "$bad_re" | sort -u | paste -sd, -)"
+  # Herestring on purpose: piping printf's output into `grep -q` is broken under `set -o pipefail`.
+  # grep -q exits on its first match and closes the read end, so on large output printf can still be
+  # writing when it takes SIGPIPE; pipefail then promotes that SIGPIPE (141) to the pipeline's exit
+  # status, misreading a real match as no-match.
+  if grep -Eqi "$bad_re" <<< "$out"; then
+    echo "  LEAK  $name -> requests $(grep -Eoi "$bad_re" <<< "$out" | sort -u | paste -sd, -)"
     leaks=$((leaks+1))
-  elif printf '%s' "$out" | grep -Eqi "$want_re"; then
+  elif grep -Eqi "$want_re" <<< "$out"; then
     ok=$((ok+1))
   else
     echo "  INDET $name -> no CRT directive at all (expected $want)"
