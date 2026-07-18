@@ -3,20 +3,41 @@
 Ran on `winbox` (VS 18.8.0 Community, MSVC 19.51.36248, cmake 4.3.1-msvc1, Ninja, ET 1.3.1,
 project `.venv` Python 3.12.10 x64 with torch 2.12.0+cpu). Date: 2026-07-18.
 
-## Bottom line: **GO**
+## Bottom line: **GO** (conclusion confirmed; see the correction below)
 
 `-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` propagates cleanly through ExecuTorch **and every
-third-party subproject**. A `/MT` artifact is coherent and consumable:
+third-party subproject**. A `/MT` artifact is coherent and consumable. Verified 2026-07-18 with a
+corrected scan:
 
 ```
-BUILD+INSTALL OK (CRT=MultiThreaded)
--- scanned 18 static libs, 0 with a wrong-CRT directive --
-CRT CHECK:     PASS — all 18 libs request static (LIBCMT/LIBCPMT)
+TOTAL=18  HAS_STATIC=18  WRONG_CRT=0  NO_MARKER=0  DUMPBIN_FAIL=0
 CONSUME CHECK: PASS — /MT consumer links cleanly (pic_probe.dll)
 ```
 
-No `MSVCRT`/`MSVCPRT` leak in any installed lib; no `LNK4098`/`LNK2005` linking a matching-`/MT`
-consumer. This clears the only unknown gating the `windows-x86_64-static` platform-suffix design.
+Every installed lib **positively carries** `LIBCMT`/`libcpmt`; none carries `MSVCRT`/`MSVCPRT`; and a
+matching-`/MT` consumer links with no `LNK4098`/`LNK2005`. This clears the only unknown gating the
+`windows-x86_64-static` platform-suffix design.
+
+> ### ⚠ Correction — the original run's CRT scan was invalid
+>
+> The first version of this document reported
+> `CRT CHECK: PASS — all 18 libs request static (LIBCMT/LIBCPMT)` from `check-crt.sh`. **That output
+> was meaningless.** `dumpbin` was failing on *every* lib (`rc=157`) and the scan, being
+> negative-only, read the resulting silence as success.
+>
+> Two compounding defects, both since fixed:
+> 1. **MSYS path conversion.** Under Git-Bash a leading `/` is rewritten to a Windows path, so
+>    `/nologo` became `C:\Program Files\Git\nologo` and dumpbin got a garbage filename instead of its
+>    flags. Fix: pass `-nologo -directives` (MSVC accepts `-` for options).
+> 2. **Negative-only assertion.** The scan checked for the *absence* of the wrong marker. Absence is
+>    satisfied by silence, and a broken tool produces silence. `|| true` plus `2>/dev/null` hid the
+>    non-zero exit. Fix: assert the *presence* of the expected marker and treat a dumpbin failure as
+>    a hard error.
+>
+> The **conclusion was right but was not supported by the evidence given for it.** At the time, the
+> only sound evidence for GO was the consumer link (a `/MT` probe cannot link a `/MD` artifact). The
+> re-run above now supports it directly. This is the same class of silent-wrong-default as the
+> compiler-pin bug in finding 2 — a gate that fails *open*.
 
 ## Findings
 
@@ -24,6 +45,14 @@ consumer. This clears the only unknown gating the `windows-x86_64-static` platfo
 Every installed static lib honored the flag, **including the ExternalProjects** (`flatcc_ep`,
 `flatc_ep`) and the vendored XNNPACK/pthreadpool/cpuinfo/pcre2/tokenizers trees. XNNPACK was the
 predicted risk (large vendored CMake project, plausible hardcoded `/MD`) and was a non-issue.
+
+Per-lib detail from the corrected scan, worth keeping because it constrains how the production gate
+may assert:
+- Markers are **mixed case** in real dumpbin output (`LIBCMT` but `libcpmt`) — matching must be
+  case-insensitive.
+- C-only libs (`cpuinfo`, `pthreadpool`, `xnnpack-microkernels-prod`) carry `LIBCMT` **with no**
+  `LIBCPMT`. The assertion must be `LIBCMT` **or** `LIBCPMT`, never a requirement for both.
+- `NO_MARKER=0` — no lib is legitimately CRT-free, so a blanket "must carry a marker" rule is safe.
 
 **A mid-spike prediction was wrong and is recorded here so it isn't re-derived:** an early failing
 run showed the `flatcc_ep` inner cache at `CMAKE_BUILD_TYPE=Debug` linking `MSVCRTD.lib`, which was

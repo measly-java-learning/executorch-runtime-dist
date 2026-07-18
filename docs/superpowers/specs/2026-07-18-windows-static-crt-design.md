@@ -133,8 +133,18 @@ whatever lands in `dist/` via filesystem discovery, so it needs no edit.
 - **CRT-consistency scan — in scope.** Promote `spike/mt-crt/check-crt.sh` into the Windows release
   gate (run on the packaged prefix, before attest, alongside the relocatability smoke). It is the
   only check that catches a *future* ET or third-party dependency starting to hardcode `/MD`: a leak
-  in a lib the consumer probe does not pull in would otherwise ship silently. ~40 lines of
-  `dumpbin /directives`, and it directly guards the invariant this whole design rests on.
+  in a lib the consumer probe does not pull in would otherwise ship silently.
+
+  Two properties are **mandatory**, both learned the hard way (see §9's evidence correction):
+  1. **Assert presence, not absence.** Require each lib to *carry* the expected marker. A check for
+     the absence of the wrong marker is satisfied by silence, and a broken tool produces silence.
+  2. **Treat a `dumpbin` failure as fatal.** Never `|| true` or `2>/dev/null` the scanner itself, and
+     invoke MSVC tools with `-nologo -directives` — under Git-Bash, MSYS path conversion rewrites a
+     leading `/` into a Windows path, which is exactly how the spike's scan came to verify nothing.
+
+  Matching must be case-insensitive (`LIBCMT` but `libcpmt`), and the expected pattern is
+  `LIBCMT` **or** `LIBCPMT` — C-only libs (`cpuinfo`, `pthreadpool`, `xnnpack-microkernels-prod`)
+  carry no `LIBCPMT`. Measured `NO_MARKER=0`, so a blanket "must carry a marker" rule is safe.
 
 ## 7. Downstream consumption
 
@@ -166,12 +176,20 @@ artifact (§4), since no current gate would catch a coherently-32-bit build.
 Full detail in `spike/mt-crt/FINDINGS.md`.
 
 1. ~~Does `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` propagate through ET *and* every third-party
-   subproject?~~ **Yes — clean.** 18/18 installed static libs request `LIBCMT`/`LIBCPMT`, zero
-   `MSVCRT` leaks, including the `flatcc_ep`/`flatc_ep` ExternalProjects and the vendored
-   XNNPACK/pthreadpool/cpuinfo/pcre2/tokenizers trees. XNNPACK, the predicted risk, was a non-issue.
-   **No `CMAKE_ARGS` forwarding is needed** — an earlier reading of the failing run suggested
-   ExternalProjects did not inherit the CRT; that was fallout from the 32-bit misconfigure, not the
-   EP boundary.
+   subproject?~~ **Yes — clean.** Re-verified 2026-07-18:
+   `TOTAL=18 HAS_STATIC=18 WRONG_CRT=0 NO_MARKER=0 DUMPBIN_FAIL=0`. Every installed static lib
+   *positively carries* `LIBCMT`/`libcpmt`, including the `flatcc_ep`/`flatc_ep` ExternalProjects and
+   the vendored XNNPACK/pthreadpool/cpuinfo/pcre2/tokenizers trees. XNNPACK, the predicted risk, was
+   a non-issue. **No `CMAKE_ARGS` forwarding is needed** — an earlier reading of the failing run
+   suggested ExternalProjects did not inherit the CRT; that was fallout from the 32-bit
+   misconfigure, not the EP boundary.
+
+   > **Evidence correction.** The first version of this spec cited "18/18 libs request
+   > `LIBCMT`/`LIBCPMT`" from the spike's `check-crt.sh`. That scan was **invalid** — `dumpbin` was
+   > failing on every lib (`rc=157`, MSYS rewriting `/nologo` into a Windows path) and the
+   > negative-only check read silence as success. The conclusion survives re-verification, but the
+   > original evidence for it did not. This directly motivates §6's requirement that the production
+   > gate assert the *presence* of the expected marker and treat a `dumpbin` failure as fatal.
 2. ~~Does a `/MT` consumer link?~~ **Yes** — `test/consumer` builds `pic_probe.dll` clean, no
    `LNK4098`/`LNK2005`.
 3. ~~Is `CMP0091` needed?~~ **No** (spike finding 3).
