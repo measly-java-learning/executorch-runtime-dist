@@ -155,8 +155,17 @@ whatever lands in `dist/` via filesystem discovery, so it needs no edit.
 - **Java / JNI → `windows-x86_64-static`** (`/MT`). Self-contained; no redist on the end user's
   machine. The consumer's own JNI DLL must also compile `/MT`.
 
-Document that mixing is a link-time failure (`LNK4098`/`LNK2005`), not a subtle runtime bug — the
-failure mode is loud, which is worth stating so consumers don't fear silent corruption.
+**Do not tell consumers that mixing is caught at link time.** Measured on a real `/MT` prefix: a
+`/MD` consumer linked against it **cleanly — no `LNK2005`, and not even an `LNK4098` warning**.
+`LNK4098` is only a warning even when it does fire, and a consumer that pulls few objects may never
+trigger it. The true hazard is the one that survives the link: two CRTs, two heaps, and corruption
+when an allocation crosses the boundary at runtime.
+
+This is precisely why the CRT-consistency scan (`scripts/check-windows-crt.sh`) is the gate that
+matters — it inspects `/DEFAULTLIB` directives directly rather than hoping the linker objects, and
+it is demonstrably falsifiable (checking a `/MT` prefix as `/MD` reports 18 leaks, exit 1). The
+relocatability smoke's CRT-awareness ensures it tests the *right* configuration; it is not itself a
+mismatch detector.
 
 ## 8. Scope boundaries
 

@@ -991,8 +991,11 @@ Both are correct for JNI — `/MT` is preferred only because it removes the redi
 dependency, which matters on locked-down workstations. JNI is safe with either because its ABI is
 pure C and never passes CRT-owned resources across the boundary.
 
-Mixing them is a **link-time** failure (`LNK4098`, `LNK2005`), not a silent runtime bug — you will
-know immediately.
+Mixing them is **not reliably caught at link time.** Measured: a `/MD` consumer linked against a
+`/MT` artifact with no `LNK2005` and not even an `LNK4098` warning. `LNK4098` is only a warning even
+when it fires. The failure that matters is at **runtime** — two CRTs mean two heaps, and memory
+allocated on one side and freed on the other corrupts. Match the artifact to your build deliberately;
+do not rely on the linker to tell you.
 
 ```cmake
 # JNI consumer: select the static-CRT artifact
@@ -1036,8 +1039,10 @@ with:
   **Engine note:** on Windows prefer **`windows-x86_64-static`**. Its `/MT` CRT is folded into your
   JNI DLL, so end users need no VC++ redistributable — compile the JNI target `/MT` to match
   (`set_property(TARGET <t> PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")`). The `/MD`
-  `windows-x86_64` build exists for CPython extensions, which must match CPython's own CRT. Mixing
-  the two is a link-time failure (`LNK4098`/`LNK2005`), never silent corruption.
+  `windows-x86_64` build exists for CPython extensions, which must match CPython's own CRT. Do NOT
+  rely on the linker to catch a mismatch — measured, a `/MD` consumer linked a `/MT` artifact with no
+  error and no LNK4098 warning. The failure is at runtime: two CRTs, two heaps, corruption when an
+  allocation crosses the boundary.
 ```
 
 And in the punch-list table, replace the C4 row:
