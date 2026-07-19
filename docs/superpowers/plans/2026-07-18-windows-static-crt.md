@@ -9,7 +9,7 @@
 **Tech Stack:** Bash (`set -euo pipefail`), CMake + Ninja + MSVC, GitHub Actions, `dumpbin` for CRT verification.
 
 **Design spec:** `docs/superpowers/specs/2026-07-18-windows-static-crt-design.md`
-**Spike evidence:** `spike/mt-crt/FINDINGS.md`
+**Spike evidence:** summarised in the design spec §9 (spike kit removed after the work landed; recoverable from git history, e.g. `git show b4d2d16e0418:spike/mt-crt/FINDINGS.md`)
 
 ## Global Constraints
 
