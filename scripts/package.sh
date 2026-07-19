@@ -46,7 +46,7 @@ for m in lib include LICENSE THIRD-PARTY-NOTICES; do
   cp -a "$PREFIX/$m" "$STAGE/"
 done
 
-CMAKE_FLAGS="$(et_configure_base "$PLATFORM") $(variant_flags "$VARIANT") $(common_cmake_flags)"
+CMAKE_FLAGS="$(effective_cmake_flags "$PLATFORM" "$VARIANT")"
 ET_VERSION="$ETVER" ET_COMMIT="$ET_COMMIT" TORCH_VERSION="2.12.0+cpu" \
   VARIANT="$VARIANT" PLATFORM="$PLATFORM" CMAKE_FLAGS="$CMAKE_FLAGS" \
   TOOLCHAIN="$TOOLCHAIN" PACKAGE_TAG="$PACKAGE_TAG" \

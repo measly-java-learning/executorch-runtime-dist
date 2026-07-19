@@ -87,6 +87,12 @@ jobs:
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
             --variant "${{ matrix.variant }}" --platform "${{ matrix.combo.platform }}" \
             --package-tag "${GITHUB_REF_NAME}" --outdir "$PWD/dist"
+      - name: Relocatability + PIC gate
+        # Producing position-independent static libs is this repo's whole purpose, so prove it on the
+        # real built prefix before the artifact is attested. The script self-provisions inside
+        # manylinux (pip-installs ninja, sources gcc-toolset-14) and links test/consumer as a SHARED
+        # library — a .so link is what actually catches a PIC regression; an executable would not.
+        run: bash test/relocatability.sh "$PWD/out"
       - name: Attest build provenance
         uses: actions/attest@v4
         with:
@@ -98,9 +104,13 @@ jobs:
 
   #
   # Windows amd64 support is implemented via `build-windows` below (MSVC, logging variant
-  # only, GitHub-hosted windows-2022 runner, no container). macOS remains future work and
-  # would follow the same pattern: a new `build-macos` job, uploading via the same
-  # `dist-variant-platform` naming, added to `pin`'s `needs`.
+  # only, GitHub-hosted windows-2022 runner, no container). It builds TWO platforms that differ
+  # only in the C runtime — windows-x86_64 (/MD, for CPython extensions) and
+  # windows-x86_64-static (/MT, for self-contained JNI DLLs) — because MSVC bakes the CRT into
+  # every object and a consumer must link the flavor matching its own. NOTE: these platforms are
+  # NOT in env.PLATFORMS; that list drives the linux container matrix only. macOS remains future
+  # work and would follow this job's pattern, uploading via the same `dist-variant-platform`
+  # naming and added to `pin`'s `needs`.
 
   build-windows:
     needs: setup
@@ -113,6 +123,9 @@ jobs:
       fail-fast: false
       matrix:
         variant: [logging]
+        # Two CRT flavors. MSVC bakes the CRT into every object, so a consumer must link the one
+        # matching its own: /MD for CPython extensions, /MT for self-contained JNI DLLs.
+        platform: [windows-x86_64, windows-x86_64-static]
     steps:
       - name: Configure Git for Windows checkout (long paths + symlinks)
         # Two Windows-specific git defaults break the recursive ExecuTorch checkout below:
@@ -151,12 +164,12 @@ jobs:
           $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
           & $bash ./build-runtime.sh --variant ${{ matrix.variant }} `
             --prefix "$PWD/out" --et-src "$PWD/et-src/executorch" `
-            --et-tag ${{ steps.ver.outputs.ettag }} --platform windows-x86_64
+            --et-tag ${{ steps.ver.outputs.ettag }} --platform ${{ matrix.platform }}
       - name: Package
         shell: bash
         run: |
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
-            --variant "${{ matrix.variant }}" --platform windows-x86_64 \
+            --variant "${{ matrix.variant }}" --platform ${{ matrix.platform }} \
             --package-tag "${GITHUB_REF_NAME}" --outdir "$PWD/dist" \
             --toolchain "msvc-2022"
       - name: Relocatability smoke (MSVC link against the packaged tarball)
@@ -173,15 +186,29 @@ jobs:
           if (-not $vsPath) { throw "vswhere found no Visual Studio installation" }
           & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
           $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
-          & $bash -c 'set -euo pipefail; t="$(ls dist/*-windows-x86_64.tar.gz | head -n1)"; ./test/relocatability-windows.sh "$t"'
+          & $bash -c 'set -euo pipefail; t="$(ls dist/*-${{ matrix.platform }}.tar.gz | head -n1)"; ./test/relocatability-windows.sh "$t" ${{ matrix.platform }}'
           if ($LASTEXITCODE -ne 0) { throw "relocatability smoke failed (exit $LASTEXITCODE)" }
+      - name: CRT consistency scan
+        # Proves every installed static lib positively carries the CRT this platform promises.
+        # Catches a dependency that hardcodes its own CRT, which the consumer-link gate above would
+        # miss if the offending lib is not on the probe's link line. Same VS-activation -> Git-Bash
+        # handoff as the build step.
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          if (-not $vsPath) { throw "vswhere found no Visual Studio installation" }
+          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
+          $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
+          & $bash -c 'set -euo pipefail; . scripts/lib/configure-base.sh; crt="$(crt_for_platform ${{ matrix.platform }})"; ./scripts/check-windows-crt.sh "$PWD/out" "$crt"'
+          if ($LASTEXITCODE -ne 0) { throw "CRT consistency scan failed (exit $LASTEXITCODE)" }
       - name: Attest build provenance
         uses: actions/attest@v4
         with:
           subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@v7
         with:
-          name: dist-${{ matrix.variant }}-windows-x86_64
+          name: dist-${{ matrix.variant }}-${{ matrix.platform }}
           path: dist/*
 
   pin:

@@ -14,19 +14,23 @@ mk aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacafef00d executorch-r
 mk bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbdeadbeef executorch-runtime-1.3.1-devtools-linux-x86_64.tar.gz.sha256
 mk ccccccccccccccccccccccccccccccccccccccccccccccccccccccccfeedface executorch-runtime-1.3.1-logging-linux-x86_64.tar.gz.sha256
 mk dddddddddddddddddddddddddddddddddddddddddddddddddddddddd12345678 executorch-runtime-1.3.1-logging-windows-x86_64.tar.gz.sha256
+mk 1111111111111111111111111111111111111111111111111111111122223333 executorch-runtime-1.3.1-logging-windows-x86_64-static.tar.gz.sha256
 # Foreign etver — must be ignored.
 mk eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee99999999 executorch-runtime-9.9.9-logging-linux-x86_64.tar.gz.sha256
 
 out="$(bash "$here/../scripts/discover-pin-rows.sh" --dir "$tmp" --etver 1.3.1)"
 
-expected="$(printf 'bare\tlinux-x86_64\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacafef00d\ndevtools\tlinux-x86_64\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbdeadbeef\nlogging\tlinux-x86_64\tccccccccccccccccccccccccccccccccccccccccccccccccccccccccfeedface\nlogging\twindows-x86_64\tdddddddddddddddddddddddddddddddddddddddddddddddddddddddd12345678')"
+expected="$(printf 'bare\tlinux-x86_64\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacafef00d\ndevtools\tlinux-x86_64\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbdeadbeef\nlogging\tlinux-x86_64\tccccccccccccccccccccccccccccccccccccccccccccccccccccccccfeedface\nlogging\twindows-x86_64\tdddddddddddddddddddddddddddddddddddddddddddddddddddddddd12345678\nlogging\twindows-x86_64-static\t1111111111111111111111111111111111111111111111111111111122223333')"
 assert_eq "$out" "$expected" "asymmetric discovery, sorted platform then variant, foreign etver excluded"
 
 # Platform string containing a dash is split correctly (variant vs platform).
 assert_contains "$out" "$(printf 'logging\twindows-x86_64\tdddddddddddddddddddddddddddddddddddddddddddddddddddddddd12345678')" "dash-containing platform split correctly"
 
-# Exactly 4 rows (foreign etver dropped).
-assert_eq "$(printf '%s\n' "$out" | grep -c .)" "4" "foreign-etver file excluded from row count"
+# A platform with TWO dashes must still split correctly (variant is everything before the FIRST dash).
+assert_contains "$out" "$(printf 'logging\twindows-x86_64-static\t1111111111111111111111111111111111111111111111111111111122223333')" "two-dash platform split correctly"
+
+# Exactly 5 rows (foreign etver dropped).
+assert_eq "$(printf '%s\n' "$out" | grep -c .)" "5" "foreign-etver file excluded from row count"
 
 # Test case: all-variants single-platform (order-independent)
 # Regression test for the "today's Linux-only, all-variants" case (bare + logging + devtools).

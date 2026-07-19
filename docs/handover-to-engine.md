@@ -52,7 +52,16 @@
   `*.cmake`) and `lib/` binaries are **position-independent** (proven by linking into a `.so`).
 - **C3 — Variants:** `bare` (LOGGING=OFF), `logging` (LOGGING=ON — **ship default**), `devtools`
   (LOGGING=OFF + DEVTOOLS=ON + EVENT_TRACER=ON).
-- **C4 — Platform:** `linux-x86_64` (glibc ≥ 2.28 floor). The `<platform>` token scales to future targets.
+- **C4 — Platform:** `linux-x86_64` (glibc ≥ 2.28 floor), `linux-aarch64`, `windows-x86_64` (MSVC,
+  `/MD` dynamic CRT), `windows-x86_64-static` (MSVC, `/MT` static CRT). The `<platform>` token scales
+  to future targets — this is an enumeration change, **not** a Contract Delta.
+  **Engine note:** on Windows prefer **`windows-x86_64-static`**. Its `/MT` CRT is folded into your
+  JNI DLL, so end users need no VC++ redistributable — compile the JNI target `/MT` to match
+  (`set_property(TARGET <t> PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")`). The `/MD`
+  `windows-x86_64` build exists for CPython extensions, which must match CPython's own CRT. Do NOT
+  rely on the linker to catch a mismatch — measured, a `/MD` consumer linked a `/MT` artifact with no
+  error and no LNK4098 warning. The failure is at runtime: two CRTs, two heaps, corruption when an
+  allocation crosses the boundary.
 - **C5 — `BUILDINFO`:** `key=value` lines — `et_version, et_commit, torch_version, variant, platform,
   cmake_flags, toolchain, build_utc, package_tag`. Informational (engine may log it); no functional consumer.
 - **C6 — `EtRuntimePin.cmake`:** flat cmake `set()`s — `ET_RUNTIME_VERSION`, `ET_RUNTIME_ET_VERSION`, and per
@@ -93,7 +102,7 @@ Everything else in C1–C9 is unchanged from the original hand-off.
 | C1 | `EtRuntimePin.cmake` URL/filename construction; `native/build_variants.sh` download filenames | ok |
 | C2 | `native/CMakeLists.txt`: `ET_INSTALL = <fetched>/executorch-runtime-<etver>-<variant>-<platform>`; `find_package` PATHS. `LICENSE`/`THIRD-PARTY-NOTICES/` are informational. | ok |
 | C3 | `EtRuntimePin.cmake` rows; `build_variants.sh` variant list; `docs/benchmarking.md` variant meaning | ok |
-| C4 | `EtRuntimePin.cmake` platform key; engine platform detection (`linux-x86_64` only for now) | ok |
+| C4 | `EtRuntimePin.cmake` platform key; engine platform detection. **Windows: select `windows-x86_64-static` and build the JNI target `/MT`** | **⚠ new Windows platforms available; engine detection must map Windows → the `-static` row** |
 | C5 | Informational only (engine may log it) | ok |
 | C6 | `native/CMakeLists.txt`: `include(EtRuntimePin.cmake)` + read `ET_RUNTIME_*` + `FetchContent(URL, URL_HASH SHA256=…)`. **Primary consumer.** | ok |
 | C7 | `FetchContent` `URL_HASH` uses the SHA; optional engine-CI `gh attestation verify` before use | ok |
