@@ -8,6 +8,11 @@
 > This document is your input: the **frozen contract** (C1–C9), the **one contract change** made
 > during Repo A's implementation, your **punch-list**, and **concrete consumption recipes**. Assume no
 > prior context. Producer repo: `measly-java-learning/executorch-runtime-dist`.
+>
+> **Already have the engine context and just need the current work items?** Read
+> [`handover-windows-static-cxx17.md`](handover-windows-static-cxx17.md) instead — a task-scoped
+> work order for adopting the `/MT` Windows artifact and checking the C++17 requirement. Note that
+> §1 below names an old release tag; always resolve the latest release rather than trusting it.
 
 ---
 
