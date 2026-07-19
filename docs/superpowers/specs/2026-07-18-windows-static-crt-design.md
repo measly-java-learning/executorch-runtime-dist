@@ -1,7 +1,8 @@
 # Windows static-CRT (`/MT`) artifact — design
 
 **Status:** spike-validated (GO), ready for an implementation plan.
-**Spike:** `spike/mt-crt/` (harness + `FINDINGS.md`), run 2026-07-18 on winbox.
+**Spike:** run 2026-07-18 on winbox. Findings are summarised in §9 below; the harness has
+since been deleted (spike kit removed after the work landed; recoverable from git history, e.g. `git show b4d2d16e0418:spike/mt-crt/FINDINGS.md`).
 **Prerequisite:** issue #10 (Windows compiler pin) — see §4.
 
 ## Problem
@@ -134,7 +135,8 @@ whatever lands in `dist/` via filesystem discovery, so it needs no edit.
   `discover_pin_rows.test.sh` with a `windows-x86_64-static` fixture to lock in that the multi-dash
   platform round-trips through parse → `tarball_name` reconstruction.
 - **Integration (CI):** the CRT-aware relocatability smoke per platform.
-- **CRT-consistency scan — in scope.** Promote `spike/mt-crt/check-crt.sh` into the Windows release
+- **CRT-consistency scan — in scope.** Shipped as `scripts/check-windows-crt.sh`, promoted from the
+  spike harness, into the Windows release
   gate (run on the packaged prefix, before attest, alongside the relocatability smoke). It is the
   only check that catches a *future* ET or third-party dependency starting to hardcode `/MD`: a leak
   in a lib the consumer probe does not pull in would otherwise ship silently.
@@ -186,7 +188,7 @@ artifact (§4), since no current gate would catch a coherently-32-bit build.
 
 ## 9. Spike-resolved unknowns
 
-Full detail in `spike/mt-crt/FINDINGS.md`.
+Findings are recorded inline below. (spike kit removed after the work landed; recoverable from git history, e.g. `git show b4d2d16e0418:spike/mt-crt/FINDINGS.md`)
 
 1. ~~Does `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` propagate through ET *and* every third-party
    subproject?~~ **Yes — clean.** Re-verified 2026-07-18:
@@ -220,5 +222,6 @@ compilers would not remove a single decision here.
 clang-cl remains the lead hypothesis for *that* question (Clang tolerates the C++20 designated
 initializers at C++17 as GCC does, and c10 is continuously tested against Clang), and the original
 spike's rejection was narrower than it reads — it ruled out the ET `windows` **preset** (which pins
-toolset ClangCL + the VS generator), not clang-cl on Ninja. `spike/mt-crt/probe-clangcl-optimized.sh`
-exists to answer it but **has not been run**. Out of scope here.
+toolset ClangCL + the VS generator), not clang-cl on Ninja. A ready-made probe for it
+was written but **never run**; it is in git history (spike kit removed after the work landed; recoverable from git history, e.g. `git show b4d2d16e0418:spike/mt-crt/FINDINGS.md`) and can be restored if this question is
+picked up. Out of scope here.
