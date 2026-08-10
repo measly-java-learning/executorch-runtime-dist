@@ -152,19 +152,12 @@ jobs:
       - name: Build runtime (MSVC)
         shell: pwsh
         run: |
-          # Discover the VS install path (edition-agnostic) instead of hardcoding Enterprise, so a
-          # runner-image edition change doesn't silently break the build.
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -property installationPath
-          if (-not $vsPath) { throw "vswhere found no Visual Studio installation" }
-          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
-          # Invoke Git-Bash by explicit path (the same bash GitHub's `shell: bash` resolves to) so
-          # PATH order can't select WSL's System32\bash.exe, which would run the recipe in a Linux
-          # environment with no MSVC toolchain.
-          $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
-          & $bash ./build-runtime.sh --variant ${{ matrix.variant }} `
+          # build-runtime.ps1 resolves VS, sources the dev shell, and finds Git-Bash; the recipe
+          # runs under it with args passed verbatim (same pattern as iree-runtime-dist).
+          & ./build-runtime.ps1 ./build-runtime.sh --variant ${{ matrix.variant }} `
             --prefix "$PWD/out" --et-src "$PWD/et-src/executorch" `
             --et-tag ${{ steps.ver.outputs.ettag }} --platform ${{ matrix.platform }}
+          if ($LASTEXITCODE -ne 0) { throw "build failed (exit $LASTEXITCODE)" }
       - name: Package
         shell: bash
         run: |
@@ -177,30 +170,21 @@ jobs:
         # relocatable (no absolute build path in lib/cmake) and links under MSVC from a moved prefix
         # via test/consumer's find_package(executorch) probe. Runs on the packaged .tar.gz — the exact
         # bytes consumers get — so it also catches packaging faults (e.g. lib/cmake not staged).
-        # Same VS-activation -> Git-Bash handoff as the build step; `bash -c` (non-login) inherits the
-        # dev-shell PATH (cmake/ninja/cl) instead of a profile resetting it.
         shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -property installationPath
-          if (-not $vsPath) { throw "vswhere found no Visual Studio installation" }
-          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
-          $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
-          & $bash -c 'set -euo pipefail; t="$(ls dist/*-${{ matrix.platform }}.tar.gz | head -n1)"; ./test/relocatability-windows.sh "$t" ${{ matrix.platform }}'
+          # Same VS-activation -> Git-Bash handoff as the build step, via build-runtime.ps1
+          # (-Command mode runs the inline bash under the dev shell).
+          & ./build-runtime.ps1 -Command 'set -euo pipefail; t="$(ls dist/*-${{ matrix.platform }}.tar.gz | head -n1)"; ./test/relocatability-windows.sh "$t" ${{ matrix.platform }}'
           if ($LASTEXITCODE -ne 0) { throw "relocatability smoke failed (exit $LASTEXITCODE)" }
       - name: CRT consistency scan
         # Proves every installed static lib positively carries the CRT this platform promises.
         # Catches a dependency that hardcodes its own CRT, which the consumer-link gate above would
-        # miss if the offending lib is not on the probe's link line. Same VS-activation -> Git-Bash
-        # handoff as the build step.
+        # miss if the offending lib is not on the probe's link line.
         shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -property installationPath
-          if (-not $vsPath) { throw "vswhere found no Visual Studio installation" }
-          & "$vsPath\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -SkipAutomaticLocation
-          $bash = "${env:ProgramFiles}\Git\bin\bash.exe"
-          & $bash -c 'set -euo pipefail; . scripts/lib/configure-base.sh; crt="$(crt_for_platform ${{ matrix.platform }})"; ./scripts/check-windows-crt.sh "$PWD/out" "$crt"'
+          # Same VS-activation -> Git-Bash handoff as the build step, via build-runtime.ps1
+          # (-Command mode runs the inline bash under the dev shell).
+          & ./build-runtime.ps1 -Command 'set -euo pipefail; . scripts/lib/configure-base.sh; crt="$(crt_for_platform ${{ matrix.platform }})"; ./scripts/check-windows-crt.sh "$PWD/out" "$crt"'
           if ($LASTEXITCODE -ne 0) { throw "CRT consistency scan failed (exit $LASTEXITCODE)" }
       - name: Attest build provenance
         uses: actions/attest@v4

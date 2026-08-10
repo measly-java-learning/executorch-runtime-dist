@@ -154,3 +154,6 @@ downstream" and `docs/handover-to-engine.md`.
   build trees.
 - Design docs and plans live in `docs/superpowers/{specs,plans,notes}/`; op-specific docs
   in `docs/`. `spike/` holds throwaway spike artifacts and logs — not part of the product.
+- **Branching**: work happens on a branch (`feature/*`, `fix/*`, `docs/*`, `chore/*`) and
+  lands on `main` through a PR. Direct commits to `main` are limited to the most trivial
+  of fixes.
