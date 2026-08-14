@@ -144,8 +144,7 @@ openvino-runtime-<ovver>-linux-x86_64/
     libopenvino_c.so.<abi>
     libopenvino.so.<abi>
     libopenvino_intel_cpu_plugin.so
-    libtbb.so.12 -> libtbb.so.12.<n>
-    libtbb.so.12.<n>
+    libtbb.so.12                                    # plain file in the wheel, no symlink needed
   licenses/
     LICENSE                                  # Apache 2.0
     runtime-third-party-programs.txt
@@ -160,8 +159,15 @@ default lookup work whenever the directory happens to be on the search path, whi
 
 ### 3. Vendor from the PyPI wheel, not the Intel archive
 
-This reverses the spike's working assumption and is the single most important decision here.
+This reverses the spike's working assumption.
 
+To be precise about what is and isn't at issue: **both upstream projects are Apache 2.0** —
+`openvinotoolkit/openvino` and `uxlfoundation/oneTBB` (the wheel bundles oneTBB 2021.13.1, the
+successor to classic TBB, confirmed from `TBB_VERSION` in the binary). The source licensing is
+not in question, and redistributing Apache-2.0 binaries is routine.
+
+What differs is the **terms Intel attaches to its own prebuilt distribution**, which is a
+separate matter from the license of the sources it was built from.
 `docs/licensing/readme.txt` in the Intel archive states that only headers, samples, and the
 Python API are Apache 2.0; **`runtime/lib/*` is under the Intel OpenVINO Distribution License**.
 Its `redist.txt` does permit redistributing `runtime/lib/intel64/*` on Linux, but the Linux
@@ -170,9 +176,14 @@ only) — and we need `libtbb`. Separately, making the archive usable from JNI r
 `patchelf --set-rpath` to *modify* Intel-provided binaries, which a distribution EULA is likely
 to restrict.
 
-The PyPI wheel is plain **Apache 2.0** (`License: OSI Approved :: Apache Software License`, with
-TBB and oneDNN third-party notices bundled) and already carries `RPATH=$ORIGIN`, so vendoring
-from it requires **no binary modification at all** and is 68 MB rather than 79 MB.
+The PyPI wheel sidesteps all of that: it is plain **Apache 2.0**
+(`License: OSI Approved :: Apache Software License`, with `LICENSE`,
+`runtime-third-party-programs.txt`, `onetbb_third-party-programs.txt`, and
+`onednn_third-party-programs.txt` bundled as declared `License-File`s) and already carries
+`RPATH=$ORIGIN`, so vendoring from it requires **no binary modification at all** and is 68 MB
+rather than 79 MB. It is Apache 2.0 end to end — sources and the binary distribution alike — so
+our obligation is the ordinary Apache-2.0 one: carry the license and the attribution notices,
+which the bundle does by construction.
 
 The Intel archive remains the better choice for anyone installing OpenVINO into their own
 container by hand — it is ABI-compatible with `manylinux_2_28` and its unversioned symlinks make
@@ -305,9 +316,11 @@ Both are written so a consumer never has to read this spec or re-run the spike.
    the full range is safe in both directions.
 2. **Asset size.** ~21 MB compressed added per release. Accepted deliberately in exchange for
    byte-identical OpenVINO across both consumers.
-3. **Redistribution.** Vendoring from the Apache-2.0 wheel with bundled license files is the
-   conservative path, but this is a legal judgement made from the license text in the artifacts,
-   not legal advice. Worth a human sign-off before the first release that ships the asset.
+3. **Redistribution.** Low risk. OpenVINO and oneTBB are both Apache 2.0 upstream, and the wheel
+   we vendor from is itself Apache 2.0 with its attribution notices included, so this is an
+   ordinary Apache-2.0 redistribution: carry the license and notices, which the bundle does by
+   construction and `test/openvino_bundle.test.sh` enforces. The Intel archive's EULA terms are
+   avoided entirely by not shipping its binaries.
 4. **OpenVINO version bumps are now our responsibility.** A new OV release requires updating
    `scripts/lib/openvino.sh` and re-rolling the asset. This is a new maintenance surface the repo
    did not previously have.
