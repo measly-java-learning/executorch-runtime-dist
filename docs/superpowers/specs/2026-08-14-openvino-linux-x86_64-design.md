@@ -77,8 +77,14 @@ This rules out the archive's bare layout for the Java consumer, and makes `$ORIG
 
 68 MB on disk, ~21 MB zip-compressed. The GPU/NPU plugins and every model frontend
 (ONNX/TF/PyTorch/Paddle/JAX) are droppable: we consume a precompiled blob and never parse a model
-format. `libtbbbind_2_5.so.3` + `libhwloc.so.15` (500 KB) are optional NUMA pinning; without them
-CPU inference still initialised cleanly.
+format.
+
+`libtbbbind_2_5.so.3` (30.6 KB) + `libhwloc.so.15` (460.6 KB) are **also shipped in the wheel** and
+are *not* dead weight: under `LD_DEBUG=libs`, `libtbb` dlopens `libtbbbind_2_5.so.3` by name (it is
+not a `NEEDED` entry), which in turn pulls `libhwloc.so.15` via its own `NEEDED` + `$ORIGIN`. Both
+resolve from the same flat directory. Omitting them is safe — TBB degrades gracefully, which is why
+the 4-file set above still initialised cleanly — but including them enables topology-aware thread
+binding.
 
 **Blob version compatibility is looser than feared.** The AOT side calls
 `compiled.export_model()` (`preprocess.py:60`) and the runtime calls `ov_core_import_model`, so
@@ -145,11 +151,14 @@ openvino-runtime-<ovver>-linux-x86_64/
     libopenvino.so.<abi>
     libopenvino_intel_cpu_plugin.so
     libtbb.so.12                                    # plain file in the wheel, no symlink needed
+    libtbbbind_2_5.so.3                             # NUMA binding, dlopened by libtbb
+    libhwloc.so.15                                  # topology, NEEDED by tbbbind
   licenses/
     LICENSE                                  # Apache 2.0
     runtime-third-party-programs.txt
     onetbb_third-party-programs.txt
     onednn_third-party-programs.txt
+    hwloc-COPYING                            # BSD-3-Clause — NOT bundled in the wheel; see §7
   BUILDINFO                                  # ov_version, ov_wheel_sha256, source_url, members
 ```
 
@@ -227,6 +236,30 @@ C5). Consumers are told to prefer the published asset; those installing their ow
 since the cross-version evidence comes from a trivial graph that does not exercise version-gated
 ops.
 
+### 7. Include `libtbbbind` + `libhwloc`, and add the hwloc notice ourselves
+
+Both ship in the wheel, so **nothing needs to be sourced externally**. They cost ~491 KB on top
+of the 68 MB base — negligible — and they are genuinely exercised at runtime (§"What was
+measured"), so we include them rather than making consumers assemble a second-tier bundle.
+
+This carries one obligation that the wheel does *not* satisfy for us. **`libhwloc` is
+BSD-3-Clause and is not attributed anywhere in the wheel's license material** — verified zero
+matches for `hwloc` / "Portable Hardware Locality" across `LICENSE`,
+`runtime-third-party-programs.txt`, `onetbb_third-party-programs.txt`, and
+`onednn_third-party-programs.txt`. BSD-3-Clause requires reproducing the copyright notice and
+disclaimer in binary redistributions, so shipping `libhwloc.so.15` under only the Apache-2.0
+material would be a real gap.
+
+`scripts/vendor-openvino.sh` therefore fetches hwloc's `COPYING` for the matching release and
+installs it as `licenses/hwloc-COPYING`, and the bundle test **fails hard** if it is missing —
+the same treatment `build_extras` already gives Google Highway's license. The bundled version is
+**hwloc 2.8.x**, determined by calling `hwloc_get_api_version()` on the shipped binary
+(`0x020800`), since the release string is stripped from the library.
+
+If the hwloc notice is ever unavailable at build time, the correct fallback is to **drop
+`libtbbbind` + `libhwloc` from the bundle**, not to ship them unattributed — losing NUMA binding
+is a performance regression, shipping unattributed BSD code is a compliance failure.
+
 ## Changes by file
 
 | file | change |
@@ -240,7 +273,7 @@ ops.
 | `.github/workflows/extras-gate.yml` | `classify-gate.sh` routes `scripts/vendor-openvino.sh` / `scripts/lib/openvino.sh` changes to a mode that rebuilds and smoke-tests the bundle |
 | `test/consumer/CMakeLists.txt` | link `executorch_backends` so the PIC gate actually covers the delegate |
 | `test/lib_cmakeflags.test.sh` | **new** — flag present on `linux-x86_64`, absent on Windows and aarch64 |
-| `test/openvino_bundle.test.sh` | **new** — member list, symlink, licenses present |
+| `test/openvino_bundle.test.sh` | **new** — member list, symlink, licenses present (incl. `hwloc-COPYING`, hard-fail) |
 | `test/openvino_smoke.sh` | **new** — dlopen the bundle, enumerate devices, expect `CPU` |
 | `docs/openvino-python-consumer.md` | **new** — deliverable |
 | `docs/openvino-jni-consumer.md` | **new** — deliverable |
