@@ -8,4 +8,8 @@ add_library(pic_probe SHARED probe.cpp)
 # MSVC defaults to C++14 and fails to compile the probe. The installed ExecuTorch package does not
 # propagate a C++17 requirement via INTERFACE_COMPILE_FEATURES, so the consumer must request it.
 target_compile_features(pic_probe PRIVATE cxx_std_17)
-target_link_libraries(pic_probe PRIVATE executorch)
+# executorch_backends is the upstream aggregate; on linux-x86_64 it includes openvino_backend,
+# whose imported target carries --whole-archive. Linking it here is what makes the relocatability
+# /PIC gate actually cover the delegate — with only `executorch`, no backend object is ever
+# extracted and an OpenVINO regression would be invisible until model-load time.
+target_link_libraries(pic_probe PRIVATE executorch executorch_backends)
