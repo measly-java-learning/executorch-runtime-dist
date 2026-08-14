@@ -195,8 +195,49 @@ jobs:
           name: dist-${{ matrix.variant }}-${{ matrix.platform }}
           path: dist/*
 
+  # The OpenVINO CPU runtime, vendored from the Apache-2.0 PyPI wheel into a flat, $ORIGIN-resolving
+  # bundle (contract C10). Linux x86_64 only and INDEPENDENT of the {variant} x {platform} matrix:
+  # the bundle contains no ExecuTorch code, is identical for all three variants, and is versioned by
+  # OpenVINO version rather than ET version. Runs in manylinux for the same glibc floor as the
+  # runtime tarballs.
+  openvino:
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Vendor the OpenVINO runtime bundle
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          ./scripts/vendor-openvino.sh --out "$PWD/ovstage"
+      - name: Runtime smoke gate (dlopen + enumerate CPU, LD_LIBRARY_PATH unset)
+        # Proves the flat bundle self-resolves before it is attested. A file-listing check cannot
+        # catch a missing plugin or a broken $ORIGIN; this can.
+        run: |
+          . ./scripts/lib/openvino.sh
+          bash test/openvino_smoke.sh "$PWD/ovstage/$(ov_asset_stem linux-x86_64)"
+      - name: Package
+        run: |
+          . ./scripts/lib/openvino.sh
+          mkdir -p "$PWD/dist"
+          stem="$(ov_asset_stem linux-x86_64)"
+          tar -C "$PWD/ovstage" -czf "$PWD/dist/$(ov_tarball_name linux-x86_64)" "$stem"
+          ( cd "$PWD/dist" && sha256sum "$(ov_tarball_name linux-x86_64)" > "$(ov_sha_name linux-x86_64)" )
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-openvino
+          path: dist/*
+
   pin:
-    needs: [build, build-windows]
+    needs: [build, build-windows, openvino]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -211,6 +252,13 @@ jobs:
           eval "$(./scripts/derive-version.sh)"
           base="${{ github.server_url }}/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}"
           args=(--version "$pkgver" --etver "$etver" --base-url "$base")
+          # C10: fold in the OpenVINO bundle if its job produced one. Reading the sha from the
+          # sibling .sha256 keeps gen-pin.sh's contract (it never hashes files itself).
+          . ./scripts/lib/openvino.sh
+          ovsha_file="dist/$(ov_sha_name linux-x86_64)"
+          if [ -f "$ovsha_file" ]; then
+            args+=(--openvino-sha "$(cut -d' ' -f1 "$ovsha_file")")
+          fi
           while IFS=$'\t' read -r variant platform sha; do
             args+=(--row "$variant" "$platform" "$sha")
           done < <(./scripts/discover-pin-rows.sh --dir dist --etver "$etver")
