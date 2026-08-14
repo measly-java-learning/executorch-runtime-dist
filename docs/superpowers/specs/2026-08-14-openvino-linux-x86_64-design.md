@@ -101,6 +101,25 @@ the probe can detect failure:
 Compatibility holds in both directions across the 2025.x line, so upstream's
 `>=2025.1.0,<2026.0.0` range is defensible rather than requiring an exact pin.
 
+**The AOT path works end to end, verified against a real built prefix.** Using ET 1.3.1 with
+torch 2.12.0+cpu, `openvino==2025.4.1`, and `nncf==3.1.0`:
+
+| step | result |
+|---|---|
+| `torch.export` → `to_edge_transform_and_lower(OpenvinoPartitioner([CompileSpec("device", b"CPU")]))` | exports; 4793-byte `.pte` |
+| delegate actually applied (not silently skipped to portable CPU) | `OpenvinoBackend` present in the `.pte` |
+| run via `executor_runner`, **no** `OPENVINO_LIB_PATH` (negative control) | fails: `Backend OpenvinoBackend is not available`, preceded by the documented dlopen error |
+| run with `OPENVINO_LIB_PATH` set | `OpenVINO: runtime loaded successfully`; model executes |
+| output vs eager torch | matches to ~1e-7 |
+
+The negative control matters as much as the success: it proves the backend is registered and that
+the whole mechanism hinges on `OPENVINO_LIB_PATH`, exactly as the consumer docs claim.
+
+One trap this surfaced, recorded because it will mislead whoever writes the fixture test:
+**`executor_runner` does not read an input file — it synthesizes its own inputs (ones).** Comparing
+its output against a golden captured from a different input reports a spurious mismatch. A
+correctness check must feed the fixture's own `in.bin`.
+
 ## Decisions
 
 ### 1. Fold the backend into all three Linux variants; do not add a fourth variant
@@ -260,6 +279,38 @@ If the hwloc notice is ever unavailable at build time, the correct fallback is t
 `libtbbbind` + `libhwloc` from the bundle**, not to ship them unattributed — losing NUMA binding
 is a performance regression, shipping unattributed BSD code is a compliance failure.
 
+### 8. Publish a known-good delegated `.pte` fixture, generated in CI (not checked in)
+
+A fixture asset mirroring `etnp-lstm-fixtures`, so consumers get a `.pte` that is *known* to
+exercise the delegate:
+
+```
+etnp-openvino-fixtures-<etver>-<ovver>.tar.gz   (+ .sha256, + attestation)
+  openvino_tiny.pte    # relu(linear(x)), fully delegated to OpenVINO
+  in.bin               # float32 input
+  out.bin              # golden eager-torch output for THAT input
+  shape                # OV_IN=<n> / OV_OUT=<n> lines, for torch-free consumers
+```
+
+**Both versions are in the name**, unlike the LSTM fixture: the `.pte` embeds a precompiled
+OpenVINO blob, so it is coupled to `<ovver>` as well as `<etver>`.
+
+**Generated in CI, not committed.** A checked-in `.pte` silently encodes whichever OpenVINO built
+it, so the moment `OV_VERSION` is bumped the fixture tests a stale pairing — and the failure mode
+is a *passing* test that no longer represents what we ship. Generating it means the fixture always
+matches both pins, and it gets a hash and an attestation like every other artifact here.
+
+**No separate CI job.** The `build` job at `variant == 'logging' && platform == 'linux-x86_64'`
+already has torch (installed by `build-runtime.sh`) and the `executorch` Python package built from
+the *pinned* ET source (installed by the `lstm-roundtrip` action), and already emits the LSTM
+fixtures in that same step. Emission therefore costs only `pip install openvino==<pin>
+nncf==3.1.0` — no torch download.
+
+`nncf` is required even though we never quantize: `backends/openvino/__init__.py` imports
+`OpenVINOQuantizer`, whose module does a top-level `import nncf`, and importing
+`executorch.backends.openvino.partitioner` executes that package `__init__` first. It is upstream's
+own pin in `backends/openvino/requirements.txt`.
+
 ## Changes by file
 
 | file | change |
@@ -267,6 +318,8 @@ is a performance regression, shipping unattributed BSD code is a compliance fail
 | `scripts/lib/cmakeflags.sh` | `common_cmake_flags` takes a platform; adds `EXECUTORCH_BUILD_OPENVINO=ON` for `linux-x86_64`; `effective_cmake_flags` passes it through. Verified safe: `common_cmake_flags` has **no callers outside this file** — every other consumer (`build-runtime.sh`, `scripts/package.sh`) goes through `effective_cmake_flags`, which already takes a platform |
 | `scripts/lib/openvino.sh` | **new** — pinned OV version, wheel SHA-256, member list, asset naming |
 | `scripts/vendor-openvino.sh` | **new** — wheel → normalized bundle |
+| `scripts/emit-openvino-fixtures.py` | **new** — export the delegated `.pte` + `in.bin`/`out.bin`/`shape` |
+| `scripts/package-openvino-fixtures.sh` | **new** — fixture dir → `etnp-openvino-fixtures-<etver>-<ovver>.tar.gz` |
 | `scripts/gen-pin.sh` | emit `ET_RUNTIME_OPENVINO_URL` / `_SHA256` / `_VERSION` |
 | `scripts/gen-buildinfo.sh` | record `openvino_version` (C5) |
 | `.github/workflows/release.yml` | new `openvino` job producing + attesting the asset; `pin` consumes it; `release` uploads it |
@@ -298,10 +351,9 @@ Two tests need a container and real artifacts:
   `test/consumer` links `executorch_backends`. Without that edit nothing would link
   `openvino_backend` and any regression in it would be invisible.
 
-Deliberately **not** covered by CI: a full AOT round-trip through `torch` + `openvino` to produce
-a real delegated `.pte`. That needs the heavy export venv and belongs with the existing
-`extras/lstm` round-trip pattern if it is ever wanted; the blob-import path is already covered by
-the smoke test at the C API level.
+The AOT round-trip **is** covered, via §8's fixture emission in the existing `build` job — the
+heavy dependencies are already installed there, so it costs one extra `pip install`. Emission
+failing fails the release, which is the point of a known-good fixture.
 
 ## Consumer documentation — the two deliverables
 

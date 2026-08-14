@@ -1447,11 +1447,281 @@ git commit -m "docs: OpenVINO JNI handover guide + document contract C10"
 
 ---
 
+### Task 12: Known-good delegated `.pte` fixture
+
+Publishes a fixture proving the delegate actually *works*, not merely that it links. The export
+API below is **verified working** against ET 1.3.1 + torch 2.12.0+cpu + openvino 2025.4.1 +
+nncf 3.1.0 — it is not a guess.
+
+**Files:**
+- Create: `scripts/emit-openvino-fixtures.py`
+- Create: `scripts/package-openvino-fixtures.sh`
+- Modify: `scripts/lib/openvino.sh` (add `ov_fixtures_name`)
+- Modify: `.github/workflows/release.yml` (extend the existing fixtures step)
+- Test: `test/lib_openvino.test.sh` (extend), `test/openvino_fixtures.test.sh` (create)
+
+**Interfaces:**
+- Consumes: `OV_VERSION` from Task 1; the `build` job's already-installed torch + `executorch`.
+- Produces:
+  - `ov_fixtures_name <etver>` → `etnp-openvino-fixtures-<etver>-<OV_VERSION>.tar.gz`
+  - `scripts/emit-openvino-fixtures.py <outdir>` → writes `openvino_tiny.pte`, `in.bin`, `out.bin`, `shape`
+  - `scripts/package-openvino-fixtures.sh --dir <d> --etver <v> [--outdir <o>]` → tarball + `.sha256`, prints the tarball path
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `test/lib_openvino.test.sh` (before the final `exit`):
+
+```bash
+# Fixtures are named by BOTH versions: the .pte embeds a precompiled OpenVINO blob, so it is
+# coupled to the OpenVINO version as well as the ET version (unlike etnp-lstm-fixtures).
+assert_eq "$(ov_fixtures_name 1.3.1)" "etnp-openvino-fixtures-1.3.1-${OV_VERSION}.tar.gz" \
+  "fixtures name carries both etver and ovver"
+ov_fixtures_name >/dev/null 2>&1; assert_eq "$?" "2" "fixtures name without etver returns 2"
+```
+
+Create `test/openvino_fixtures.test.sh` (hermetic — stubs the fixture files; the real export
+happens in CI):
+
+```bash
+#!/usr/bin/env bash
+# Hermetic: packaging logic only. Stubs the four fixture members rather than running a real
+# torch export, which needs the heavy AOT venv and belongs in CI.
+set -u
+here="$(cd "$(dirname "$0")" && pwd)"
+. "$here/assert.sh"
+. "$here/../scripts/lib/openvino.sh"
+
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/fx"
+printf 'PTE-STUB\n' > "$tmp/fx/openvino_tiny.pte"
+printf 'IN\n'  > "$tmp/fx/in.bin"
+printf 'OUT\n' > "$tmp/fx/out.bin"
+printf 'OV_IN=8\nOV_OUT=8\n' > "$tmp/fx/shape"
+
+tb="$(bash "$here/../scripts/package-openvino-fixtures.sh" --dir "$tmp/fx" --etver 1.3.1 --outdir "$tmp/out")" \
+  || { echo "FAIL: packaging exited non-zero"; exit 1; }
+assert_eq "$(basename "$tb")" "$(ov_fixtures_name 1.3.1)" "tarball uses the C10 fixtures name"
+[ -f "$tb.sha256" ] && printf 'ok: sha256 sidecar written\n' \
+  || { printf 'FAIL: sha256 sidecar missing\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
+
+# Flat layout (files at tar root), matching etnp-lstm-fixtures.
+members="$(tar -tzf "$tb" | sort | tr '\n' ' ')"
+assert_eq "$members" "in.bin openvino_tiny.pte out.bin shape " "flat member list"
+
+# A missing member must abort rather than ship an incomplete fixture set.
+rm "$tmp/fx/out.bin"
+bash "$here/../scripts/package-openvino-fixtures.sh" --dir "$tmp/fx" --etver 1.3.1 --outdir "$tmp/out2" >/dev/null 2>&1
+assert_eq "$?" "1" "missing fixture member aborts"
+exit "$ASSERT_FAILS"
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `bash test/lib_openvino.test.sh && bash test/openvino_fixtures.test.sh`
+Expected: FAIL — `ov_fixtures_name: command not found`, then `package-openvino-fixtures.sh: No such file or directory`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Add to `scripts/lib/openvino.sh` (after `ov_sha_name`):
+
+```bash
+# Fixture asset carries BOTH versions: the .pte embeds a precompiled OpenVINO blob (the AOT side
+# calls compiled.export_model(); the runtime calls ov_core_import_model), so it is coupled to the
+# OpenVINO version as well as the ET version. etnp-lstm-fixtures needs only <etver>.
+ov_fixtures_name() { # <etver>
+  [ $# -ge 1 ] && [ -n "${1:-}" ] || { echo "ov_fixtures_name: etver required" >&2; return 2; }
+  printf 'etnp-openvino-fixtures-%s-%s.tar.gz' "$1" "$OV_VERSION"
+}
+```
+
+Create `scripts/emit-openvino-fixtures.py`:
+
+```python
+"""Mint the published OpenVINO fixture set: a trivial fully-delegated model plus its golden
+output. Writes openvino_tiny.pte, in.bin, out.bin (golden EAGER output for in.bin), and a
+shape file the torch-free consumer smoke reads.
+
+Requires the AOT venv: torch, the executorch python package built from the SAME pinned ET
+source, openvino, and nncf. nncf is needed even though we never quantize -- importing
+executorch.backends.openvino.partitioner executes the package __init__, which imports
+OpenVINOQuantizer, which imports nncf at module level.
+"""
+import pathlib
+import sys
+
+DIM = 8
+
+
+def main(outdir: pathlib.Path) -> None:
+    import torch
+    from executorch.backends.openvino.partitioner import OpenvinoPartitioner
+    from executorch.exir import to_edge_transform_and_lower
+    from executorch.exir.backend.backend_details import CompileSpec
+
+    class Tiny(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lin = torch.nn.Linear(DIM, DIM)
+
+        def forward(self, x):
+            return torch.relu(self.lin(x))
+
+    # Fixed seed: the fixture must be reproducible across releases for the same versions.
+    torch.manual_seed(0)
+    model = Tiny().eval()
+    example = (torch.randn(1, DIM),)
+
+    with torch.no_grad():
+        golden = model(*example)
+
+    exported = torch.export.export(model, example)
+    # "device" CompileSpec picks the OpenVINO device; CPU is the only plugin we ship.
+    partitioner = OpenvinoPartitioner([CompileSpec("device", b"CPU")])
+    lowered = to_edge_transform_and_lower(exported, partitioner=[partitioner])
+    pte = lowered.to_executorch().buffer
+
+    # Prove the delegate was actually applied. Without this, a partitioner that silently declined
+    # every node would still produce a valid .pte -- one that tests nothing but portable CPU.
+    if b"OpenvinoBackend" not in pte:
+        raise SystemExit("emit-openvino-fixtures: .pte contains no OpenvinoBackend delegate")
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / "openvino_tiny.pte").write_bytes(pte)
+    (outdir / "in.bin").write_bytes(example[0].contiguous().numpy().tobytes())
+    (outdir / "out.bin").write_bytes(golden.contiguous().numpy().tobytes())
+    (outdir / "shape").write_text(f"OV_IN={DIM}\nOV_OUT={DIM}\n")
+    print(f"emit-openvino-fixtures: wrote {len(pte)} byte .pte to {outdir}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.stderr.write("usage: emit-openvino-fixtures.py <outdir>\n")
+        sys.exit(2)
+    main(pathlib.Path(sys.argv[1]))
+```
+
+Create `scripts/package-openvino-fixtures.sh` (and `chmod +x`):
+
+```bash
+#!/usr/bin/env bash
+# Package the OpenVINO fixture set (openvino_tiny.pte, in.bin, out.bin, shape) into
+# etnp-openvino-fixtures-<etver>-<ovver>.tar.gz + .sha256 (flat: files at tar root).
+# Mirrors scripts/package-fixtures.sh; separate asset because this one is OpenVINO-version
+# coupled and the LSTM one is not.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/lib/openvino.sh"
+
+DIR=""; ETVER=""; OUTDIR="."
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dir)    DIR="$2"; shift 2 ;;
+    --etver)  ETVER="$2"; shift 2 ;;
+    --outdir) OUTDIR="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$DIR" ] && [ -n "$ETVER" ] || { echo "--dir and --etver required" >&2; exit 2; }
+[ -d "$DIR" ] || { echo "package-openvino-fixtures.sh: --dir '$DIR' not a directory" >&2; exit 1; }
+for m in openvino_tiny.pte in.bin out.bin shape; do
+  [ -s "$DIR/$m" ] || { echo "package-openvino-fixtures.sh: missing fixture member '$m' in $DIR" >&2; exit 1; }
+done
+
+mkdir -p "$OUTDIR"; OUTDIR="$(cd "$OUTDIR" && pwd)"
+TARBALL="$OUTDIR/$(ov_fixtures_name "$ETVER")"
+tar -C "$DIR" -czf "$TARBALL" openvino_tiny.pte in.bin out.bin shape
+( cd "$OUTDIR" && sha256sum "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
+printf '%s\n' "$TARBALL"
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `chmod +x scripts/package-openvino-fixtures.sh && bash test/lib_openvino.test.sh && bash test/openvino_fixtures.test.sh`
+Expected: PASS for both.
+
+Run: `bash test/run.sh`
+Expected: `ALL UNIT TESTS PASS` (modulo the pre-existing `extras_members` prefix dependency).
+
+Verify the real export against an AOT venv that has torch + the pinned `executorch` (add
+`openvino==2025.4.1` and `nncf==3.1.0` if absent):
+
+```bash
+<aot-venv>/bin/pip install "openvino==2025.4.1" "nncf==3.1.0"
+<aot-venv>/bin/python scripts/emit-openvino-fixtures.py /tmp/ovfix
+```
+
+Expected: `emit-openvino-fixtures: wrote <n> byte .pte to /tmp/ovfix`, four files present, and no
+`no OpenvinoBackend delegate` error.
+
+Then prove the fixture actually runs on a built prefix. `executor_runner` is built by the linux
+preset at `<build-dir>/executor_runner`:
+
+```bash
+# Negative control FIRST: without OPENVINO_LIB_PATH this must fail with the documented error.
+./et-build-logging/executor_runner --model_path /tmp/ovfix/openvino_tiny.pte 2>&1 | tail -3
+```
+
+Expected: `Backend OpenvinoBackend is not available.` — proves the delegate is registered and that
+the whole mechanism depends on the env var.
+
+```bash
+env -u LD_LIBRARY_PATH \
+  OPENVINO_LIB_PATH=<ov-bundle>/lib/libopenvino_c.so \
+  ./et-build-logging/executor_runner --model_path /tmp/ovfix/openvino_tiny.pte 2>&1 | tail -3
+```
+
+Expected: `OpenVINO: runtime loaded successfully from ...` and `Model executed successfully`.
+
+> **Trap — do not compare this run's output against `out.bin`.** `executor_runner` does **not**
+> read an input file; it synthesizes its own inputs (ones). Its output will legitimately differ
+> from the golden, which was captured for `in.bin`. A real correctness check must feed `in.bin`,
+> the way `extras/lstm/test/test_lstm_roundtrip.py` does. To sanity-check by hand, compare against
+> `relu(lin(ones))` from the same seed instead — that matched to ~1e-7 during the spike.
+
+- [ ] **Step 5: Wire it into CI**
+
+In `.github/workflows/release.yml`, extend the existing "Emit + package LSTM fixtures" step. Append
+these lines to that step's `run:` block (torch and `executorch` are already installed by the
+round-trip action above it, so only the two OpenVINO AOT deps are new):
+
+```bash
+          # OpenVINO fixture: same job, because torch + the pinned executorch package are already
+          # installed here. Only the AOT-side OpenVINO deps are new. nncf is required even though
+          # we never quantize (backends/openvino/__init__ imports OpenVINOQuantizer -> nncf).
+          . ./scripts/lib/openvino.sh
+          pip install "openvino==${OV_VERSION}" "nncf==3.1.0"
+          python scripts/emit-openvino-fixtures.py "$PWD/ovfixtures"
+          ./scripts/package-openvino-fixtures.sh --dir "$PWD/ovfixtures" \
+            --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
+```
+
+Extend `test/release_workflow.test.sh` (before its final `exit`):
+
+```bash
+assert_contains "$(cat "$wf")" "emit-openvino-fixtures.py" "release emits the OpenVINO fixture"
+assert_contains "$(cat "$wf")" "package-openvino-fixtures.sh" "release packages the OpenVINO fixture"
+```
+
+Run: `bash test/release_workflow.test.sh`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/emit-openvino-fixtures.py scripts/package-openvino-fixtures.sh \
+        scripts/lib/openvino.sh .github/workflows/release.yml \
+        test/lib_openvino.test.sh test/openvino_fixtures.test.sh test/release_workflow.test.sh
+git commit -m "feat: publish a known-good OpenVINO-delegated .pte fixture"
+```
+
+---
+
 ## Final verification
 
 - [ ] **Full unit suite:** `bash test/run.sh` → `ALL UNIT TESTS PASS`
 - [ ] **Flags:** `./build-runtime.sh --print-flags --variant logging` contains `-DEXECUTORCH_BUILD_OPENVINO=ON`; the same with `--platform windows-x86_64-static` does not.
 - [ ] **Bundle end to end** (container): `./scripts/vendor-openvino.sh --out "$PWD/ovstage"` then `bash test/openvino_smoke.sh "$PWD/ovstage/openvino-runtime-2025.4.1-linux-x86_64"` → `GATE PASS`.
 - [ ] **PIC/relocatability with the delegate linked** (container): `bash test/relocatability.sh "$PWD/out-logging"` → `GATE PASS`.
-- [ ] **Scratch dirs removed:** `rm -rf ovstage ovbundle`; `git status` clean.
+- [ ] **Fixture round-trip:** `emit-openvino-fixtures.py` produces a `.pte` containing an `OpenvinoBackend` delegate; `executor_runner` fails without `OPENVINO_LIB_PATH` and succeeds with it.
+- [ ] **Scratch dirs removed:** `rm -rf ovstage ovbundle ovfixtures`; `git status` clean.
 - [ ] **Open the PR** against `main` from `feature/openvino-linux-x86_64`.
