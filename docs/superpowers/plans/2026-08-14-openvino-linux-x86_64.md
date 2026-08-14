@@ -1154,8 +1154,8 @@ upstream `executorch` Python package and needs torch. This repo ships runtime ar
 **Option A — our published asset (preferred).** Each release publishes
 `openvino-runtime-<ovver>-linux-x86_64.tar.gz` with a SHA-256 and a build attestation, pinned in
 `EtRuntimePin.cmake` as `ET_RUNTIME_OPENVINO_URL` / `ET_RUNTIME_OPENVINO_SHA256` /
-`ET_RUNTIME_OPENVINO_VERSION`. It is a flat directory that self-resolves, and it is the same
-bytes our JNI consumer ships — which is the point.
+`ET_RUNTIME_OPENVINO_VERSION`. It is a flat directory that self-resolves, and the hash pin means
+you get identical bytes on every build.
 
 **Option B — pip.** `pip install "openvino>=2025.1.0,<2026.0.0"`.
 
@@ -1224,8 +1224,10 @@ Measured across the 2025.x line, with a corrupted-blob control confirming the ch
 So `>=2025.1.0,<2026.0.0` is supported. The safe rule is **runtime version ≥ export version** —
 the evidence above comes from a trivial graph and does not exercise version-gated operators.
 
-Pin the same OpenVINO version your JNI consumer ships. Drift between the two is the most likely
-source of a "works in Python, fails in Java" bug.
+Pin **one exact** OpenVINO version rather than floating within the supported range, and record it
+next to your package version. A range lets a rebuild silently resolve a different OpenVINO than
+the one your models were exported against, which surfaces as an import failure at model load
+rather than at install time.
 
 ## Troubleshooting
 
@@ -1293,8 +1295,8 @@ For a JVM application shipping qualified jars with platform-specific `.so` files
 
 The OpenVINO delegate is already compiled into every `linux-x86_64` runtime tarball as
 `lib/libopenvino_backend.a`. The OpenVINO **runtime** is separate and must be vendored into your
-jar. Use our published `openvino-runtime-<ovver>-linux-x86_64.tar.gz` — it is hash-pinned,
-attested, and identical to what our Python consumer uses.
+jar. Use our published `openvino-runtime-<ovver>-linux-x86_64.tar.gz` — it is hash-pinned and
+attested, so every build vendors identical bytes.
 
 Its `lib/` is a **flat** directory holding exactly six libraries plus one symlink:
 
@@ -1374,7 +1376,10 @@ compatible. Compatibility was measured to hold in both directions across 2025.1 
 corrupted-blob control proving the check is real), so `>=2025.1.0,<2026.0.0` is supported, with
 **runtime version ≥ export version** as the safe rule.
 
-Ship the same OpenVINO version your Python consumer pins.
+Vendor **one exact** OpenVINO version rather than floating within the supported range, and record
+it in your jar's manifest. A range lets a rebuild silently vendor a different OpenVINO than the
+one your models were exported against, which surfaces as an import failure at model load rather
+than at build time.
 
 ## Checklist
 
