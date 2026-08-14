@@ -62,6 +62,12 @@ hash-pinned tarballs. Pushing a version tag is the **only** CI trigger.
    tarball's build provenance, and publishes a GitHub Release containing:
    - the 3 tarballs and their matching `.sha256` files
    - a ready-to-paste `EtRuntimePin.cmake`
+   - the OpenVINO CPU runtime bundle `openvino-runtime-<ovver>-linux-x86_64.tar.gz` and its
+     `.sha256` (contract C10, linux-x86_64 only) — a separate, hash-pinned asset versioned by the
+     OpenVINO version; its `ET_RUNTIME_OPENVINO_{VERSION,URL,SHA256}` vars land in
+     EtRuntimePin.cmake. Consumers set `OPENVINO_LIB_PATH` to the absolute path of
+     `lib/libopenvino_c.so`; see `docs/openvino-python-consumer.md` and
+     `docs/openvino-jni-consumer.md`.
 
 ## Building locally
 

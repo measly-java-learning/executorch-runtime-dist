@@ -82,6 +82,15 @@
   reuses an existing `--prefix` install (guarded by `executorch-config.cmake`), mirroring the engine's own
   Stage A flag. The engine clones Repo A at tag `v<etver>-<pkgrev>` (C9) to invoke it.
 - **C9 — Release tag:** `v<etver>-<pkgrev>` (e.g. `v1.3.1-2`); `pkgrev` increments for re-rolls of the same ET version.
+- **C10 — OpenVINO runtime asset (`linux-x86_64` only):**
+  `openvino-runtime-<ovver>-linux-x86_64.tar.gz` + `.sha256`, versioned by **OpenVINO** version
+  (independent of `<etver>`). One top-level dir containing a flat `lib/` (six CPU-only libraries
+  plus the unversioned `libopenvino_c.so` symlink we add), `licenses/` (Apache 2.0 + third-party
+  notices + hwloc BSD-3-Clause), and `BUILDINFO`. Vendored from the Apache-2.0 PyPI wheel; every
+  library carries `RPATH=$ORIGIN` so the directory self-resolves without `LD_LIBRARY_PATH`.
+  Pinned as `ET_RUNTIME_OPENVINO_{VERSION,URL,SHA256}`. Consumers set `OPENVINO_LIB_PATH` to the
+  absolute path of `lib/libopenvino_c.so`. See `docs/openvino-python-consumer.md` and
+  `docs/openvino-jni-consumer.md`.
 
 ---
 
