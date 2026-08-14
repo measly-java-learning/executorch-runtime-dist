@@ -5,6 +5,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/naming.sh"
 . "$HERE/lib/variants.sh"
 . "$HERE/lib/cmakeflags.sh"
+. "$HERE/lib/openvino.sh"
 . "$HERE/lib/configure-base.sh"
 
 PREFIX=""; ETVER=""; VARIANT=""; PLATFORM=""; PACKAGE_TAG=""; OUTDIR="."; TOOLCHAIN=""
@@ -51,6 +52,7 @@ ET_VERSION="$ETVER" ET_COMMIT="$ET_COMMIT" TORCH_VERSION="2.12.0+cpu" \
   VARIANT="$VARIANT" PLATFORM="$PLATFORM" CMAKE_FLAGS="$CMAKE_FLAGS" \
   TOOLCHAIN="$TOOLCHAIN" PACKAGE_TAG="$PACKAGE_TAG" \
   USDT="$USDT_STATE" \
+  OPENVINO_VERSION="$([ "$PLATFORM" = linux-x86_64 ] && printf '%s' "$OV_VERSION" || printf 'n/a')" \
   "$HERE/gen-buildinfo.sh" > "$STAGE/BUILDINFO"
 
 mkdir -p "$OUTDIR"

@@ -79,5 +79,6 @@ tbl="$(bash "$here/../scripts/package.sh" --prefix "$p" --etver 1.3.1 --variant 
 bil="$(tar -xzOf "$tbl" executorch-runtime-1.3.1-logging-linux-x86_64/BUILDINFO)"
 assert_contains "$bil" "toolchain=manylinux_2_28 gcc-toolset-14" "default toolchain preserved"
 assert_contains "$bil" "cmake_flags=--preset linux"              "linux preset recorded in provenance"
+assert_contains "$bil" "openvino_version=" "openvino provenance recorded in BUILDINFO"
 
 exit "$ASSERT_FAILS"
