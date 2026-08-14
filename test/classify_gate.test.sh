@@ -3,6 +3,7 @@
 # release lookup stubbed via GATE_RELEASE_TAG and the ET tag via GATE_ET_TAG.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
+. "$here/assert.sh"
 root="$here/.."
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 fail=0
@@ -56,4 +57,12 @@ out="$(GATE_ET_TAG="v1.3.1" GATE_GH_CMD="$tmp/ghstub" "$root/scripts/classify-ga
 [ "$(mode)" = "tier1" ] || { echo "FAIL: stub resolve mode=$(mode)"; fail=1; }
 printf '%s\n' "$out" | grep -q '^release_tag=v1.3.1-2$' || { echo "FAIL: stub newest tag"; fail=1; }
 
-[ "$fail" -eq 0 ] && echo "OK: classify-gate" || exit 1
+# An OpenVINO vendoring/SSOT change alters a published artifact's contents, so it must get the
+# full treatment rather than a kernel-only tier1 gate.
+for f in scripts/vendor-openvino.sh scripts/lib/openvino.sh; do
+  cf="$(mktemp)"; printf '%s\n' "$f" > "$cf"
+  out="$(GATE_ET_TAG=v1.3.1 GATE_RELEASE_TAG=v1.3.1-1 bash "$here/../scripts/classify-gate.sh" "$cf")"
+  assert_contains "$out" "mode=full" "openvino change ($f) forces a full gate"
+done
+
+[ "$fail" -eq 0 ] && [ "$ASSERT_FAILS" -eq 0 ] && echo "OK: classify-gate" || exit 1

@@ -28,6 +28,13 @@ if grep -qx 'build-runtime.sh' "$CHANGED"; then
   emit full ""; exit 0
 fi
 
+# (1b) an OpenVINO vendoring/SSOT change alters a PUBLISHED artifact's contents (the C10 bundle:
+# its members, pinned version, or license set). tier1/tier2 only rebuild extras against a
+# downloaded release and would never exercise it, so force a full run.
+if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh)' "$CHANGED"; then
+  emit full ""; exit 0
+fi
+
 # (2) resolve the newest matching package release.
 # A transient `gh` failure must NOT be silently treated as "no release" (which would waste
 # a ~15min full build and mislabel the PR). Distinguish: an empty result from a SUCCESSFUL
