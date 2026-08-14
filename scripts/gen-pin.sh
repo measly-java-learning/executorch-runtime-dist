@@ -3,14 +3,17 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/naming.sh"
+. "$HERE/lib/openvino.sh"
 
-VERSION=""; ETVER=""; BASEURL=""; ROWS=()
+VERSION=""; ETVER=""; BASEURL=""; ROWS=(); OVSHA=""; OVPLATFORM="linux-x86_64"
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --etver) ETVER="$2"; shift 2 ;;
     --base-url) BASEURL="$2"; shift 2 ;;
     --row) ROWS+=("$2 $3 $4"); shift 4 ;;
+    --openvino-sha)      OVSHA="$2"; shift 2 ;;
+    --openvino-platform) OVPLATFORM="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -27,3 +30,13 @@ for r in "${ROWS[@]}"; do
   printf 'set(ET_RUNTIME_URL_%s_%s\n  "%s/%s")\n' "$variant" "$platform" "$BASEURL" "$tb"
   printf 'set(ET_RUNTIME_SHA256_%s_%s "%s")\n\n' "$variant" "$platform" "$sha"
 done
+
+# C10: the OpenVINO CPU runtime bundle. Emitted only when a sha is supplied, so a release that
+# did not run the OpenVINO job still yields a valid (OpenVINO-free) pin rather than dangling vars.
+# Versioned by OPENVINO version, not ET version — it tracks an independent upstream and must be
+# re-rollable without an ET bump.
+if [ -n "$OVSHA" ]; then
+  printf 'set(ET_RUNTIME_OPENVINO_VERSION "%s")\n' "$OV_VERSION"
+  printf 'set(ET_RUNTIME_OPENVINO_URL\n  "%s/%s")\n' "$BASEURL" "$(ov_tarball_name "$OVPLATFORM")"
+  printf 'set(ET_RUNTIME_OPENVINO_SHA256 "%s")\n\n' "$OVSHA"
+fi
