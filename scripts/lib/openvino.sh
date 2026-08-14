@@ -60,3 +60,11 @@ ov_asset_stem() { # <platform>
 }
 ov_tarball_name() { printf '%s.tar.gz' "$(ov_asset_stem "$@")"; }
 ov_sha_name()     { printf '%s.sha256' "$(ov_tarball_name "$@")"; }
+
+# Fixture asset carries BOTH versions: the .pte embeds a precompiled OpenVINO blob (the AOT side
+# calls compiled.export_model(); the runtime calls ov_core_import_model), so it is coupled to the
+# OpenVINO version as well as the ET version. etnp-lstm-fixtures needs only <etver>.
+ov_fixtures_name() { # <etver>
+  [ $# -ge 1 ] && [ -n "${1:-}" ] || { echo "ov_fixtures_name: etver required" >&2; return 2; }
+  printf 'etnp-openvino-fixtures-%s-%s.tar.gz' "$1" "$OV_VERSION"
+}

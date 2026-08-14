@@ -38,4 +38,10 @@ for m in "LICENSE" "runtime-third-party-programs.txt" "onetbb_third-party-progra
 done
 
 ov_asset_stem >/dev/null 2>&1; assert_eq "$?" "2" "missing platform returns 2"
+
+# Fixtures are named by BOTH versions: the .pte embeds a precompiled OpenVINO blob, so it is
+# coupled to the OpenVINO version as well as the ET version (unlike etnp-lstm-fixtures).
+assert_eq "$(ov_fixtures_name 1.3.1)" "etnp-openvino-fixtures-1.3.1-${OV_VERSION}.tar.gz" \
+  "fixtures name carries both etver and ovver"
+ov_fixtures_name >/dev/null 2>&1; assert_eq "$?" "2" "fixtures name without etver returns 2"
 exit "$ASSERT_FAILS"

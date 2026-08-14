@@ -82,6 +82,14 @@ jobs:
           mkdir -p "$PWD/dist"
           ./scripts/package-fixtures.sh --dir "$PWD/fixtures" \
             --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
+          # OpenVINO fixture: same job, because torch + the pinned executorch package are already
+          # installed here. Only the AOT-side OpenVINO deps are new. nncf is required even though
+          # we never quantize (backends/openvino/__init__ imports OpenVINOQuantizer -> nncf).
+          . ./scripts/lib/openvino.sh
+          pip install "openvino==${OV_VERSION}" "nncf==3.1.0"
+          python scripts/emit-openvino-fixtures.py "$PWD/ovfixtures"
+          ./scripts/package-openvino-fixtures.sh --dir "$PWD/ovfixtures" \
+            --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
       - name: Package
         run: |
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \

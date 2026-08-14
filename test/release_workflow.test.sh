@@ -22,4 +22,7 @@ import sys,yaml
 yaml.safe_load(open('$wf'))
 print('ok: release.yml parses as YAML')
 " || echo "SKIP: python3/pyyaml unavailable for YAML parse check"
+
+assert_contains "$(cat "$wf")" "emit-openvino-fixtures.py" "release emits the OpenVINO fixture"
+assert_contains "$(cat "$wf")" "package-openvino-fixtures.sh" "release packages the OpenVINO fixture"
 exit "$ASSERT_FAILS"
