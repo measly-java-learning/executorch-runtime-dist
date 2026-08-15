@@ -56,8 +56,7 @@ ok("$PWD/out" not in aot, "full-aot does not reference the built prefix")
 # openvino.frontend.pytorch at module scope; pre-split that wheel was installed by an earlier
 # step in the same job, and the split silently moved that step to full-gates. full-aot must now
 # install it itself -- caught the hard way, by the first run that actually executed these jobs.
-ok("openvino==" in aot, "full-aot installs the openvino wheel its emitter imports")
-ok("nncf==" in aot, "full-aot installs nncf for the OpenVINO export")
+ok("requirements/openvino-aot.txt" in aot, "full-aot installs the openvino wheel its emitter imports")
 
 # full-gates must consume the FRESH fixtures. If these ever became published downloads, the job
 # would still pass while no longer testing the branch's AOT -- the exact vacuous-gate failure

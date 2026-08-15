@@ -18,6 +18,12 @@ OV_ABI="2541"
 OV_WHEEL_PYTAG="cp312"
 OV_WHEEL_SHA256="88f074286d420c1a1a95e7f2ba11109a899f2f3b3fd818cfe1e47ead22cc7e45"
 
+# AOT-only, and deliberately here rather than in a requirements file: NNCF is part of the OpenVINO
+# family and its wheel must be resolvable alongside the OV_VERSION above. requirements/openvino-*.txt
+# are GENERATED from these two by scripts/gen-requirements.sh, so the wheel a fixture is exported
+# with can never drift from the bundle the gate runs it against.
+OV_NNCF_VERSION="3.1.0"
+
 # hwloc is BSD-3-Clause and is NOT attributed anywhere in the wheel's license material (verified:
 # zero matches for "hwloc"/"Portable Hardware Locality" across LICENSE and all three
 # *-third-party-programs.txt). Shipping libhwloc.so.15 therefore requires fetching its notice

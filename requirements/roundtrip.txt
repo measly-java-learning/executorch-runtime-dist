@@ -1,0 +1,7 @@
+# The live round-trip (export -> run vs eager): everything extras-build needs, plus a test runner.
+-r extras-build.txt
+
+# pytest is tracked, not pinned, for the same reason as numpy: install_executorch.sh installs it
+# from ExecuTorch's own requirements-dev.txt (pytest<9.0 on the current pin), and this file runs
+# AFTER that. An exact pin here would silently fight upstream's bound whenever the ET pin moves.
+pytest

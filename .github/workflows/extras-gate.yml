@@ -134,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
-          pip install ninja numpy    # cmake is present in the manylinux image (as in release.yml)
+          pip install -r requirements/extras-build.txt    # cmake is present in the manylinux image (as in release.yml)
           ./build-runtime.sh --extras-only --variant logging --prefix "$PWD/prefix"
           FIXTURES_DIR="$PWD/fixtures" ETNP_PREFIX="$PWD/prefix" \
             python extras/lstm/test/consumer_smoke.py
@@ -167,7 +167,7 @@ jobs:
           tar -C prefix -xzf "gate-inputs/executorch-runtime-${ETVER}-logging-linux-x86_64.tar.gz" --strip-components=1
           rm -f  prefix/lib/libetnp_ops_*.a prefix/lib/libhwy.a
           rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
-          pip install ninja
+          pip install -r requirements/extras-build.txt
           ./build-runtime.sh --extras-only --variant logging --prefix "$PWD/prefix"
       - name: Live round-trip (export -> run vs eager)
         uses: ./.github/actions/lstm-roundtrip
@@ -245,7 +245,7 @@ jobs:
           set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           (cd et-src/executorch && ./install_executorch.sh)
-          pip install numpy ninja
+          pip install -r requirements/extras-build.txt
       - name: Emit LSTM fixtures FRESH from the branch AOT
         # These are the export half of the live round-trip: lstm_case.build_case() is the same
         # source test_lstm_roundtrip.py uses, so a golden minted here is an eager-torch golden
@@ -264,8 +264,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
-          . ./scripts/lib/openvino.sh
-          pip install "openvino==${OV_VERSION}" "nncf==3.1.0"
+          pip install -r requirements/openvino-aot.txt
           python scripts/emit-openvino-fixtures.py "$PWD/fixtures-dryrun/openvino"
       - name: Emit XNNPACK-delegated fixtures for the workspace-size gate
         run: |
@@ -311,7 +310,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
-          pip install numpy ninja
+          pip install -r requirements/extras-build.txt
           FIXTURES_DIR="$PWD/fixtures-dryrun/lstm" ETNP_PREFIX="$PWD/out" \
             python extras/lstm/test/consumer_smoke.py
       - name: OpenVINO bundle dry-run (vendor + full smoke gate)
@@ -323,7 +322,7 @@ jobs:
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           . ./scripts/lib/openvino.sh
           ./scripts/vendor-openvino.sh --out "$PWD/ovstage-dryrun"
-          pip install "openvino==${OV_VERSION}"
+          pip install -r requirements/openvino-runtime.txt
           bash test/openvino_smoke.sh "$PWD/ovstage-dryrun/$(ov_asset_stem linux-x86_64)"
       - name: OpenVINO end-to-end (fixture .pte through the runtime against the bundle)
         # The two checks above verify each half in isolation: the fixture is known to EXPORT, and
