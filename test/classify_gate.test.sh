@@ -63,11 +63,24 @@ printf '%s\n' "$out" | grep -q '^release_tag=v1.3.1-2$' || { echo "FAIL: stub ne
 for f in scripts/vendor-openvino.sh scripts/lib/openvino.sh \
          test/openvino_smoke.sh test/openvino_fixture_run.sh test/openvino/ov_runner.cpp \
          scripts/patch-et-xnnpack-workspace.sh \
-         patches/et-xnnpack-workspace-size.patch test/xnnpack_workspace_run.sh; do
+         patches/et-xnnpack-workspace-size.patch test/xnnpack_workspace_run.sh \
+         .github/workflows/extras-gate.yml; do
   cf="$(mktemp)"; printf '%s\n' "$f" > "$cf"
   out="$(GATE_ET_TAG=v1.3.1 GATE_RELEASE_TAG=v1.3.1-1 bash "$here/../scripts/classify-gate.sh" "$cf")"
   assert_contains "$out" "mode=full" "full-surface change ($f) forces a full gate"
 done
+
+# Editing the gate definition must RUN the gate. This is not a stylistic rule: PR #29 restructured
+# the `full` jobs and went green without executing a single one of them, because extras-gate.yml
+# started the workflow but classified as tier1.
+cf="$(mktemp)"; printf '%s\n' '.github/workflows/extras-gate.yml' > "$cf"
+out="$(GATE_ET_TAG=v1.3.1 GATE_RELEASE_TAG=v1.3.1-1 bash "$here/../scripts/classify-gate.sh" "$cf")"
+assert_contains "$out" "mode=full" "a change to the gate definition runs the gate"
+# The sibling workflow must NOT be swept in: release.yml is not validated by extras-gate, so
+# routing it to `full` would buy a 19-minute job that proves nothing about it.
+cf="$(mktemp)"; printf '%s\n' '.github/workflows/release.yml' > "$cf"
+out="$(GATE_ET_TAG=v1.3.1 GATE_RELEASE_TAG=v1.3.1-1 bash "$here/../scripts/classify-gate.sh" "$cf")"
+assert_contains "$out" "mode=tier1" "release.yml is not routed to full"
 
 # A routing rule is only as good as the workflow's `paths:` filter: if extras-gate.yml does not
 # TRIGGER for a file, classify-gate.sh never runs and the rule above is dead code. This guards the
