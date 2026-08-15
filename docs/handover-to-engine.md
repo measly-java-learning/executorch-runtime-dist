@@ -56,7 +56,7 @@
   `THIRD-PARTY-NOTICES/`, `BUILDINFO`. The tree is **relocatable** (no absolute build-prefix in any
   `*.cmake`) and `lib/` binaries are **position-independent** (proven by linking into a `.so`).
 - **C3 — Variants:** `bare` (LOGGING=OFF), `logging` (LOGGING=ON — **ship default**), `devtools`
-  (LOGGING=OFF + DEVTOOLS=ON + EVENT_TRACER=ON).
+  (LOGGING=ON + DEVTOOLS=ON + EVENT_TRACER=ON).
 - **C4 — Platform:** `linux-x86_64` (glibc ≥ 2.28 floor), `linux-aarch64`, `windows-x86_64` (MSVC,
   `/MD` dynamic CRT), `windows-x86_64-static` (MSVC, `/MT` static CRT). The `<platform>` token scales
   to future targets — this is an enumeration change, **not** a Contract Delta.
