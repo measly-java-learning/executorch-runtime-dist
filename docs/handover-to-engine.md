@@ -5,7 +5,7 @@
 > (**Repo A**) now builds, attests, and **publishes** the ExecuTorch runtime. The engine should
 > **download** it instead of building it from source in its own CI.
 >
-> This document is your input: the **frozen contract** (C1–C9), the **one contract change** made
+> This document is your input: the **frozen contract** (C1–C10), the **one contract change** made
 > during Repo A's implementation, your **punch-list**, and **concrete consumption recipes**. Assume no
 > prior context. Producer repo: `measly-java-learning/executorch-runtime-dist`.
 >
@@ -48,7 +48,7 @@
 
 ---
 
-## 2. The Contract (C1–C9) — frozen
+## 2. The Contract (C1–C10) — frozen
 
 - **C1 — Asset names:** `executorch-runtime-<etver>-<variant>-<platform>.tar.gz`, plus a sibling `<asset>.sha256`.
 - **C2 — Tarball layout:** one top-level dir `executorch-runtime-<etver>-<variant>-<platform>/` containing
