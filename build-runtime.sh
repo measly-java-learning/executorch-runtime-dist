@@ -203,6 +203,11 @@ if [ "$IS_WINDOWS" -eq 1 ]; then
     "$ET_SRC/third-party/CMakeLists.txt" || true
 fi
 
+# Workspace-size accessor patches (see scripts/patch-et-xnnpack-workspace.sh). Applied here, with
+# the other source patches, because they must land before configure. Not guarded by platform:
+# XNNPACK builds on every platform we ship.
+"$HERE/scripts/patch-et-xnnpack-workspace.sh" "$ET_SRC"
+
 # Rather than the full `install_requirements.sh` from the ExecuTorch source,
 # just install the minimal set of deps for our build process
 echo ">> installing python deps"
@@ -278,6 +283,24 @@ if [ "$IS_WINDOWS" -eq 0 ]; then
       sed -i -E 's#/usr/lib64/lib([a-z0-9_]+)\.(so|a)#\1#g' "$f"
     done
   fi
+fi
+
+# Prove the workspace-size patch survived compilation, not merely that a file was edited. The
+# accessor is a published consumer contract; a future ET bump that drops the patch must fail the
+# build here rather than regress a consumer's memory accounting silently.
+# Windows: MSVC has no nm, and the archive is a .lib — skip, the Linux gate covers the contract.
+if [ "$IS_WINDOWS" -eq 0 ]; then
+  echo ">> verifying xnn_get_workspace_size is present in the installed XNNPACK backend"
+  _xnnlib="$PREFIX/lib/libxnnpack_backend.a"
+  [ -f "$_xnnlib" ] || { echo "   FAIL: $_xnnlib missing" >&2; exit 1; }
+  # `|| true`: grep exits 1 on no-match, which would abort under set -e before the message below.
+  if [ -z "$(nm -g --defined-only "$_xnnlib" 2>/dev/null | grep 'xnn_get_workspace_size' || true)" ]; then
+    echo "   FAIL: xnn_get_workspace_size not found in $_xnnlib" >&2
+    echo "   The patch applied but the symbol did not survive the build. Check that the ET pin" >&2
+    echo "   still compiles src/runtime.c into the xnnpack backend archive." >&2
+    exit 1
+  fi
+  echo "   ok: accessor present"
 fi
 
 echo ">> license passthrough"
