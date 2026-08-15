@@ -17,7 +17,7 @@ assert_eq "$?" "1" "gate: no arguments is a usage error"
 mkdir -p "$tmp/prefix" "$tmp/fx"
 : > "$tmp/fx/xnnpack_tiny.pte"
 : > "$tmp/fx/in.bin"
-printf 'XNN_IN=8\nXNN_OUT=8\n' > "$tmp/fx/shape"
+printf 'XNN_IN_DIMS=1 3 16 16\nXNN_OUT_DIMS=1 8 16 16\n' > "$tmp/fx/shape"
 
 for missing in xnnpack_tiny.pte in.bin shape; do
   mv "$tmp/fx/$missing" "$tmp/$missing.stash"
@@ -28,7 +28,7 @@ for missing in xnnpack_tiny.pte in.bin shape; do
   assert_contains "$out" "$missing missing" "gate: names the missing member ($missing)"
 done
 
-printf 'XNN_IN=\nXNN_OUT=8\n' > "$tmp/fx/shape"
+printf 'XNN_IN_DIMS=\nXNN_OUT_DIMS=1 8 16 16\n' > "$tmp/fx/shape"
 out="$(bash "$gate" "$tmp/prefix" "$tmp/fx" 2>&1)"
 assert_eq "$?" "1" "gate: unparseable shape file fails"
 assert_contains "$out" "XNN_IN" "gate: explains the shape-file failure"
@@ -37,6 +37,9 @@ assert_contains "$out" "XNN_IN" "gate: explains the shape-file failure"
 # XNNPACKBackend.h it would stop testing the published contract, because that header is not shipped.
 assert_contains "$probe" '"XnnpackBackend"' "probe names the backend by string"
 assert_contains "$probe" '"workspace_size_bytes"' "probe names the key by string"
+# The probe builds the input tensor from the fixture's full dims, not a hardcoded 2D shape: the
+# workspace-allocating fixture is a conv (4D), and a hardcoded {1, n} input could never load it.
+assert_contains "$probe" 'XNN_IN_DIMS' "probe reads dims from the shape file"
 # Match an actual #include DIRECTIVE, not the bare filename: the probe's own comment explains that
 # the header is deliberately not included, so a substring test would fire on the documentation of
 # the very property it is checking. (No `|| true` guard needed — grep's exit 1 is the passing case

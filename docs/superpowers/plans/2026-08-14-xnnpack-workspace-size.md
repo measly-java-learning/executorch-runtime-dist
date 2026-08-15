@@ -573,6 +573,8 @@ git commit -m "build: apply workspace-size patches and guard the built symbol"
 
 The LSTM fixture lowers to the `etnp::lstm` custom op with no `XnnpackPartitioner`, so its *delegate* workspace is 0 and a test built on it would pass against a completely broken accessor. This task mints a genuinely delegated `.pte`.
 
+**The model must ALLOCATE a real XNNPACK workspace.** A tiny `Linear+ReLU` delegates on the pinned ET but needs no workspace (direct GEMM, statically packed weights), so the gate would read 0 after load and fail on a *correct* build — the same vacuous-fixture failure mode this gate exists to prevent. A small `Conv2d+ReLU` allocates (the arena grows in `xnn_create_runtime_v4`); on v1.3.1 a `1×3×16×16` `Conv2d(3,8,k=3,p=1)` + `ReLU` reads 11296 bytes after load. Full input dims are written to the `shape` file so the probe builds the exact input tensor.
+
 **Files:**
 - Create: `scripts/emit-xnnpack-fixtures.py`
 - Test: `test/xnnpack_fixtures.test.sh`
@@ -580,7 +582,7 @@ The LSTM fixture lowers to the `etnp::lstm` custom op with no `XnnpackPartitione
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `python scripts/emit-xnnpack-fixtures.py <outdir>` writes `xnnpack_tiny.pte`, `in.bin`, `out.bin`, `shape` (`XNN_IN=8` / `XNN_OUT=8`).
+- Produces: `python scripts/emit-xnnpack-fixtures.py <outdir>` writes `xnnpack_tiny.pte`, `in.bin`, `out.bin`, `shape` (`XNN_IN_DIMS=1 3 16 16` / `XNN_OUT_DIMS=1 8 16 16`).
 
 - [ ] **Step 1: Write the emitter**
 
@@ -594,12 +596,20 @@ This exists because the LSTM fixture is NOT XNNPACK-delegated -- it lowers to th
 op, whose XNNPACK use is inside our own kernel rather than the delegate. Its delegate workspace
 reads 0, so a workspace-size test built on it would pass against a completely broken accessor.
 
+The model must ALLOCATE a real XNNPACK workspace: a tiny Linear+ReLU delegates on the pinned ET but
+needs no workspace (direct GEMM, statically packed weights), so the gate would read 0 after load and
+fail on a CORRECT build. A small Conv2d+ReLU does allocate -- the arena is grown in
+xnn_create_runtime_v4 -- which is what the gate asserts. Full dims are written to the shape file so
+the probe can build the exact input tensor.
+
 Requires the AOT venv: torch and the executorch python package built from the SAME pinned ET source.
 """
 import pathlib
 import sys
 
-DIM = 8
+C_IN = 3
+C_OUT = 8
+DIM = 16  # spatial side; input is 1xC_INxDIMxDIM
 
 
 def main(outdir: pathlib.Path) -> None:
@@ -610,15 +620,15 @@ def main(outdir: pathlib.Path) -> None:
     class Tiny(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self.lin = torch.nn.Linear(DIM, DIM)
+            self.conv = torch.nn.Conv2d(C_IN, C_OUT, kernel_size=3, padding=1)
 
         def forward(self, x):
-            return torch.relu(self.lin(x))
+            return torch.relu(self.conv(x))
 
     # Fixed seed: the fixture must be reproducible across releases for the same versions.
     torch.manual_seed(0)
     model = Tiny().eval()
-    example = (torch.randn(1, DIM),)
+    example = (torch.randn(1, C_IN, DIM, DIM),)
 
     with torch.no_grad():
         golden = model(*example)
@@ -637,7 +647,10 @@ def main(outdir: pathlib.Path) -> None:
     (outdir / "xnnpack_tiny.pte").write_bytes(pte)
     (outdir / "in.bin").write_bytes(example[0].contiguous().numpy().tobytes())
     (outdir / "out.bin").write_bytes(golden.contiguous().numpy().tobytes())
-    (outdir / "shape").write_text(f"XNN_IN={DIM}\nXNN_OUT={DIM}\n")
+    (outdir / "shape").write_text(
+        f"XNN_IN_DIMS={' '.join(str(d) for d in example[0].shape)}\n"
+        f"XNN_OUT_DIMS={' '.join(str(d) for d in golden.shape)}\n"
+    )
     print(f"emit-xnnpack-fixtures: wrote {len(pte)} byte .pte to {outdir}")
 
 
@@ -659,7 +672,8 @@ Create `test/xnnpack_fixtures.test.sh`. Torch is not available in the hermetic s
 #!/usr/bin/env bash
 # The emitter needs torch + executorch, which the hermetic suite does not have. What IS checkable
 # without them is the contract that makes the fixture worth having: that it asserts the delegate
-# was applied, and that its member names match what the gate script reads.
+# was applied, that its model allocates a real workspace, and that its member names match what the
+# gate script reads.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/assert.sh"
@@ -669,7 +683,16 @@ assert_contains "$src" 'XnnpackPartitioner' "uses the XNNPACK partitioner"
 # Without this guard a partitioner that declined every node yields a valid .pte that allocates no
 # workspace -- the gate would then pass against a completely broken accessor.
 assert_contains "$src" 'b"XnnpackBackend" not in pte' "asserts the delegate was actually applied"
-for m in 'xnnpack_tiny.pte' 'in.bin' 'out.bin' 'shape' 'XNN_IN=' 'XNN_OUT='; do
+# The fixture model must ALLOCATE a real workspace. A Linear+ReLU delegates but needs no workspace
+# on the pinned ET (direct GEMM, statically packed weights), so the gate would read 0 after load and
+# fail on a CORRECT build -- the exact vacuous-fixture defect this gate exists to prevent.
+assert_contains "$src" 'Conv2d' "fixture model allocates a real workspace"
+case "$src" in
+  *'torch.nn.Linear'*) printf 'FAIL: fixture must not use the vacuous Linear model\n' >&2
+                       ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
+  *) printf 'ok: fixture avoids the vacuous Linear model\n' ;;
+esac
+for m in 'xnnpack_tiny.pte' 'in.bin' 'out.bin' 'shape' 'XNN_IN_DIMS=' 'XNN_OUT_DIMS='; do
   assert_contains "$src" "$m" "emits $m"
 done
 python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$here/../scripts/emit-xnnpack-fixtures.py"
@@ -712,7 +735,7 @@ Create `test/xnnpack_workspace/workspace_probe.cpp`:
 // any model loads (the arena is created lazily during delegate init), and > 0 after loading an
 // XNNPACK-delegated .pte. The before-reading is not decoration — without it a stub that always
 // returned a constant would pass.
-//   workspace_probe <model.pte> <in.bin>      (dims via XNN_IN)
+//   workspace_probe <model.pte> <in.bin>      (dims via env XNN_IN_DIMS, e.g. "1 3 16 16")
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -751,11 +774,38 @@ static int read_workspace_size() {
   return *val;
 }
 
+// Parse a space-separated dims string (e.g. "1 3 16 16") from the environment.
+static std::vector<executorch::aten::SizesType> parse_dims(const char* env_name) {
+  const char* env = std::getenv(env_name);
+  if (!env || !*env) {
+    std::fprintf(stderr, "env %s not set\n", env_name);
+    std::exit(2);
+  }
+  std::vector<executorch::aten::SizesType> dims;
+  const char* p = env;
+  while (*p) {
+    char* end = nullptr;
+    const long v = std::strtol(p, &end, 10);
+    if (end == p || v <= 0) {
+      std::fprintf(stderr, "env %s has a malformed or non-positive dim\n", env_name);
+      std::exit(2);
+    }
+    dims.push_back(static_cast<executorch::aten::SizesType>(v));
+    p = end;
+    while (*p == ' ') {
+      ++p;
+    }
+  }
+  return dims;
+}
+
 int main(int argc, char** argv) {
   if (argc != 3) { std::fprintf(stderr, "usage: workspace_probe model in.bin\n"); return 2; }
-  const char* dim_env = std::getenv("XNN_IN");
-  if (!dim_env) { std::fprintf(stderr, "env XNN_IN not set\n"); return 2; }
-  const int n_in = std::atoi(dim_env);
+  const std::vector<executorch::aten::SizesType> dims = parse_dims("XNN_IN_DIMS");
+  size_t n_in = 1;
+  for (const auto d : dims) {
+    n_in *= static_cast<size_t>(d);
+  }
 
   const int before = read_workspace_size();
   std::printf("workspace before load: %d\n", before);
@@ -767,14 +817,18 @@ int main(int argc, char** argv) {
   std::ifstream f(argv[2], std::ios::binary | std::ios::ate);
   if (!f) { std::fprintf(stderr, "cannot open %s\n", argv[2]); return 2; }
   const std::streamsize n = f.tellg(); f.seekg(0);
+  if (n % static_cast<std::streamsize>(sizeof(float)) != 0) {
+    std::fprintf(stderr, "in.bin size %zu is not a multiple of float\n", static_cast<size_t>(n));
+    return 2;
+  }
   std::vector<float> in(static_cast<size_t>(n) / sizeof(float));
   f.read(reinterpret_cast<char*>(in.data()), n);
-  if (in.size() != static_cast<size_t>(n_in)) {
-    std::fprintf(stderr, "in.bin has %zu floats, XNN_IN=%d\n", in.size(), n_in);
+  if (in.size() != n_in) {
+    std::fprintf(stderr, "in.bin has %zu floats, expected %zu\n", in.size(), n_in);
     return 2;
   }
 
-  auto t_in = make_tensor_ptr({1, n_in}, in.data());
+  auto t_in = make_tensor_ptr(dims, in.data());
   Module module(argv[1]);
   std::vector<EValue> inputs = {*t_in};
   const auto res = module.forward(inputs);
@@ -850,14 +904,20 @@ for f in "$pte" "$inbin" "$shapefile"; do
   [ -e "$f" ] || { echo "FAIL: $f missing" >&2; exit 1; }
 done
 
-# Parsed, not sourced: `shape` is a generated fixture member, and sourcing a file to get one integer
-# is a habit worth not forming.
-xnn_in="$(sed -n 's/^XNN_IN=\([0-9][0-9]*\)$/\1/p' "$shapefile")"
-if [ -z "$xnn_in" ]; then
-  echo "FAIL: could not read XNN_IN from $shapefile" >&2
-  cat "$shapefile" >&2
-  exit 1
-fi
+# Parsed, not sourced: `shape` is a generated fixture member, and sourcing a file to get the dims
+# is a habit worth not forming. XNN_IN_DIMS is a space-separated dims list (e.g. "1 3 16 16").
+xnn_in_dims="$(sed -n 's/^XNN_IN_DIMS=//p' "$shapefile")"
+case "$xnn_in_dims" in
+  '')
+    echo "FAIL: could not read XNN_IN_DIMS from $shapefile" >&2
+    cat "$shapefile" >&2
+    exit 1
+    ;;
+  *[!0-9\ ]*)
+    echo "FAIL: malformed XNN_IN_DIMS in $shapefile: '$xnn_in_dims'" >&2
+    exit 1
+    ;;
+esac
 
 SCRATCH="$(mktemp -d)"
 echo "== Building workspace_probe against $PREFIX =="
@@ -867,7 +927,7 @@ cmake -B "$SCRATCH/build" -S "$HERE/xnnpack_workspace" "${gen[@]}" -DCMAKE_PREFI
 cmake --build "$SCRATCH/build" --target workspace_probe
 
 echo "== Running the probe =="
-XNN_IN="$xnn_in" "$SCRATCH/build/workspace_probe" "$pte" "$inbin"
+XNN_IN_DIMS="$xnn_in_dims" "$SCRATCH/build/workspace_probe" "$pte" "$inbin"
 
 echo "GATE PASS: workspace_size_bytes is reachable and reports a live arena"
 ```
@@ -896,7 +956,7 @@ assert_eq "$?" "1" "gate: no arguments is a usage error"
 mkdir -p "$tmp/prefix" "$tmp/fx"
 : > "$tmp/fx/xnnpack_tiny.pte"
 : > "$tmp/fx/in.bin"
-printf 'XNN_IN=8\nXNN_OUT=8\n' > "$tmp/fx/shape"
+printf 'XNN_IN_DIMS=1 3 16 16\nXNN_OUT_DIMS=1 8 16 16\n' > "$tmp/fx/shape"
 
 for missing in xnnpack_tiny.pte in.bin shape; do
   mv "$tmp/fx/$missing" "$tmp/$missing.stash"
@@ -907,7 +967,7 @@ for missing in xnnpack_tiny.pte in.bin shape; do
   assert_contains "$out" "$missing missing" "gate: names the missing member ($missing)"
 done
 
-printf 'XNN_IN=\nXNN_OUT=8\n' > "$tmp/fx/shape"
+printf 'XNN_IN_DIMS=\nXNN_OUT_DIMS=1 8 16 16\n' > "$tmp/fx/shape"
 out="$(bash "$gate" "$tmp/prefix" "$tmp/fx" 2>&1)"
 assert_eq "$?" "1" "gate: unparseable shape file fails"
 assert_contains "$out" "XNN_IN" "gate: explains the shape-file failure"
@@ -916,6 +976,9 @@ assert_contains "$out" "XNN_IN" "gate: explains the shape-file failure"
 # XNNPACKBackend.h it would stop testing the published contract, because that header is not shipped.
 assert_contains "$probe" '"XnnpackBackend"' "probe names the backend by string"
 assert_contains "$probe" '"workspace_size_bytes"' "probe names the key by string"
+# The probe builds the input tensor from the fixture's full dims, not a hardcoded 2D shape: the
+# workspace-allocating fixture is a conv (4D), and a hardcoded {1, n} input could never load it.
+assert_contains "$probe" 'XNN_IN_DIMS' "probe reads dims from the shape file"
 # Match an actual #include DIRECTIVE, not the bare filename: the probe's own comment explains that
 # the header is deliberately not included, so a substring test would fire on the documentation of
 # the very property it is checking. (No `|| true` guard needed — grep's exit 1 is the passing case

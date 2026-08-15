@@ -28,14 +28,20 @@ for f in "$pte" "$inbin" "$shapefile"; do
   [ -e "$f" ] || { echo "FAIL: $f missing" >&2; exit 1; }
 done
 
-# Parsed, not sourced: `shape` is a generated fixture member, and sourcing a file to get one integer
-# is a habit worth not forming.
-xnn_in="$(sed -n 's/^XNN_IN=\([0-9][0-9]*\)$/\1/p' "$shapefile")"
-if [ -z "$xnn_in" ]; then
-  echo "FAIL: could not read XNN_IN from $shapefile" >&2
-  cat "$shapefile" >&2
-  exit 1
-fi
+# Parsed, not sourced: `shape` is a generated fixture member, and sourcing a file to get the dims
+# is a habit worth not forming. XNN_IN_DIMS is a space-separated dims list (e.g. "1 3 16 16").
+xnn_in_dims="$(sed -n 's/^XNN_IN_DIMS=//p' "$shapefile")"
+case "$xnn_in_dims" in
+  '')
+    echo "FAIL: could not read XNN_IN_DIMS from $shapefile" >&2
+    cat "$shapefile" >&2
+    exit 1
+    ;;
+  *[!0-9\ ]*)
+    echo "FAIL: malformed XNN_IN_DIMS in $shapefile: '$xnn_in_dims'" >&2
+    exit 1
+    ;;
+esac
 
 SCRATCH="$(mktemp -d)"
 echo "== Building workspace_probe against $PREFIX =="
@@ -45,6 +51,6 @@ cmake -B "$SCRATCH/build" -S "$HERE/xnnpack_workspace" "${gen[@]}" -DCMAKE_PREFI
 cmake --build "$SCRATCH/build" --target workspace_probe
 
 echo "== Running the probe =="
-XNN_IN="$xnn_in" "$SCRATCH/build/workspace_probe" "$pte" "$inbin"
+XNN_IN_DIMS="$xnn_in_dims" "$SCRATCH/build/workspace_probe" "$pte" "$inbin"
 
 echo "GATE PASS: workspace_size_bytes is reachable and reports a live arena"

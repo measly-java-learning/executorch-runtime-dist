@@ -2,7 +2,7 @@
 // any model loads (the arena is created lazily during delegate init), and > 0 after loading an
 // XNNPACK-delegated .pte. The before-reading is not decoration — without it a stub that always
 // returned a constant would pass.
-//   workspace_probe <model.pte> <in.bin>      (dims via XNN_IN)
+//   workspace_probe <model.pte> <in.bin>      (dims via env XNN_IN_DIMS, e.g. "1 3 16 16")
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -41,11 +41,38 @@ static int read_workspace_size() {
   return *val;
 }
 
+// Parse a space-separated dims string (e.g. "1 3 16 16") from the environment.
+static std::vector<executorch::aten::SizesType> parse_dims(const char* env_name) {
+  const char* env = std::getenv(env_name);
+  if (!env || !*env) {
+    std::fprintf(stderr, "env %s not set\n", env_name);
+    std::exit(2);
+  }
+  std::vector<executorch::aten::SizesType> dims;
+  const char* p = env;
+  while (*p) {
+    char* end = nullptr;
+    const long v = std::strtol(p, &end, 10);
+    if (end == p || v <= 0) {
+      std::fprintf(stderr, "env %s has a malformed or non-positive dim\n", env_name);
+      std::exit(2);
+    }
+    dims.push_back(static_cast<executorch::aten::SizesType>(v));
+    p = end;
+    while (*p == ' ') {
+      ++p;
+    }
+  }
+  return dims;
+}
+
 int main(int argc, char** argv) {
   if (argc != 3) { std::fprintf(stderr, "usage: workspace_probe model in.bin\n"); return 2; }
-  const char* dim_env = std::getenv("XNN_IN");
-  if (!dim_env) { std::fprintf(stderr, "env XNN_IN not set\n"); return 2; }
-  const int n_in = std::atoi(dim_env);
+  const std::vector<executorch::aten::SizesType> dims = parse_dims("XNN_IN_DIMS");
+  size_t n_in = 1;
+  for (const auto d : dims) {
+    n_in *= static_cast<size_t>(d);
+  }
 
   const int before = read_workspace_size();
   std::printf("workspace before load: %d\n", before);
@@ -57,14 +84,18 @@ int main(int argc, char** argv) {
   std::ifstream f(argv[2], std::ios::binary | std::ios::ate);
   if (!f) { std::fprintf(stderr, "cannot open %s\n", argv[2]); return 2; }
   const std::streamsize n = f.tellg(); f.seekg(0);
+  if (n % static_cast<std::streamsize>(sizeof(float)) != 0) {
+    std::fprintf(stderr, "in.bin size %zu is not a multiple of float\n", static_cast<size_t>(n));
+    return 2;
+  }
   std::vector<float> in(static_cast<size_t>(n) / sizeof(float));
   f.read(reinterpret_cast<char*>(in.data()), n);
-  if (in.size() != static_cast<size_t>(n_in)) {
-    std::fprintf(stderr, "in.bin has %zu floats, XNN_IN=%d\n", in.size(), n_in);
+  if (in.size() != n_in) {
+    std::fprintf(stderr, "in.bin has %zu floats, expected %zu\n", in.size(), n_in);
     return 2;
   }
 
-  auto t_in = make_tensor_ptr({1, n_in}, in.data());
+  auto t_in = make_tensor_ptr(dims, in.data());
   Module module(argv[1]);
   std::vector<EValue> inputs = {*t_in};
   const auto res = module.forward(inputs);
