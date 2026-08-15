@@ -20,6 +20,31 @@ The `full` gate is compile-bound. Measured on run 31909631718 (green, post-split
 The parallel split (PR #29) took this from 1807s to 1369s by overlapping the two heavy jobs. It
 cannot do better than its slowest half, so further gains must make `full-aot` itself faster.
 
+### `full-aot` is the critical path; `full-build` is not
+
+Across the three green runs measured so far:
+
+| run | `full-build` | `full-aot` | wall clock |
+|---|---|---|---|
+| 31909631718 | 1080s | 1297s | 1369s |
+| 31910447973 | 803s | 1250s | 1326s |
+| 31910949775 | 832s | 1276s | 1358s |
+
+`full-aot` is the critical path in **every** run, and `full-build` has never come within 170s of
+it. Two consequences that drive the implementation order:
+
+1. **Caching `full-build` alone buys zero wall clock.** It only makes an already-idle job idler.
+   Any measurement that reports a `full-build` speedup as a *gate* speedup is measuring the wrong
+   thing.
+2. Therefore: **wire `full-aot` first and measure it alone.** `full-build`'s cache is worth having
+   only to keep it off the critical path once `full-aot` shrinks — a question that cannot be
+   answered until we know how far `full-aot` actually falls, and one that costs a share of the
+   10GB cache budget to answer wrongly.
+
+Note also that `full-build` has ranged 803–1080s across three runs — **±30% runner variance** on an
+unchanged build. Any single-run ccache measurement smaller than that is noise. Conclusions need
+either a repeated run or a difference large enough to clear that band.
+
 Inside `full-aot`'s 1297s, ~1127s is building: ~2293 C++ translation units for the ExecuTorch
 python package, plus a ~5 minute `pytorch_tokenizers` build. **ExecuTorch is pinned** (v1.3.1,
 `e2f18eb`), so those TUs are byte-identical across every PR. Only our `patches/*` (a handful of
@@ -35,7 +60,8 @@ cacheable is the *compilation* underneath it, which is what this design targets.
 
 ## Scope
 
-**Gate only.** `extras-gate.yml`'s `full-build` and `full-aot`.
+**Gate only.** `extras-gate.yml`'s `full-aot` first, then `full-build` **only if justified** by
+what `full-aot` measures (see the critical-path section above).
 
 Explicitly out of scope: `release.yml` (its `build` job is a {3 variants × 2 arches} matrix and
 would benefit more, but this repo publishes **attested** tarballs, and "published binaries were
@@ -157,6 +183,12 @@ ET is pinned, so the second run on a branch should hit **>90%**.
 - Run 2 on the same branch is the real measurement.
 - If run 2 does not clear 90%, the premise of this design is wrong. Stop and reconsider rather
   than tuning keys — at a low hit rate ccache is a pure cost.
+
+The success metric is **`full-aot`'s own duration** (baseline 1250–1297s), not the gate's wall
+clock and not `full-build`. Report it that way. Gate wall clock only improves once `full-aot` drops
+below `full-build`'s ~800–1080s band, at which point `full-build` becomes the critical path and the
+second cache earns its keep — that is the trigger for phase two, and it is a prediction this design
+makes rather than an assumption it relies on.
 
 ## Known risks
 
