@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Decide the extras-gate mode from a PR's changed-files list.
 #   classify-gate.sh <changed-files-file>   # prints mode=/etver=/release_tag=
-# Order: build-runtime.sh change -> full ; OpenVINO vendoring/SSOT change -> full ; no matching release -> full ;
+# Order: build-runtime.sh change -> full ; OpenVINO vendoring/SSOT/gate change -> full ; no matching release -> full ;
 #        AOT/schema change -> tier2 ; else -> tier1.
 # A gh lookup FAILURE (distinct from an empty result) exits non-zero rather than silently
 # falling back to full — an infra error is re-runnable, not a build-recipe change.
@@ -31,7 +31,9 @@ fi
 # (1b) an OpenVINO vendoring/SSOT change alters a PUBLISHED artifact's contents (the C10 bundle:
 # its members, pinned version, or license set). tier1/tier2 only rebuild extras against a
 # downloaded release and would never exercise it, so force a full run.
-if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh)' "$CHANGED"; then
+# The OpenVINO GATE scripts are routed here too: they run only in `full`, so classifying an edit
+# to one as tier1 would start a workflow that never executes the thing being edited.
+if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh)|test/openvino(_smoke\.sh|_fixture_run\.sh|/.*)' "$CHANGED"; then
   emit full ""; exit 0
 fi
 

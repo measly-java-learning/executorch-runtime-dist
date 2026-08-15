@@ -59,7 +59,8 @@ printf '%s\n' "$out" | grep -q '^release_tag=v1.3.1-2$' || { echo "FAIL: stub ne
 
 # An OpenVINO vendoring/SSOT change alters a published artifact's contents, so it must get the
 # full treatment rather than a kernel-only tier1 gate.
-for f in scripts/vendor-openvino.sh scripts/lib/openvino.sh; do
+for f in scripts/vendor-openvino.sh scripts/lib/openvino.sh \
+         test/openvino_smoke.sh test/openvino_fixture_run.sh test/openvino/ov_runner.cpp; do
   cf="$(mktemp)"; printf '%s\n' "$f" > "$cf"
   out="$(GATE_ET_TAG=v1.3.1 GATE_RELEASE_TAG=v1.3.1-1 bash "$here/../scripts/classify-gate.sh" "$cf")"
   assert_contains "$out" "mode=full" "openvino change ($f) forces a full gate"
@@ -69,7 +70,8 @@ done
 # TRIGGER for a file, classify-gate.sh never runs and the rule above is dead code. This guards the
 # reachability half, which a script-only test cannot see.
 wf="$here/../.github/workflows/extras-gate.yml"
-for p in scripts/vendor-openvino.sh scripts/lib/openvino.sh scripts/lib/cmakeflags.sh; do
+for p in scripts/vendor-openvino.sh scripts/lib/openvino.sh scripts/lib/cmakeflags.sh \
+         test/openvino_smoke.sh test/openvino_fixture_run.sh 'test/openvino/**'; do
   assert_contains "$(cat "$wf")" "'$p'" "extras-gate workflow triggers on $p"
 done
 
