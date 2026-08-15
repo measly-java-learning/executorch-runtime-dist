@@ -1,0 +1,124 @@
+diff --git a/backends/xnnpack/runtime/XNNPACKBackend.h b/backends/xnnpack/runtime/XNNPACKBackend.h
+index eb40047..6ce9403 100644
+--- a/backends/xnnpack/runtime/XNNPACKBackend.h
++++ b/backends/xnnpack/runtime/XNNPACKBackend.h
+@@ -13,6 +13,12 @@ const char workspace_sharing_mode_option_key[] = "workspace_sharing_mode";
+ // across delegate instances. Changes only affect subsequently loaded models.
+ const char weight_cache_option_key[] = "weight_cache_enabled";
+ 
++/// The key for the read-only workspace size option. Returns the total size in bytes of all live
++/// XNNPACK workspaces as an int, saturating at INT_MAX. Reads 0 until the first XNNPACK-delegated
++/// method is loaded, because the arena is created lazily during delegate init. set_option on this
++/// key returns InvalidArgument. Not upstream — added for host-side native memory accounting.
++const char workspace_size_option_key[] = "workspace_size_bytes";
++
+ /// Workspace sharing mode. This is a backend option that can be set via the
+ /// set_option API to control memory sharing between CALL_DELEGATE instances.
+ /// This is useful for reducing memory consumption.
+diff --git a/backends/xnnpack/runtime/XNNWorkspace.h b/backends/xnnpack/runtime/XNNWorkspace.h
+index b7ef442..5a3b615 100644
+--- a/backends/xnnpack/runtime/XNNWorkspace.h
++++ b/backends/xnnpack/runtime/XNNWorkspace.h
+@@ -55,6 +55,14 @@ class XNNWorkspace {
+     return id_;
+   }
+ 
++  // Returns the current size in bytes of the underlying arena. Acquires the workspace lock: the
++  // arena is grown by xnn_create_runtime_v4 during a concurrent delegate init, so an unlocked read
++  // could tear. Not upstream — see docs/xnnpack-workspace-size-consumer.md.
++  size_t size() {
++    auto [lock, workspace] = acquire();
++    return xnn_get_workspace_size(workspace);
++  }
++
+   void disable_locking() {
+     lock_required_ = false;
+   }
+diff --git a/backends/xnnpack/runtime/XNNWorkspaceManager.cpp b/backends/xnnpack/runtime/XNNWorkspaceManager.cpp
+index d3550da..98be4f3 100644
+--- a/backends/xnnpack/runtime/XNNWorkspaceManager.cpp
++++ b/backends/xnnpack/runtime/XNNWorkspaceManager.cpp
+@@ -132,4 +132,22 @@ XNNWorkspaceManager::get_or_create_model_workspace(uintptr_t program_id) const {
+   return workspace;
+ }
+ 
++size_t XNNWorkspaceManager::total_workspace_size() const {
++  std::scoped_lock<std::mutex> lock(workspace_meta_mutex_);
++  size_t total = 0;
++
++  if (auto live = global_workspace_.lock()) {
++    total += live->size();
++  }
++  // Sum the per-model map too, not just the global slot. Under Global sharing this loop is empty,
++  // but reading only the global workspace would silently under-report if the mode ever changed —
++  // and the mode default is one upstream edit from flipping.
++  for (const auto& entry : model_workspaces_) {
++    if (auto live = entry.second.lock()) {
++      total += live->size();
++    }
++  }
++  return total;
++}
++
+ } // namespace executorch::backends::xnnpack
+diff --git a/backends/xnnpack/runtime/XNNWorkspaceManager.h b/backends/xnnpack/runtime/XNNWorkspaceManager.h
+index 2e5689f..669d0a6 100644
+--- a/backends/xnnpack/runtime/XNNWorkspaceManager.h
++++ b/backends/xnnpack/runtime/XNNWorkspaceManager.h
+@@ -70,6 +70,18 @@ class XNNWorkspaceManager {
+       uintptr_t program_id,
+       WorkspaceSharingMode mode) const;
+ 
++  /**
++   * Total size in bytes of all live XNNPACK workspaces.
++   *
++   * Sums workspaces this manager still tracks. Under Global sharing (the mode this build pins)
++   * there is exactly one. NOTE: workspaces created under WorkspaceSharingMode::Disabled are
++   * returned to the caller WITHOUT being tracked here, so they are not counted — under Disabled
++   * this returns 0. That is why the build pins EXECUTORCH_XNNPACK_SHARED_WORKSPACE=ON.
++   *
++   * @return Total live workspace bytes, saturating at SIZE_MAX.
++   */
++  size_t total_workspace_size() const;
++
+  private:
+   // The active sharing mode. Changes to this affect only models loaded after
+   // the change.
+diff --git a/backends/xnnpack/runtime/XnnpackBackendOptions.cpp b/backends/xnnpack/runtime/XnnpackBackendOptions.cpp
+index aa5f6f0..8d0d2e1 100644
+--- a/backends/xnnpack/runtime/XnnpackBackendOptions.cpp
++++ b/backends/xnnpack/runtime/XnnpackBackendOptions.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include <executorch/backends/xnnpack/runtime/XnnpackBackendOptions.h>
+ 
++#include <climits>
+ #include <cstring>
+ 
+ namespace executorch::backends::xnnpack {
+@@ -37,6 +38,13 @@ Error XnnpackBackendOptions::get_option(BackendOption& option) const {
+     option.value = static_cast<int>(sharing_mode_.load());
+   } else if (strcmp(option.key, weight_cache_option_key) == 0) {
+     option.value = weight_cache_enabled_.load();
++  } else if (strcmp(option.key, workspace_size_option_key) == 0) {
++    const size_t total = workspace_manager_.total_workspace_size();
++    // Saturate rather than narrow. OptionValue has no 64-bit alternative and adding one would
++    // change the alignment of an INSTALLED type (see the spec). A clamped byte count degrades a
++    // memory report; a wrapped negative one corrupts it.
++    option.value = static_cast<int>(
++        total > static_cast<size_t>(INT_MAX) ? INT_MAX : total);
+   }
+   return Error::Ok;
+ }
+@@ -66,6 +74,11 @@ Error XnnpackBackendOptions::set_option(const BackendOption& option) {
+     }
+     ET_LOG(Debug, "Setting XNNPACK weight cache enabled to %d.", *val);
+     weight_cache_enabled_.store(*val);
++  } else if (strcmp(option.key, workspace_size_option_key) == 0) {
++    // The existing chain ends in an implicit no-op success, so without this a write would look
++    // like it worked. This option is derived state and read-only.
++    ET_LOG(Error, "XNNPACK workspace_size_bytes is read-only.");
++    return Error::InvalidArgument;
+   }
+   return Error::Ok;
+ }

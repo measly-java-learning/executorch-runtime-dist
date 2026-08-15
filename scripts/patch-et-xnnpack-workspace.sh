@@ -46,3 +46,4 @@ apply_patch() {
 
 echo ">> patching ET/XNNPACK for workspace-size accounting"
 apply_patch "$XNN_DIR"  "$ROOT/patches/xnnpack-workspace-size-accessor.patch"
+apply_patch "$ET_SRC" "$ROOT/patches/et-xnnpack-workspace-size.patch"
