@@ -20,9 +20,11 @@ Every release builds three variants **on Linux**; Windows ships `logging` only:
 ## Key commands
 
 ```bash
-# Run the full shell unit-test suite (16 *.test.sh files: naming, variants, packaging,
-# gate classification, version derivation, pin generation, buildinfo, perms, extras).
-# These are hermetic — no build, no container needed.
+# Run the full shell unit-test suite (test/*.test.sh: naming, variants, packaging, gate
+# classification, version derivation, pin generation, buildinfo, perms, OpenVINO, workspace size).
+# These are hermetic — no build, no container, no ET checkout — and run in ~2s. CI runs this on
+# every PR (.github/workflows/unit.yml), so it must be green from a clean checkout: a check that
+# needs a built prefix does NOT belong in the glob (see test/extras_members.sh).
 bash test/run.sh
 
 # Run one unit test
