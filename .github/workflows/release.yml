@@ -222,11 +222,15 @@ jobs:
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           ./scripts/vendor-openvino.sh --out "$PWD/ovstage"
-      - name: Runtime smoke gate (dlopen + enumerate CPU, LD_LIBRARY_PATH unset)
-        # Proves the flat bundle self-resolves before it is attested. A file-listing check cannot
-        # catch a missing plugin or a broken $ORIGIN; this can.
+      - name: Runtime smoke gate (resolve + enumerate CPU + import a compiled blob)
+        # Proves the flat bundle self-resolves AND can actually deserialize a model, before it is
+        # attested. The blob-import stage is not optional: a bundle missing libopenvino_ir_frontend
+        # enumerates CPU cleanly and then fails every delegated .pte at load. Minting the blob needs
+        # only the openvino PYTHON package (no torch), pinned to the same version we vendor.
         run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
           . ./scripts/lib/openvino.sh
+          pip install "openvino==${OV_VERSION}"
           bash test/openvino_smoke.sh "$PWD/ovstage/$(ov_asset_stem linux-x86_64)"
       - name: Package
         run: |

@@ -10,7 +10,7 @@ The OpenVINO delegate is already compiled into every `linux-x86_64` runtime tarb
 jar. Use our published `openvino-runtime-<ovver>-linux-x86_64.tar.gz` — it is hash-pinned and
 attested, so every build vendors identical bytes.
 
-Its `lib/` is a **flat** directory holding exactly six libraries plus one symlink:
+Its `lib/` is a **flat** directory holding exactly seven libraries plus one symlink:
 
 | file | why |
 |---|---|
@@ -18,13 +18,19 @@ Its `lib/` is a **flat** directory holding exactly six libraries plus one symlin
 | `libopenvino_c.so.<abi>` | the C API the delegate dlopens |
 | `libopenvino.so.<abi>` | core runtime |
 | `libopenvino_intel_cpu_plugin.so` | the CPU device (~52 MB, the bulk of the size) |
+| `libopenvino_ir_frontend.so.<abi>` | deserializes the IR embedded in the compiled blob |
 | `libtbb.so.12` | threading |
 | `libtbbbind_2_5.so.3` | NUMA-aware binding; dlopened by `libtbb` |
 | `libhwloc.so.15` | topology; needed by `tbbbind` |
 
-About **68 MB on disk, ~21 MB compressed** in a jar. GPU/NPU plugins and every model frontend
-(ONNX/TF/PyTorch/…) are deliberately excluded: you consume a precompiled blob and never parse a
-model format.
+About **69 MB on disk, ~21 MB compressed** in a jar. The GPU/NPU plugins and the ONNX/TF/PyTorch/
+Paddle/JAX frontends are deliberately excluded: those parse third-party model formats, which you
+never do.
+
+**Do not prune `libopenvino_ir_frontend` along with the other frontends.** It is not a
+model-format parser — the blob your `.pte` carries is OpenVINO IR, and importing it needs this
+library. Without it the runtime still loads and still reports a CPU device, then fails every
+model at load with `failed to import model for device 'CPU' (status=-1)`.
 
 **Extract all of them into one directory and keep them together.** Every library carries
 `RPATH=$ORIGIN`, so a flat directory resolves the entire graph with no `LD_LIBRARY_PATH`, no

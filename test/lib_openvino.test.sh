@@ -16,11 +16,15 @@ assert_eq "$(ov_sha_name linux-x86_64)"     "openvino-runtime-2025.4.1-linux-x86
 
 # The lib member list is the contract the bundle test and vendor script share.
 libs="$(ov_lib_members)"
-assert_eq "$(printf '%s\n' "$libs" | wc -l)" "6" "six runtime libs"
+assert_eq "$(printf '%s\n' "$libs" | wc -l)" "7" "seven runtime libs"
 for m in "libopenvino_c.so.2541" "libopenvino.so.2541" "libopenvino_intel_cpu_plugin.so" \
+         "libopenvino_ir_frontend.so.2541" \
          "libtbb.so.12" "libtbbbind_2_5.so.3" "libhwloc.so.15"; do
   assert_contains "$libs" "$m" "lib member: $m"
 done
+# Regression guard: the IR frontend was once pruned along with the model-format frontends, which
+# made every delegated .pte fail at ov_core_import_model while device enumeration still passed.
+assert_contains "$libs" "libopenvino_ir_frontend" "IR frontend present (blob deserialization)"
 # The unversioned symlink is CREATED by the vendor script, not copied from the wheel,
 # so it must NOT appear in the member list. grep -x anchors the whole line, so the
 # versioned libopenvino_c.so.2541 does not false-positive here.

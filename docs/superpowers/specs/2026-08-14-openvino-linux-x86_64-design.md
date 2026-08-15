@@ -75,9 +75,19 @@ This rules out the archive's bare layout for the Java consumer, and makes `$ORIG
 | `libtbb.so.12` | 368 KB |
 | `libopenvino_c.so.<ver>` | 331 KB |
 
-68 MB on disk, ~21 MB zip-compressed. The GPU/NPU plugins and every model frontend
-(ONNX/TF/PyTorch/Paddle/JAX) are droppable: we consume a precompiled blob and never parse a model
-format.
+68 MB on disk, ~21 MB zip-compressed. The GPU/NPU plugins and the ONNX/TF/PyTorch/Paddle/JAX
+frontends are droppable: those parse third-party model formats, which we never do.
+
+**Correction (found in review, after this section was first written).** `libopenvino_ir_frontend`
+is **not** droppable and must not be lumped in with the frontends above. The blob the AOT side
+produces embeds the model in OpenVINO's *own* IR, so `ov_core_import_model` needs the IR frontend
+to deserialize it. The original reasoning here — "we consume a precompiled blob and never parse a
+model format" — is true of the five model-format frontends and false of IR, and it shipped a
+bundle on which **every delegated `.pte` failed at load** with `failed to import model for device
+'CPU' (status=-1)`. Cost of including it: 521 KB.
+
+The failure mode is the reason §"Testing" now mandates a blob-import stage: device enumeration
+succeeds on the broken bundle, so a plugin-loading check reports a clean pass.
 
 `libtbbbind_2_5.so.3` (30.6 KB) + `libhwloc.so.15` (460.6 KB) are **also shipped in the wheel** and
 are *not* dead weight: under `LD_DEBUG=libs`, `libtbb` dlopens `libtbbbind_2_5.so.3` by name (it is
@@ -343,10 +353,18 @@ them — verified against the current assertions. New coverage is therefore pure
 
 Two tests need a container and real artifacts:
 
-- **`test/openvino_smoke.sh`** — dlopens the bundle's `libopenvino_c.so` by absolute path with
-  `LD_LIBRARY_PATH` explicitly **unset**, calls `ov_core_get_available_devices`, and asserts
-  `CPU` appears. This is the test that catches a broken `$ORIGIN`, a missing plugin, or a missing
-  TBB — none of which a file-listing test can see. The spike's probe becomes this test.
+- **`test/openvino_smoke.sh`** — **two mandatory stages**, because the first alone is not
+  sufficient:
+  1. *Resolution* — dlopen the bundle's `libopenvino_c.so` by absolute path with
+     `LD_LIBRARY_PATH` explicitly **unset**, call `ov_core_get_available_devices`, assert `CPU`.
+     Catches a broken `$ORIGIN`, a missing plugin, or missing TBB.
+  2. *Blob import* — deserialize a precompiled blob through `ov_core_import_model`, the same call
+     the delegate makes. Catches a bundle that resolves and enumerates perfectly but cannot load
+     any model — the dropped-IR-frontend failure above passed stage 1 with a clean `GATE PASS`.
+
+  Stage 2 mints its blob with the **openvino Python package only** (no torch), so it costs one
+  `pip install` in the `openvino` job. It must never degrade to a skip: a silent skip is exactly
+  how a bundle that cannot load a model reaches a release green.
 - **`test/relocatability.sh`** — unchanged, but now meaningful for the delegate because
   `test/consumer` links `executorch_backends`. Without that edit nothing would link
   `openvino_backend` and any regression in it would be invisible.

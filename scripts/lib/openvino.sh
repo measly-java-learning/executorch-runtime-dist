@@ -26,16 +26,25 @@ OV_WHEEL_SHA256="88f074286d420c1a1a95e7f2ba11109a899f2f3b3fd818cfe1e47ead22cc7e4
 OV_HWLOC_VERSION="2.8.0"
 OV_HWLOC_LICENSE_URL="https://raw.githubusercontent.com/open-mpi/hwloc/hwloc-${OV_HWLOC_VERSION}/COPYING"
 
-# CPU-only runtime set. Deliberately EXCLUDES the GPU/NPU plugins and every model frontend
-# (ONNX/TF/PyTorch/Paddle/JAX): we import a precompiled blob via ov_core_import_model and never
-# parse a model format. libtbbbind/libhwloc are included because libtbb dlopens tbbbind BY NAME
-# (it is not a NEEDED entry), which pulls hwloc via its own NEEDED + $ORIGIN — verified under
-# LD_DEBUG=libs. Omitting them is safe (TBB degrades gracefully) but loses NUMA-aware binding.
+# CPU-only runtime set. Excludes the GPU/NPU plugins and the ONNX/TF/PyTorch/Paddle/JAX frontends:
+# those parse third-party MODEL FORMATS, which we never do.
+#
+# libopenvino_ir_frontend IS REQUIRED and must not be pruned with the other frontends. The blob the
+# AOT side produces (compiled.export_model()) embeds the model in OpenVINO's own IR form, so
+# ov_core_import_model needs the IR frontend to deserialize it. Without it EVERY delegated .pte
+# fails at model load with `failed to import model for device 'CPU' (status=-1)` — while device
+# enumeration still succeeds, which is why this is invisible to a plugin-loading check and must be
+# caught by the blob-import stage of test/openvino_smoke.sh.
+#
+# libtbbbind/libhwloc are included because libtbb dlopens tbbbind BY NAME (it is not a NEEDED
+# entry), which pulls hwloc via its own NEEDED + $ORIGIN — verified under LD_DEBUG=libs. Omitting
+# them is safe (TBB degrades gracefully) but loses NUMA-aware binding.
 ov_lib_members() {
   cat <<EOF
 libopenvino_c.so.${OV_ABI}
 libopenvino.so.${OV_ABI}
 libopenvino_intel_cpu_plugin.so
+libopenvino_ir_frontend.so.${OV_ABI}
 libtbb.so.12
 libtbbbind_2_5.so.3
 libhwloc.so.15

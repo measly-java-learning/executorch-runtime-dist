@@ -65,4 +65,12 @@ for f in scripts/vendor-openvino.sh scripts/lib/openvino.sh; do
   assert_contains "$out" "mode=full" "openvino change ($f) forces a full gate"
 done
 
+# A routing rule is only as good as the workflow's `paths:` filter: if extras-gate.yml does not
+# TRIGGER for a file, classify-gate.sh never runs and the rule above is dead code. This guards the
+# reachability half, which a script-only test cannot see.
+wf="$here/../.github/workflows/extras-gate.yml"
+for p in scripts/vendor-openvino.sh scripts/lib/openvino.sh scripts/lib/cmakeflags.sh; do
+  assert_contains "$(cat "$wf")" "'$p'" "extras-gate workflow triggers on $p"
+done
+
 [ "$fail" -eq 0 ] && [ "$ASSERT_FAILS" -eq 0 ] && echo "OK: classify-gate" || exit 1
