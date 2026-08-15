@@ -52,6 +52,12 @@ else
 fi
 # The zero-before-load assertion is what stops a constant-returning stub from passing.
 assert_contains "$probe" "expected 0 before any model loads" "probe asserts the pre-load zero"
+# The option is read-only by contract. The backend's set_option chain ends in an implicit no-op
+# SUCCESS, so an unhandled key reports Ok and a consumer's write silently appears to work — the
+# probe must prove the explicit rejection branch is still there.
+assert_contains "$probe" "expected InvalidArgument" "probe asserts set_option is rejected"
+assert_contains "$probe" "a rejected set_option changed the reported size" \
+  "probe asserts a rejected write does not mutate the value"
 
 wf="$(cat "$here/../.github/workflows/extras-gate.yml")"
 assert_contains "$wf" "test/xnnpack_workspace_run.sh" "extras-gate full-build runs the workspace gate"

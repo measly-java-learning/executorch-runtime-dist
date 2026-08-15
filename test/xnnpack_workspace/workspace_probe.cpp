@@ -1,7 +1,7 @@
 // Proves the workspace-size backend option works end to end against a BUILT prefix: reads 0 before
-// any model loads (the arena is created lazily during delegate init), and > 0 after loading an
-// XNNPACK-delegated .pte. The before-reading is not decoration — without it a stub that always
-// returned a constant would pass.
+// any model loads (the arena is created lazily during delegate init), rejects a write, and reads
+// > 0 after loading an XNNPACK-delegated .pte. The before-reading is not decoration — without it a
+// stub that always returned a constant would pass.
 //   workspace_probe <model.pte> <in.bin>      (dims via env XNN_IN_DIMS, e.g. "1 3 16 16")
 #include <cstdio>
 #include <cstdlib>
@@ -41,6 +41,29 @@ static int read_workspace_size() {
   return *val;
 }
 
+// The option is derived state, so set_option MUST reject it. This is worth asserting rather than
+// assuming: the backend's set_option is a strcmp chain whose final `else` is an implicit no-op
+// SUCCESS, so a key that is simply unhandled reports Error::Ok and a consumer's write looks like it
+// worked. Called after the first get_option, so a failure here cannot be the backend merely being
+// unregistered — that would already have failed above.
+static void assert_set_option_rejected() {
+  BackendOption opt{};
+  std::snprintf(opt.key, sizeof(opt.key), "%s", kKey);
+  opt.value = 4096; // any value; the KEY alone must be refused
+  Span<BackendOption> span(&opt, 1);
+  const auto err = executorch::ET_RUNTIME_NAMESPACE::set_option(kBackend, span);
+  if (err != executorch::runtime::Error::InvalidArgument) {
+    std::fprintf(
+        stderr,
+        "set_option on %s returned error %d; expected InvalidArgument (%d)\n",
+        kKey,
+        static_cast<int>(err),
+        static_cast<int>(executorch::runtime::Error::InvalidArgument));
+    std::exit(1);
+  }
+  std::printf("ok: set_option on %s rejected with InvalidArgument\n", kKey);
+}
+
 // Parse a space-separated dims string (e.g. "1 3 16 16") from the environment.
 static std::vector<executorch::aten::SizesType> parse_dims(const char* env_name) {
   const char* env = std::getenv(env_name);
@@ -78,6 +101,20 @@ int main(int argc, char** argv) {
   std::printf("workspace before load: %d\n", before);
   if (before != 0) {
     std::fprintf(stderr, "expected 0 before any model loads, got %d\n", before);
+    return 1;
+  }
+
+  assert_set_option_rejected();
+  // A rejected write must also leave the value alone. Today the figure is computed on each read
+  // rather than stored, so this cannot fail — it is here for the implementation that caches it
+  // later and lets a "rejected" write mutate the cache anyway.
+  const int after_rejected_write = read_workspace_size();
+  if (after_rejected_write != before) {
+    std::fprintf(
+        stderr,
+        "a rejected set_option changed the reported size: %d -> %d\n",
+        before,
+        after_rejected_write);
     return 1;
   }
 
