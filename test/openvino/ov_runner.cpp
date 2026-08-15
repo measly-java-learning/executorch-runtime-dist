@@ -2,10 +2,10 @@
 // ExecuTorch half of the OpenVINO gate, which the C-API smoke stages cannot reach.
 //   ov_runner <model.pte> <in.bin> <out.bin>      (dims via OV_IN / OV_OUT)
 //
-// Deliberately a consumer-shaped binary (find_package + Module), not ExecuTorch's
-// executor_runner: this repo does not build executor_runner on Linux (it is enabled only in the
-// Windows configure base), and it synthesizes its own inputs rather than reading a file, which
-// makes a golden comparison impossible.
+// Deliberately a consumer-shaped binary (find_package + Module), not ExecuTorch's executor_runner:
+// that tool synthesizes its own inputs (ones) rather than reading a file, so comparing its output
+// against a golden captured for a specific input reports a spurious mismatch. A consumer-shaped
+// binary also exercises what we actually ship.
 //
 // The exported model is `relu(linear(x))` with the Linear weights baked in as constants, so the
 // method takes a single [1, OV_IN] input and returns a single [1, OV_OUT] output.
