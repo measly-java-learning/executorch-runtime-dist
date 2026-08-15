@@ -22,13 +22,14 @@ cannot do better than its slowest half, so further gains must make `full-aot` it
 
 ### `full-aot` is the critical path; `full-build` is not
 
-Across the three green runs measured so far:
+Across the four green runs measured so far:
 
 | run | `full-build` | `full-aot` | wall clock |
 |---|---|---|---|
 | 31909631718 | 1080s | 1297s | 1369s |
 | 31910447973 | 803s | 1250s | 1326s |
 | 31910949775 | 832s | 1276s | 1358s |
+| 31913009925 | 796s | **1468s** | 1541s |
 
 `full-aot` is the critical path in **every** run, and `full-build` has never come within 170s of
 it. Two consequences that drive the implementation order:
@@ -41,9 +42,18 @@ it. Two consequences that drive the implementation order:
    answered until we know how far `full-aot` actually falls, and one that costs a share of the
    10GB cache budget to answer wrongly.
 
-Note also that `full-build` has ranged 803–1080s across three runs — **±30% runner variance** on an
-unchanged build. Any single-run ccache measurement smaller than that is noise. Conclusions need
-either a repeated run or a difference large enough to clear that band.
+### Runner variance sets the measurement bar
+
+Both jobs vary substantially on an **unchanged** build:
+
+- `full-build`: 796–1080s (the 1080s is the outlier; the other three cluster at 796–832s)
+- `full-aot`: **1250–1468s — a 218s spread, ~17%**
+
+The `full-aot` number is the one that matters, and it is worse than an early reading of three
+runs suggested (1250–1297s looked stable; the fourth run landed at 1468s). **A ccache result must
+clear ~218s to mean anything.** A single run either side of the change cannot settle it — the
+measurement needs repeated runs, or an improvement large enough to dwarf the band. Anything
+smaller is indistinguishable from a noisy runner.
 
 Inside `full-aot`'s 1297s, ~1127s is building: ~2293 C++ translation units for the ExecuTorch
 python package, plus a ~5 minute `pytorch_tokenizers` build. **ExecuTorch is pinned** (v1.3.1,

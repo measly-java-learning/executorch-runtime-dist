@@ -20,7 +20,7 @@ a floor — but only when the cache key matched exactly.
 
 - **Scope is `full-aot` ONLY.** `full-build` is explicitly deferred — it is not on the critical
   path, so caching it buys zero wall clock. Do not wire it in this plan.
-- **Success metric is `full-aot`'s own duration** (baseline 1250–1297s), never gate wall clock and
+- **Success metric is `full-aot`'s own duration** (baseline band 1250–1468s, ~218s of noise), never gate wall clock and
   never `full-build`.
 - **Threshold value MUST live in the workflow `env` block**, never in `scripts/lib/*` or
   `build-runtime.sh` — those are inside the cache key's `hashFiles` set, so putting it there would
@@ -609,7 +609,7 @@ outcome the guards exist to prevent.
 - [ ] **Step 1: Push and let run 1 complete (the cold run)**
 
 Record `full-aot`'s duration and hit rate. Expect the rate near 0% and the duration **at or above**
-the 1250–1297s baseline — ccache overhead plus cache upload, with nothing to restore. This run
+the 1250–1468s baseline band — ccache overhead plus cache upload, with nothing to restore. This run
 proving slower is expected and is not a reason to stop.
 
 - [ ] **Step 2: Trigger run 2 on the same branch (the real measurement)**
@@ -625,8 +625,11 @@ rate.
 | hit rate >90%, duration ~unchanged | compilation was not the bottleneck we thought | STOP, reinvestigate where `full-aot`'s time actually goes |
 | hit rate <90% | premise is wrong | STOP. Do not tune keys — at a low hit rate ccache is pure cost. Revert. |
 
-Remember `full-build` showed **±30% run-to-run variance** (803–1080s) on an unchanged build. Treat
-any `full-aot` improvement smaller than that band as noise and repeat the measurement.
+**`full-aot` itself varies 1250–1468s (a 218s spread, ~17%) on an unchanged build** — measured
+across four green runs. Treat any improvement smaller than ~218s as noise. One run either side of
+the change CANNOT settle this; repeat the measurement, or require an improvement large enough to
+dwarf the band. This is the single easiest way to fool ourselves into shipping a cache that does
+nothing.
 
 - [ ] **Step 4: Decide on phase two, with evidence**
 
