@@ -10,8 +10,23 @@
 #             moves, and losing that race silently reintroduces the drift the pin was meant to
 #             prevent. We assert presence and let the ET pin decide the version.
 #
-# Known and deliberate: requirements/openvino-aot.txt pulls nncf, which requires numpy<2.5.0 and so
-# downgrades the numpy torch installed (observed: 2.5.2 -> 2.4.6). Leaving numpy unpinned does not
-# cause that and pinning it would not fix it - only a compiled lock resolving both at once does.
+# Known and deliberate: openvino==2025.4.1 requires numpy<2.4.0 (tighter than nncf's <2.5.0), so the
+# AOT locks resolve numpy 2.3.5 while the torch-free locks resolve 2.5.2. That split is real and is
+# now visible as a diff between two committed locks instead of a downgrade buried in a pip log.
+#
+# TORCH IS DELIBERATELY ABSENT - do not "fix" this by adding it.
+# scripts/emit-{openvino,xnnpack}-fixtures.py and extras/lstm/aot/* all import torch, but torch is
+# installed by ExecuTorch's own install_executorch.sh, which pins torch==2.12.0 from
+# download.pytorch.org and yields a LOCAL-VERSION build (2.12.0+cpu). Compiling that into a lock
+# against PyPI resolves a different artifact for the same version string, so the lock would either
+# reinstall over ExecuTorch's torch or fail outright - and it would duplicate a pin upstream owns,
+# which then has to move in lockstep with every ET pin bump. That is precisely the drift trap the
+# generated openvino-*.in files exist to avoid.
+#
+# The contract this leaves implicit: any job running a torch importer must also run
+# install_executorch.sh earlier in the SAME job. Nothing enforces that today. It is the same shape
+# as the bug the full-gate split exposed, where full-aot's OpenVINO emitter lost the wheel a step in
+# another job used to provide (fixed in 4c74892). A structural guard belongs in
+# test/extras_gate_full_split.test.sh's family; until then, treat this paragraph as the contract.
 ninja==1.13.0
 numpy
