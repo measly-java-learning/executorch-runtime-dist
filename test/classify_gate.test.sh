@@ -57,10 +57,11 @@ out="$(GATE_ET_TAG="v1.3.1" GATE_GH_CMD="$tmp/ghstub" "$root/scripts/classify-ga
 [ "$(mode)" = "tier1" ] || { echo "FAIL: stub resolve mode=$(mode)"; fail=1; }
 printf '%s\n' "$out" | grep -q '^release_tag=v1.3.1-2$' || { echo "FAIL: stub newest tag"; fail=1; }
 
-# An OpenVINO vendoring/SSOT change alters a published artifact's contents, and a workspace-size
-# surface change only runs in `full`, so each must get the full treatment rather than a
+# An OpenVINO vendoring/SSOT change alters a published artifact's contents, and the gate scripts
+# and workspace-size surface only run in `full`, so each must get the full treatment rather than a
 # kernel-only tier1 gate.
 for f in scripts/vendor-openvino.sh scripts/lib/openvino.sh \
+         test/openvino_smoke.sh test/openvino_fixture_run.sh test/openvino/ov_runner.cpp \
          scripts/patch-et-xnnpack-workspace.sh \
          patches/et-xnnpack-workspace-size.patch test/xnnpack_workspace_run.sh; do
   cf="$(mktemp)"; printf '%s\n' "$f" > "$cf"
@@ -73,6 +74,7 @@ done
 # reachability half, which a script-only test cannot see.
 wf="$here/../.github/workflows/extras-gate.yml"
 for p in scripts/vendor-openvino.sh scripts/lib/openvino.sh scripts/lib/cmakeflags.sh \
+         test/openvino_smoke.sh test/openvino_fixture_run.sh 'test/openvino/**' \
          scripts/patch-et-xnnpack-workspace.sh scripts/emit-xnnpack-fixtures.py \
          'patches/**' test/xnnpack_workspace_run.sh 'test/xnnpack_workspace/**'; do
   assert_contains "$(cat "$wf")" "'$p'" "extras-gate workflow triggers on $p"

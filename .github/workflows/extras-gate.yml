@@ -13,8 +13,13 @@ on:
       - 'scripts/vendor-openvino.sh'
       - 'scripts/lib/openvino.sh'
       - 'scripts/lib/cmakeflags.sh'
-      # Workspace-size surface. These run only in `full`, so without a trigger an edit to one would
-      # ship with no run at all.
+      # The OpenVINO gate scripts themselves. They run ONLY in `full`, so an edit to one would
+      # otherwise ship with no run at all — the gates would be the least-tested code here.
+      - 'test/openvino_smoke.sh'
+      - 'test/openvino_fixture_run.sh'
+      - 'test/openvino/**'
+      # Workspace-size surface, same reasoning: these run only in `full`, so without a trigger an
+      # edit to one would ship with no run at all.
       - 'scripts/patch-et-xnnpack-workspace.sh'
       - 'scripts/emit-xnnpack-fixtures.py'
       - 'patches/**'
@@ -221,6 +226,16 @@ jobs:
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           pip install "nncf==3.1.0"
           python scripts/emit-openvino-fixtures.py "$PWD/ovfixtures-dryrun"
+      - name: OpenVINO end-to-end (fixture .pte through the runtime against the bundle)
+        # The two steps above verify each half in isolation: the fixture is known to EXPORT, and
+        # the bundle is known to import a synthetic blob. Neither loads a .pte through ExecuTorch,
+        # so delegate registration and the Method init path were previously untested — the gap
+        # that let a bundle missing libopenvino_ir_frontend reach a green gate. See issue #20.
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          . ./scripts/lib/openvino.sh
+          bash test/openvino_fixture_run.sh "$PWD/out" \
+            "$PWD/ovstage-dryrun/$(ov_asset_stem linux-x86_64)" "$PWD/ovfixtures-dryrun"
       - name: XNNPACK workspace-size gate (fixture emit + behavioural probe)
         # The nm guard in build-runtime.sh proves the symbol exists; only this proves the value is
         # reachable through the published option and reflects a live arena. torch and the pinned

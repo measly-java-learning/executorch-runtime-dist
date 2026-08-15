@@ -38,6 +38,12 @@ bash test/build_smoke.sh /path/to/out
 
 # LSTM AOT round-trip (needs an export venv — see extras/README.md)
 ETNP_PREFIX=<built-prefix> python -m pytest extras/lstm/test/test_lstm_roundtrip.py
+
+# The two OpenVINO runtime gates. The first checks the vendored bundle at the OpenVINO C API
+# (resolve + import a blob); the second runs the fixture .pte through ExecuTorch against that
+# bundle and compares to the eager golden. Neither subsumes the other.
+bash test/openvino_smoke.sh <bundle-dir>
+bash test/openvino_fixture_run.sh <built-prefix> <bundle-dir> <fixture-dir>
 ```
 
 ### Building the runtime locally
