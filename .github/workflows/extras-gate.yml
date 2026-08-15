@@ -6,6 +6,13 @@ on:
       - 'build-runtime.sh'
       - 'scripts/classify-gate.sh'
       - '.github/workflows/extras-gate.yml'
+      # OpenVINO surface. classify-gate.sh routes these to `full`, but that rule is dead unless
+      # the workflow actually STARTS for them — a PR touching only vendor-openvino.sh would
+      # otherwise get no gate at all. cmakeflags.sh is here because it now decides whether the
+      # OpenVINO delegate is compiled in (EXECUTORCH_BUILD_OPENVINO).
+      - 'scripts/vendor-openvino.sh'
+      - 'scripts/lib/openvino.sh'
+      - 'scripts/lib/cmakeflags.sh'
 
 permissions:
   contents: read
@@ -189,3 +196,21 @@ jobs:
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures-dryrun"
+      - name: OpenVINO bundle dry-run (vendor + full smoke gate)
+        # classify-gate.sh routes every OpenVINO change to `full`, so `full` has to actually
+        # exercise OpenVINO — otherwise the routing buys nothing but "the flag still compiles".
+        # This vendors the C10 bundle and runs both smoke stages (resolve + blob import), which is
+        # what catches a member-list regression such as a dropped libopenvino_ir_frontend.
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          . ./scripts/lib/openvino.sh
+          ./scripts/vendor-openvino.sh --out "$PWD/ovstage-dryrun"
+          pip install "openvino==${OV_VERSION}"
+          bash test/openvino_smoke.sh "$PWD/ovstage-dryrun/$(ov_asset_stem linux-x86_64)"
+      - name: OpenVINO fixture-emit dry-run (prove the delegated export works; not published)
+        # torch + the pinned executorch package are already installed by the round-trip action
+        # above, so this only needs the AOT-side OpenVINO deps.
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          pip install "nncf==3.1.0"
+          python scripts/emit-openvino-fixtures.py "$PWD/ovfixtures-dryrun"

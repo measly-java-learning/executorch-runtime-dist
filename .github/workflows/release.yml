@@ -82,6 +82,14 @@ jobs:
           mkdir -p "$PWD/dist"
           ./scripts/package-fixtures.sh --dir "$PWD/fixtures" \
             --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
+          # OpenVINO fixture: same job, because torch + the pinned executorch package are already
+          # installed here. Only the AOT-side OpenVINO deps are new. nncf is required even though
+          # we never quantize (backends/openvino/__init__ imports OpenVINOQuantizer -> nncf).
+          . ./scripts/lib/openvino.sh
+          pip install "openvino==${OV_VERSION}" "nncf==3.1.0"
+          python scripts/emit-openvino-fixtures.py "$PWD/ovfixtures"
+          ./scripts/package-openvino-fixtures.sh --dir "$PWD/ovfixtures" \
+            --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
       - name: Package
         run: |
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
@@ -195,8 +203,53 @@ jobs:
           name: dist-${{ matrix.variant }}-${{ matrix.platform }}
           path: dist/*
 
+  # The OpenVINO CPU runtime, vendored from the Apache-2.0 PyPI wheel into a flat, $ORIGIN-resolving
+  # bundle (contract C10). Linux x86_64 only and INDEPENDENT of the {variant} x {platform} matrix:
+  # the bundle contains no ExecuTorch code, is identical for all three variants, and is versioned by
+  # OpenVINO version rather than ET version. Runs in manylinux for the same glibc floor as the
+  # runtime tarballs.
+  openvino:
+    runs-on: ubuntu-latest
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Vendor the OpenVINO runtime bundle
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          ./scripts/vendor-openvino.sh --out "$PWD/ovstage"
+      - name: Runtime smoke gate (resolve + enumerate CPU + import a compiled blob)
+        # Proves the flat bundle self-resolves AND can actually deserialize a model, before it is
+        # attested. The blob-import stage is not optional: a bundle missing libopenvino_ir_frontend
+        # enumerates CPU cleanly and then fails every delegated .pte at load. Minting the blob needs
+        # only the openvino PYTHON package (no torch), pinned to the same version we vendor.
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          . ./scripts/lib/openvino.sh
+          pip install "openvino==${OV_VERSION}"
+          bash test/openvino_smoke.sh "$PWD/ovstage/$(ov_asset_stem linux-x86_64)"
+      - name: Package
+        run: |
+          . ./scripts/lib/openvino.sh
+          mkdir -p "$PWD/dist"
+          stem="$(ov_asset_stem linux-x86_64)"
+          tar -C "$PWD/ovstage" -czf "$PWD/dist/$(ov_tarball_name linux-x86_64)" "$stem"
+          ( cd "$PWD/dist" && sha256sum "$(ov_tarball_name linux-x86_64)" > "$(ov_sha_name linux-x86_64)" )
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-openvino
+          path: dist/*
+
   pin:
-    needs: [build, build-windows]
+    needs: [build, build-windows, openvino]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -211,6 +264,20 @@ jobs:
           eval "$(./scripts/derive-version.sh)"
           base="${{ github.server_url }}/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}"
           args=(--version "$pkgver" --etver "$etver" --base-url "$base")
+          # C10: fold in the OpenVINO bundle. Reading the sha from the sibling .sha256 keeps
+          # gen-pin.sh's contract (it never hashes files itself).
+          #
+          # REQUIRED, not best-effort: this job hard-`needs: openvino`, so a missing sidecar means
+          # artifact-name drift or a partial download — not "no OpenVINO this release". Skipping
+          # silently would still publish openvino-runtime-*.tar.gz (release globs dist/*) while
+          # emitting a pin with no ET_RUNTIME_OPENVINO_* vars, breaking every consumer with no CI
+          # signal at all. Fail here instead; gen-pin.sh additionally validates the sha is 64 hex.
+          . ./scripts/lib/openvino.sh
+          ovsha_file="dist/$(ov_sha_name linux-x86_64)"
+          [ -f "$ovsha_file" ] || {
+            echo "::error::expected $ovsha_file from the openvino job; refusing to publish a release whose pin omits OpenVINO"
+            exit 1; }
+          args+=(--openvino-sha "$(cut -d' ' -f1 "$ovsha_file")")
           while IFS=$'\t' read -r variant platform sha; do
             args+=(--row "$variant" "$platform" "$sha")
           done < <(./scripts/discover-pin-rows.sh --dir dist --etver "$etver")

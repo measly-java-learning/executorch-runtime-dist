@@ -10,6 +10,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/scripts/lib/variants.sh"
+. "$HERE/scripts/lib/openvino.sh"   # ov_enabled_for_platform, used by common_cmake_flags
 . "$HERE/scripts/lib/cmakeflags.sh"
 . "$HERE/scripts/lib/configure-base.sh"
 

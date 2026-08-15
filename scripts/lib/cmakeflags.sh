@@ -2,9 +2,21 @@
 # Common (variant-independent) cmake flags — SINGLE SOURCE OF TRUTH shared by the build
 # (build-runtime.sh) and the recorded provenance (package.sh -> BUILDINFO cmake_flags, C5), so the
 # two can never drift. Excludes only genuinely machine-specific flags (-DCMAKE_INSTALL_PREFIX), which
-# the build sets separately and which are deliberately not recorded. Source me.
-common_cmake_flags() {
-  printf -- '-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXECUTORCH_BUILD_XNNPACK=ON -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON'
+# the build sets separately and which are deliberately not recorded.
+#
+# Takes a PLATFORM because EXECUTORCH_BUILD_OPENVINO is linux-x86_64 only: the backend uses
+# dlopen/${CMAKE_DL_LIBS} and compiles with -frtti/-fexceptions (GCC/Clang spelling, breaks MSVC),
+# and the Intel CPU plugin it dlopens is x86-64. Upstream gates its own extra the same way
+# (platform_system == 'Linux'). The backend adds no build-time dependency: it resolves the OpenVINO
+# C API at RUNTIME via dlopen, so no SDK is needed in the build container.
+# Source me.
+# Requires openvino.sh to be sourced (for ov_enabled_for_platform).
+common_cmake_flags() { # <platform>
+  local flags='-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXECUTORCH_BUILD_XNNPACK=ON -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON'
+  if ov_enabled_for_platform "${1:-}"; then
+    flags="$flags -DEXECUTORCH_BUILD_OPENVINO=ON"
+  fi
+  printf -- '%s' "$flags"
 }
 
 # Collapse repeated whitespace-separated tokens, keeping the FIRST occurrence and preserving order.
@@ -37,5 +49,5 @@ effective_cmake_flags() { # <platform> <variant>
   local base variant
   base="$(et_configure_base "$1")" || return 2
   variant="$(variant_flags "$2")" || return 2
-  _dedupe_flags "$base $variant $(common_cmake_flags)"
+  _dedupe_flags "$base $variant $(common_cmake_flags "$1")"
 }
