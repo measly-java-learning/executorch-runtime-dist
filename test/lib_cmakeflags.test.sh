@@ -4,6 +4,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/assert.sh"
 . "$here/../scripts/lib/configure-base.sh"
 . "$here/../scripts/lib/variants.sh"
+. "$here/../scripts/lib/openvino.sh"   # ov_enabled_for_platform
 . "$here/../scripts/lib/cmakeflags.sh"
 
 # OpenVINO is linux-x86_64 ONLY: the backend uses dlopen/CMAKE_DL_LIBS and -frtti/-fexceptions

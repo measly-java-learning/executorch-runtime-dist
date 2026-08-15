@@ -28,4 +28,17 @@ case "$pin_no" in
   *OPENVINO*) printf 'FAIL: pin must omit OpenVINO vars when no sha is given\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
   *) printf 'ok: pin omits OpenVINO vars when not requested\n' ;;
 esac
+
+# A malformed sha must abort rather than publish a pin that downstream re-verification rejects.
+row_ok="$(printf 'a%.0s' $(seq 64))"
+for bad in "" "abc" "$(printf 'z%.0s' $(seq 64))" "$(printf 'a%.0s' $(seq 63))"; do
+  bash "$here/../scripts/gen-pin.sh" --version 1.3.1-1 --etver 1.3.1 --base-url https://ex.test/dl \
+    --row logging linux-x86_64 "$row_ok" --openvino-sha "$bad" >/dev/null 2>&1
+  assert_eq "$?" "1" "gen-pin rejects malformed --openvino-sha ('${bad:0:8}')"
+done
+bash "$here/../scripts/gen-pin.sh" --version 1.3.1-1 --etver 1.3.1 --base-url https://ex.test/dl \
+  --row logging linux-x86_64 "$row_ok" --openvino-sha "$(printf 'b%.0s' $(seq 64))" \
+  --openvino-platform "" >/dev/null 2>&1
+assert_eq "$?" "1" "gen-pin rejects an empty --openvino-platform"
+
 exit "$ASSERT_FAILS"

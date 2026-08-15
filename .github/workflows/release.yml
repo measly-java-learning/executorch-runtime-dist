@@ -264,13 +264,20 @@ jobs:
           eval "$(./scripts/derive-version.sh)"
           base="${{ github.server_url }}/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}"
           args=(--version "$pkgver" --etver "$etver" --base-url "$base")
-          # C10: fold in the OpenVINO bundle if its job produced one. Reading the sha from the
-          # sibling .sha256 keeps gen-pin.sh's contract (it never hashes files itself).
+          # C10: fold in the OpenVINO bundle. Reading the sha from the sibling .sha256 keeps
+          # gen-pin.sh's contract (it never hashes files itself).
+          #
+          # REQUIRED, not best-effort: this job hard-`needs: openvino`, so a missing sidecar means
+          # artifact-name drift or a partial download — not "no OpenVINO this release". Skipping
+          # silently would still publish openvino-runtime-*.tar.gz (release globs dist/*) while
+          # emitting a pin with no ET_RUNTIME_OPENVINO_* vars, breaking every consumer with no CI
+          # signal at all. Fail here instead; gen-pin.sh additionally validates the sha is 64 hex.
           . ./scripts/lib/openvino.sh
           ovsha_file="dist/$(ov_sha_name linux-x86_64)"
-          if [ -f "$ovsha_file" ]; then
-            args+=(--openvino-sha "$(cut -d' ' -f1 "$ovsha_file")")
-          fi
+          [ -f "$ovsha_file" ] || {
+            echo "::error::expected $ovsha_file from the openvino job; refusing to publish a release whose pin omits OpenVINO"
+            exit 1; }
+          args+=(--openvino-sha "$(cut -d' ' -f1 "$ovsha_file")")
           while IFS=$'\t' read -r variant platform sha; do
             args+=(--row "$variant" "$platform" "$sha")
           done < <(./scripts/discover-pin-rows.sh --dir dist --etver "$etver")

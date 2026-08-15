@@ -48,4 +48,19 @@ ov_asset_stem >/dev/null 2>&1; assert_eq "$?" "2" "missing platform returns 2"
 assert_eq "$(ov_fixtures_name 1.3.1)" "etnp-openvino-fixtures-1.3.1-${OV_VERSION}.tar.gz" \
   "fixtures name carries both etver and ovver"
 ov_fixtures_name >/dev/null 2>&1; assert_eq "$?" "2" "fixtures name without etver returns 2"
+
+# The one platform -> OpenVINO predicate, shared by cmakeflags.sh and package.sh so they cannot
+# disagree about whether a tarball contains the delegate.
+ov_enabled_for_platform linux-x86_64  && printf 'ok: enabled on linux-x86_64\n'   || { printf 'FAIL: linux-x86_64\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
+ov_enabled_for_platform linux-aarch64 && { printf 'FAIL: aarch64 must be off\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); } || printf 'ok: off on linux-aarch64\n'
+ov_enabled_for_platform windows-x86_64 && { printf 'FAIL: windows must be off\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); } || printf 'ok: off on windows-x86_64\n'
+ov_enabled_for_platform "" && { printf 'FAIL: empty must be off\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); } || printf 'ok: off on empty platform\n'
+
+# The name wrappers must PROPAGATE ov_asset_stem's validation, not swallow it in a command
+# substitution — otherwise an empty platform yields the plausible-looking name ".tar.gz", which
+# gen-pin.sh would emit as a real pin URL.
+ov_tarball_name "" >/dev/null 2>&1; assert_eq "$?" "2" "ov_tarball_name propagates empty-platform failure"
+ov_sha_name     "" >/dev/null 2>&1; assert_eq "$?" "2" "ov_sha_name propagates empty-platform failure"
+ov_tarball_name    >/dev/null 2>&1; assert_eq "$?" "2" "ov_tarball_name requires a platform"
+
 exit "$ASSERT_FAILS"

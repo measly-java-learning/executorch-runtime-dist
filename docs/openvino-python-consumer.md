@@ -64,7 +64,12 @@ def openvino_lib_path() -> str:
 
 
 # MUST run before the first inference.
-os.environ.setdefault("OPENVINO_LIB_PATH", openvino_lib_path())
+# Note the explicit guard rather than os.environ.setdefault(...): setdefault evaluates its default
+# eagerly, so it would call openvino_lib_path() — and raise if the pip wheel is absent — even when
+# OPENVINO_LIB_PATH is already set correctly (e.g. you are using the published bundle from
+# Option A, or an operator exported it).
+if "OPENVINO_LIB_PATH" not in os.environ:
+    os.environ["OPENVINO_LIB_PATH"] = openvino_lib_path()
 ```
 
 If you use our published asset instead, the path is simply

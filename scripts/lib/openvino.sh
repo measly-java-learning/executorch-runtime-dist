@@ -63,12 +63,33 @@ hwloc-COPYING
 EOF
 }
 
+# THE platform -> "is the OpenVINO delegate compiled in?" predicate. One mapping, consumed by
+# cmakeflags.sh (which sets EXECUTORCH_BUILD_OPENVINO) and package.sh (which records
+# openvino_version in BUILDINFO and asserts the archive is actually present). Encoding this in two
+# places is exactly the drift CLAUDE.md warns about: a future linux-aarch64 enablement that updated
+# only one would ship a tarball whose BUILDINFO lies about its contents.
+ov_enabled_for_platform() { # <platform> -> 0 (enabled) / 1 (not)
+  case "${1:-}" in
+    linux-x86_64) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 ov_asset_stem() { # <platform>
   [ $# -ge 1 ] && [ -n "${1:-}" ] || { echo "ov_asset_stem: platform required" >&2; return 2; }
   printf 'openvino-runtime-%s-%s' "$OV_VERSION" "$1"
 }
-ov_tarball_name() { printf '%s.tar.gz' "$(ov_asset_stem "$@")"; }
-ov_sha_name()     { printf '%s.sha256' "$(ov_tarball_name "$@")"; }
+# Capture into a local and propagate the failure: `printf "%s.tar.gz" "$(ov_asset_stem "$@")"`
+# DISCARDS the command-substitution status, so a missing/empty platform would return 0 with the
+# nonsense name ".tar.gz" — which gen-pin.sh would then emit as a real-looking pin URL.
+ov_tarball_name() { # <platform>
+  local _stem; _stem="$(ov_asset_stem "$@")" || return 2
+  printf '%s.tar.gz' "$_stem"
+}
+ov_sha_name() { # <platform>
+  local _tb; _tb="$(ov_tarball_name "$@")" || return 2
+  printf '%s.sha256' "$_tb"
+}
 
 # Fixture asset carries BOTH versions: the .pte embeds a precompiled OpenVINO blob (the AOT side
 # calls compiled.export_model(); the runtime calls ov_core_import_model), so it is coupled to the

@@ -5,14 +5,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/naming.sh"
 . "$HERE/lib/openvino.sh"
 
-VERSION=""; ETVER=""; BASEURL=""; ROWS=(); OVSHA=""; OVPLATFORM="linux-x86_64"
+VERSION=""; ETVER=""; BASEURL=""; ROWS=(); OVSHA=""; OVSHA_SET=0; OVPLATFORM="linux-x86_64"
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --etver) ETVER="$2"; shift 2 ;;
     --base-url) BASEURL="$2"; shift 2 ;;
     --row) ROWS+=("$2 $3 $4"); shift 4 ;;
-    --openvino-sha)      OVSHA="$2"; shift 2 ;;
+    --openvino-sha)      OVSHA="$2"; OVSHA_SET=1; shift 2 ;;
     --openvino-platform) OVPLATFORM="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -35,7 +35,17 @@ done
 # did not run the OpenVINO job still yields a valid (OpenVINO-free) pin rather than dangling vars.
 # Versioned by OPENVINO version, not ET version — it tracks an independent upstream and must be
 # re-rollable without an ET bump.
-if [ -n "$OVSHA" ]; then
+if [ "$OVSHA_SET" -eq 1 ]; then
+  # Validate like discover-pin-rows.sh validates its rows: a malformed sha here would publish a pin
+  # that downstream re-verification rejects, and the failure would surface in a consumer's build
+  # rather than ours. An empty/short/non-hex value is a bug in the caller, not a reason to shrug.
+  case "$OVSHA" in
+    ""|*[!0-9a-f]*) echo "gen-pin.sh: --openvino-sha is not lowercase hex ('$OVSHA')" >&2; exit 1 ;;
+  esac
+  [ "${#OVSHA}" -eq 64 ] \
+    || { echo "gen-pin.sh: --openvino-sha must be 64 hex chars (got ${#OVSHA})" >&2; exit 1; }
+  [ -n "$OVPLATFORM" ] \
+    || { echo "gen-pin.sh: --openvino-platform must not be empty" >&2; exit 1; }
   printf 'set(ET_RUNTIME_OPENVINO_VERSION "%s")\n' "$OV_VERSION"
   printf 'set(ET_RUNTIME_OPENVINO_URL\n  "%s/%s")\n' "$BASEURL" "$(ov_tarball_name "$OVPLATFORM")"
   printf 'set(ET_RUNTIME_OPENVINO_SHA256 "%s")\n\n' "$OVSHA"

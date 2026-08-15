@@ -10,11 +10,12 @@
 # (platform_system == 'Linux'). The backend adds no build-time dependency: it resolves the OpenVINO
 # C API at RUNTIME via dlopen, so no SDK is needed in the build container.
 # Source me.
+# Requires openvino.sh to be sourced (for ov_enabled_for_platform).
 common_cmake_flags() { # <platform>
   local flags='-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXECUTORCH_BUILD_XNNPACK=ON -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON'
-  case "${1:-}" in
-    linux-x86_64) flags="$flags -DEXECUTORCH_BUILD_OPENVINO=ON" ;;
-  esac
+  if ov_enabled_for_platform "${1:-}"; then
+    flags="$flags -DEXECUTORCH_BUILD_OPENVINO=ON"
+  fi
   printf -- '%s' "$flags"
 }
 

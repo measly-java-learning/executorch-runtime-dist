@@ -8,6 +8,8 @@ here="$(cd "$(dirname "$0")" && pwd)"
 p="$(mktemp -d)/pfx"
 mkdir -p "$p/lib/cmake/ExecuTorch" "$p/include" "$p/THIRD-PARTY-NOTICES" "$p/bin" "$p/share/cpuinfo"
 : > "$p/lib/cmake/ExecuTorch/executorch-config.cmake"
+# linux-x86_64 ships the OpenVINO delegate; package.sh asserts the archive is really there.
+: > "$p/lib/libopenvino_backend.a"
 : > "$p/include/et.h"
 : > "$p/THIRD-PARTY-NOTICES/xnnpack_LICENSE"
 : > "$p/LICENSE"
@@ -32,6 +34,7 @@ assert_eq "$(cd "$out" && sha256sum -c "$(basename "$tb").sha256" >/dev/null 2>&
 # A missing .et_commit must be a HARD error (never silently ship et_commit=unknown).
 p2="$(mktemp -d)/pfx2"
 mkdir -p "$p2/lib/cmake/ExecuTorch" "$p2/include" "$p2/THIRD-PARTY-NOTICES"; : > "$p2/LICENSE"
+: > "$p2/lib/libopenvino_backend.a"
 bash "$here/../scripts/package.sh" --prefix "$p2" --etver 1.3.1 --variant logging \
   --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$(mktemp -d)" >/dev/null 2>&1
 assert_eq "$?" "1" "missing .et_commit is a hard error"
@@ -39,6 +42,7 @@ assert_eq "$?" "1" "missing .et_commit is a hard error"
 # A missing .etnp_usdt marker must also be a hard error (provenance completeness).
 p3="$(mktemp -d)/pfx3"
 mkdir -p "$p3/lib/cmake/ExecuTorch" "$p3/include" "$p3/THIRD-PARTY-NOTICES"; : > "$p3/LICENSE"
+: > "$p3/lib/libopenvino_backend.a"
 echo "deadbeef" > "$p3/.et_commit"   # present, so we fail specifically on .etnp_usdt
 bash "$here/../scripts/package.sh" --prefix "$p3" --etver 1.3.1 --variant logging \
   --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$(mktemp -d)" >/dev/null 2>&1
@@ -80,5 +84,17 @@ bil="$(tar -xzOf "$tbl" executorch-runtime-1.3.1-logging-linux-x86_64/BUILDINFO)
 assert_contains "$bil" "toolchain=manylinux_2_28 gcc-toolset-14" "default toolchain preserved"
 assert_contains "$bil" "cmake_flags=--preset linux"              "linux preset recorded in provenance"
 assert_contains "$bil" "openvino_version=" "openvino provenance recorded in BUILDINFO"
+
+
+# A linux-x86_64 prefix WITHOUT the delegate must be refused outright rather than packaged with a
+# BUILDINFO that claims openvino_version. This is the guard against the flag silently no-opping
+# (e.g. upstream renames the cmake option — cmake only warns about an unused -D cache var).
+pnov="$(mktemp -d)/nov"
+mkdir -p "$pnov/lib/cmake/ExecuTorch" "$pnov/include" "$pnov/THIRD-PARTY-NOTICES"
+: > "$pnov/lib/cmake/ExecuTorch/executorch-config.cmake"; : > "$pnov/include/et.h"; : > "$pnov/LICENSE"
+printf 'abc\n' > "$pnov/.et_commit"; printf 'on\n' > "$pnov/.etnp_usdt"
+bash "$here/../scripts/package.sh" --prefix "$pnov" --etver 1.3.1 --variant logging \
+  --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$(mktemp -d)" >/dev/null 2>&1
+assert_eq "$?" "1" "linux-x86_64 prefix without libopenvino_backend.a is refused"
 
 exit "$ASSERT_FAILS"
