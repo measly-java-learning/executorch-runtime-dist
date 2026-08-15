@@ -255,9 +255,17 @@ jobs:
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures-dryrun/lstm"
       - name: Emit OpenVINO fixtures (prove the delegated export works; not published)
+        # The openvino wheel is a REAL dependency of this emit: the ET partitioner imports
+        # openvino.frontend.pytorch at module scope. Before the job split it was satisfied by
+        # accident - the bundle-smoke step that pip-installed it happened to run earlier in the
+        # same job. That step now lives in full-gates, so install it here explicitly rather than
+        # depending on step order in another job. Version comes from the openvino.sh SSOT, the
+        # same pin the vendored bundle is built from.
         run: |
+          set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
-          pip install "nncf==3.1.0"
+          . ./scripts/lib/openvino.sh
+          pip install "openvino==${OV_VERSION}" "nncf==3.1.0"
           python scripts/emit-openvino-fixtures.py "$PWD/fixtures-dryrun/openvino"
       - name: Emit XNNPACK-delegated fixtures for the workspace-size gate
         run: |
