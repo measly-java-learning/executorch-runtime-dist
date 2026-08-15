@@ -1,0 +1,35 @@
+diff --git a/include/xnnpack.h b/include/xnnpack.h
+index 1b5d0dd..fa2af79 100644
+--- a/include/xnnpack.h
++++ b/include/xnnpack.h
+@@ -2403,6 +2403,12 @@ enum xnn_status xnn_create_workspace(xnn_workspace_t* workspace_out);
+ /// Runtime objects created with this workspace are destroyed.
+ /// @param workspace - the workspace object to destroy.
+ enum xnn_status xnn_release_workspace(xnn_workspace_t workspace);
++/// Get the current size, in bytes, of the memory arena allocated by a workspace.
++/// The arena is grown as needed by xnn_create_runtime_v4 and is never shrunk, so this is a
++/// high-water mark. Returns 0 for a NULL workspace or one that has not yet been grown.
++/// NOTE: not upstream. Added by measly-java-learning/executorch-runtime-dist to support host-side
++/// native memory accounting. See docs/xnnpack-workspace-size-consumer.md.
++size_t xnn_get_workspace_size(xnn_workspace_t workspace);
+ 
+ /// Runtime is a combination of an execution plan for subgraph Nodes and a memory manager for subgraph Values.
+ typedef struct xnn_runtime* xnn_runtime_t;
+diff --git a/src/runtime.c b/src/runtime.c
+index aa22e76..2c7d3f0 100644
+--- a/src/runtime.c
++++ b/src/runtime.c
+@@ -127,6 +127,13 @@ enum xnn_status xnn_release_workspace(xnn_workspace_t workspace)
+   }
+   return xnn_status_success;
+ }
++size_t xnn_get_workspace_size(xnn_workspace_t workspace)
++{
++  if (workspace == NULL) {
++    return 0;
++  }
++  return workspace->size;
++}
+ 
+ enum xnn_status xnn_create_weights_cache_with_size(size_t size, xnn_weights_cache_t* weights_cache_out)
+ {

@@ -203,6 +203,11 @@ if [ "$IS_WINDOWS" -eq 1 ]; then
     "$ET_SRC/third-party/CMakeLists.txt" || true
 fi
 
+# Workspace-size accessor patches (see scripts/patch-et-xnnpack-workspace.sh). Applied here, with
+# the other source patches, because they must land before configure. Not guarded by platform:
+# XNNPACK builds on every platform we ship.
+"$HERE/scripts/patch-et-xnnpack-workspace.sh" "$ET_SRC"
+
 # Rather than the full `install_requirements.sh` from the ExecuTorch source,
 # just install the minimal set of deps for our build process
 echo ">> installing python deps"
@@ -278,6 +283,43 @@ if [ "$IS_WINDOWS" -eq 0 ]; then
       sed -i -E 's#/usr/lib64/lib([a-z0-9_]+)\.(so|a)#\1#g' "$f"
     done
   fi
+fi
+
+# Prove the workspace-size patches survived compilation, not merely that files were edited. The
+# accessor and the option key are a published consumer contract; a future ET bump that drops a
+# patch must fail the build here rather than regress a consumer's memory accounting silently.
+# Windows: MSVC has no nm, and the archives are .lib — skip, the Linux gate covers the contract.
+if [ "$IS_WINDOWS" -eq 0 ]; then
+  echo ">> verifying workspace-size symbols are present in the installed prefix"
+  # Patch A (xnn_get_workspace_size) compiles into the XNNPACK submodule, which this ET pin ships
+  # as its OWN archive (libXNNPACK.a) rather than folded into libxnnpack_backend.a. Scanning every
+  # lib/*.a tests the property that matters — the symbol is somewhere in the shipped prefix —
+  # without depending on a pin's archive layout.
+  # Patch C (total_workspace_size) and patch D (workspace_size_option_key) live in the ET-side
+  # backend archive. The option key is a namespace-scope const char[] (internal linkage), so it is
+  # a LOCAL symbol: include local symbols (no `-g` flag). `nm -C` demangles so the guard reads
+  # source names. Patch B (XNNWorkspace::size()) is defined inline in its header and its only call
+  # site inlines it away in Release, so it emits no symbol of its own; it is covered by patch C
+  # (its sole caller) plus the behavioural gate (test/xnnpack_workspace_run.sh), which exercises
+  # the whole chain end to end.
+  # `|| true`: nm exits nonzero when the glob matches no archive; grep exits 1 on no-match —
+  # neither may abort under set -e before the messages below.
+  _wsyms="$(nm -C --defined-only "$PREFIX"/lib/*.a 2>/dev/null || true)"
+  _wsfail=""
+  for _sym in xnn_get_workspace_size XNNWorkspaceManager::total_workspace_size workspace_size_option_key; do
+    # case, not `grep -q | printf`: grep -q exits the moment it matches, SIGPIPE-killing the
+    # writer, and pipefail then reports the pipeline failed — a false FAIL on a good build.
+    case "$_wsyms" in
+      *"$_sym"*) ;;
+      *) echo "   FAIL: $_sym not found in $PREFIX/lib" >&2; _wsfail=1 ;;
+    esac
+  done
+  if [ -n "$_wsfail" ]; then
+    echo "   A workspace-size patch applied but a required symbol did not survive the build." >&2
+    echo "   Check that the ET pin still compiles the patched sources into the shipped archives." >&2
+    exit 1
+  fi
+  echo "   ok: workspace-size symbols present"
 fi
 
 echo ">> license passthrough"

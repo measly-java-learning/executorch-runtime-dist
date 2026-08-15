@@ -93,6 +93,24 @@ portable. This is the heart of what makes the artifact usable downstream — tre
 - Normalizes absolute system-lib paths (`/usr/lib64/libm.so`, etc.) to bare `-l<name>`
   so consumers on Debian/Ubuntu multiarch (where these live elsewhere) can link.
 
+### Vendored XNNPACK workspace-size patches
+
+`scripts/patch-et-xnnpack-workspace.sh` applies a small vendored patch set (`patches/*.patch`) to the
+caller-supplied ExecuTorch checkout during the build's patch phase, before configure. It exposes the
+XNNPACK delegate's workspace arena size through the **read-only** `workspace_size_bytes` backend
+option — the consumer contract documented in `docs/xnnpack-workspace-size-consumer.md`. Upstream
+XNNPACK has no size accessor, so this is a local addition; code depending on it will not build against
+a stock ExecuTorch.
+
+- **Keep `patches/*.patch` and `test/fixtures/etpatch/` in lockstep when the ET pin moves.** The
+  hermetic patch test patches the real anchor text, so a stale fixture makes the patch test pass
+  while the real build fails — regenerate the patches and refresh the fixtures in the same commit.
+- **Idempotency is a contract:** a second run reports `already patched`; a moved anchor is a HARD
+  error, never a silent skip.
+- **A dropped patch is caught twice:** the post-build `nm` guard in `build-runtime.sh` proves
+  `xnn_get_workspace_size` survived compilation, and the gate's behavioural probe
+  (`test/xnnpack_workspace_run.sh`) proves the value is reachable and reflects a live arena.
+
 ### Single-source-of-truth libraries
 
 `scripts/lib/*.sh` are sourced by both the build and the packaging/CI so the two can

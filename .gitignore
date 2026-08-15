@@ -1,4 +1,7 @@
-out-*/
+# `out*/`, not `out-*/`: the default --prefix in CI and in the docs is a BARE `out/`, which the
+# narrower pattern missed. A local build then leaves ~1200 files of installed ExecuTorch sitting
+# untracked-but-not-ignored, where a `git add -A` sweeps them into a commit.
+out*/
 et-build/
 spike/*.log
 et-build-*/
