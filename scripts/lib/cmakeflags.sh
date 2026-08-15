@@ -9,10 +9,15 @@
 # and the Intel CPU plugin it dlopens is x86-64. Upstream gates its own extra the same way
 # (platform_system == 'Linux'). The backend adds no build-time dependency: it resolves the OpenVINO
 # C API at RUNTIME via dlopen, so no SDK is needed in the build container.
+# EXECUTORCH_XNNPACK_SHARED_WORKSPACE is pinned, not inherited. It controls whether XNNPACK delegate
+# instances share one workspace arena; the workspace_size_bytes backend option reports a single
+# process-wide figure, which is only meaningful under Global sharing. Upstream's default is ON but
+# the comment above it says the opposite, so the value is one edit from flipping and taking the
+# meaning of a published consumer contract with it.
 # Source me.
 # Requires openvino.sh to be sourced (for ov_enabled_for_platform).
 common_cmake_flags() { # <platform>
-  local flags='-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXECUTORCH_BUILD_XNNPACK=ON -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON'
+  local flags='-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXECUTORCH_BUILD_XNNPACK=ON -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON -DEXECUTORCH_XNNPACK_SHARED_WORKSPACE=ON'
   if ov_enabled_for_platform "${1:-}"; then
     flags="$flags -DEXECUTORCH_BUILD_OPENVINO=ON"
   fi

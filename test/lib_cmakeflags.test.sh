@@ -35,4 +35,15 @@ assert_contains "$(common_cmake_flags linux-x86_64)" "-DEXECUTORCH_BUILD_XNNPACK
 assert_contains "$(common_cmake_flags linux-x86_64)" "-DCMAKE_POSITION_INDEPENDENT_CODE=ON" "PIC still present"
 assert_eq "$(printf '%s\n' $(effective_cmake_flags windows-x86_64 logging) | grep -c -- '-DCMAKE_BUILD_TYPE=Release')" \
   "1" "dedup still collapses repeats"
+# The workspace-size accessor reports ONE process-wide arena, which is only true under Global
+# sharing. Upstream defaults this ON (tools/cmake/preset/default.cmake), but the comment directly
+# above that default says "Keeping this OFF by default" — prose and value disagree, so the default
+# is one upstream edit away from flipping. Pin it rather than inherit it. Platform-independent:
+# unlike OpenVINO this is not an x86-64-only concern.
+for p in linux-x86_64 linux-aarch64 windows-x86_64 windows-x86_64-static; do
+  assert_contains "$(common_cmake_flags "$p")" "-DEXECUTORCH_XNNPACK_SHARED_WORKSPACE=ON" \
+    "shared workspace pinned on $p"
+done
+assert_contains "$(effective_cmake_flags linux-x86_64 logging)" \
+  "-DEXECUTORCH_XNNPACK_SHARED_WORKSPACE=ON" "effective flags carry the workspace pin"
 exit "$ASSERT_FAILS"
