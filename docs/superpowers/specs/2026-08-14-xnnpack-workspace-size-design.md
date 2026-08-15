@@ -90,6 +90,45 @@ workspace above 2 GiB is implausible for this use, but saturation is specified r
 narrowing: a silently negative byte count in a memory report is worse than a clamped one. The
 saturating behaviour is part of the documented contract, not an implementation detail.
 
+#### Considered and rejected: patching `size_t` into `OptionValue`
+
+Since this work already patches the ET tree, the obvious question is whether to append `size_t` to
+the variant and report the byte count exactly. **Rejected: it is an ABI break, not a
+layout-neutral append.** Measured with the two variants compiled side by side (x86-64, gcc,
+C++17):
+
+| | `OptionValue` | `alignof` | `BackendOption` |
+|---|---|---|---|
+| stock | 260 | 4 | 324 |
+| with `size_t` | 264 | 8 | 328 |
+
+Every current alternative — `bool`, `int`, `array<char, 256>` — is at most 4-byte aligned, so
+`OptionValue` has 4-byte alignment today. **Any** 64-bit alternative raises it to 8 and grows every
+`BackendOption`. `int64_t` behaves identically; there is no 64-bit type that fits for free.
+
+`runtime/backend/options.h` is an **installed** header, so this would change a type consumers
+compile against. An object compiled against our headers and linked against anything built from
+stock ET headers — or the reverse — gets a silent layout mismatch with no diagnostic. That is the
+same failure class as the `/MD` vs `/MT` CRT mismatch documented in `docs/handover-to-engine.md`
+(§2, C4), and it is reachable here: a consumer could plausibly have the official `executorch`
+package and our runtime in one process.
+
+The change would be *source*-compatible — access is entirely via `std::get_if<T>`, with no
+`.index()` switching or exhaustive visitation anywhere in `runtime/`, `backends/`, or `extension/`,
+and appending preserves the existing indices. The break is purely size and alignment. That is
+precisely what makes it dangerous: it compiles and links clean, then corrupts.
+
+The trade is a permanent public-ABI divergence inherited by every downstream consumer, plus higher
+patch-conflict risk on ET bumps, in exchange for lifting a 2 GiB ceiling on arenas measured in
+megabytes.
+
+Two fallbacks if exactness above 2 GiB ever becomes real:
+
+1. Report decimal bytes in the existing `array<char, 256>` alternative — exact, unbounded, no header
+   change, no ABI risk; only uglier at the call site.
+2. Upstream a 64-bit alternative to ExecuTorch, where the ABI can be revved coherently for
+   everyone. This is a far more upstreamable change than the vendored XNNPACK getter in patch A.
+
 ### Sharing mode
 
 `EXECUTORCH_XNNPACK_SHARED_WORKSPACE` defaults to `BOOL ON` (`tools/cmake/preset/default.cmake:287`),
