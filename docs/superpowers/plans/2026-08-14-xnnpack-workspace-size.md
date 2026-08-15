@@ -897,11 +897,16 @@ assert_contains "$out" "XNN_IN" "gate: explains the shape-file failure"
 # XNNPACKBackend.h it would stop testing the published contract, because that header is not shipped.
 assert_contains "$probe" '"XnnpackBackend"' "probe names the backend by string"
 assert_contains "$probe" '"workspace_size_bytes"' "probe names the key by string"
-case "$probe" in
-  *XNNPACKBackend.h*) printf 'FAIL: probe must not include the unshipped backend header\n' >&2
-                      ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
-  *) printf 'ok: probe includes no unshipped header\n' ;;
-esac
+# Match an actual #include DIRECTIVE, not the bare filename: the probe's own comment explains that
+# the header is deliberately not included, so a substring test would fire on the documentation of
+# the very property it is checking. (No `|| true` guard needed — grep's exit 1 is the passing case
+# and a command in an `if` condition never triggers `set -e`.)
+if printf '%s\n' "$probe" | grep -qE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"].*XNNPACKBackend\.h'; then
+  printf 'FAIL: probe must not #include the unshipped backend header\n' >&2
+  ASSERT_FAILS=$((ASSERT_FAILS+1))
+else
+  printf 'ok: probe does not #include the unshipped header\n'
+fi
 # The zero-before-load assertion is what stops a constant-returning stub from passing.
 assert_contains "$probe" "expected 0 before any model loads" "probe asserts the pre-load zero"
 

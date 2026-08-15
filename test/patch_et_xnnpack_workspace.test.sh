@@ -41,6 +41,16 @@ bash "$script" "$tmp/et" >"$tmp/out1" 2>&1
 assert_eq "$?" "0" "first apply succeeds"
 assert_contains "$(cat "$tmp/et/backends/xnnpack/third-party/XNNPACK/include/xnnpack.h")" \
   "xnn_get_workspace_size" "accessor declared after patching"
+assert_contains "$(cat "$tmp/et/backends/xnnpack/runtime/XNNWorkspace.h")" \
+  "size_t size()" "wrapper accessor patched in"
+assert_contains "$(cat "$tmp/et/backends/xnnpack/runtime/XNNWorkspaceManager.h")" \
+  "total_workspace_size" "manager sum patched in"
+assert_contains "$(cat "$tmp/et/backends/xnnpack/runtime/XNNPACKBackend.h")" \
+  "workspace_size_bytes" "option key patched in"
+# The key is a published consumer contract (the engine hardcodes the string because
+# XNNPACKBackend.h does not ship). A rename is breaking, so pin the exact spelling.
+assert_contains "$(cat "$tmp/et/backends/xnnpack/runtime/XNNPACKBackend.h")" \
+  'workspace_size_option_key[] = "workspace_size_bytes"' "option key spelling is exact"
 
 # Idempotency is not a nicety: build-runtime.sh re-runs against a persisted --build-dir and a
 # caller-supplied checkout that may already be patched from a previous run.
@@ -57,6 +67,12 @@ git -C "$tmp/drift/backends/xnnpack/third-party/XNNPACK" -c user.email=t@t -c us
 out="$(bash "$script" "$tmp/drift" 2>&1)"
 assert_eq "$?" "1" "drifted anchor fails"
 assert_contains "$out" "does not apply" "drift failure explains itself"
+
+mk_tree "$tmp/drift2"
+: > "$tmp/drift2/backends/xnnpack/runtime/XNNWorkspaceManager.cpp"
+git -C "$tmp/drift2" -c user.email=t@t -c user.name=t commit -qam drift
+out="$(bash "$script" "$tmp/drift2" 2>&1)"
+assert_eq "$?" "1" "drifted ET-side anchor fails"
 
 bash "$script" >/dev/null 2>&1
 assert_eq "$?" "1" "missing argument is an error"
