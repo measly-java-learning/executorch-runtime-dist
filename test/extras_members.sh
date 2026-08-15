@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Asserts a built prefix ships the extras members and that ETNPExtras.cmake is
 # relocatable (no absolute build-prefix leaked). PREFIX defaults to out-logging.
+#
+# NOT named *.test.sh on purpose: it needs a BUILT PREFIX and so is not hermetic, which is the
+# same reason build_smoke.sh, relocatability.sh, usdt_probe_smoke.sh, openvino_smoke.sh and
+# xnnpack_workspace_run.sh are excluded from test/run.sh's glob. It carried the .test.sh name for
+# months and therefore failed run.sh in any checkout without a build — a standing red that trained
+# everyone to read "1 test file(s) FAILED" as normal. See issue #24.
+#
+# Run it against a real prefix:  PREFIX=/path/to/out bash test/extras_members.sh
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 PREFIX="${PREFIX:-$here/../out-logging}"

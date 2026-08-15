@@ -95,6 +95,13 @@ jobs:
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
             --variant "${{ matrix.variant }}" --platform "${{ matrix.combo.platform }}" \
             --package-tag "${GITHUB_REF_NAME}" --outdir "$PWD/dist"
+      - name: Extras members + ETNPExtras relocatability gate
+        # The last place the SHIPPED bytes are checked. Asserts phase 2 installed every extras
+        # member and that ETNPExtras.cmake leaked no absolute build prefix — a leak breaks
+        # find_package for every consumer, which is the same class of defect the recipe's sed
+        # repairs exist to prevent. Runs before attestation, so a bad prefix cannot be published.
+        # Linux-only for free: the Windows job is separate and ships no extras.
+        run: PREFIX="$PWD/out" bash test/extras_members.sh
       - name: Relocatability + PIC gate
         # Producing position-independent static libs is this repo's whole purpose, so prove it on the
         # real built prefix before the artifact is attested. The script self-provisions inside

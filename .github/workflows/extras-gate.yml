@@ -199,6 +199,12 @@ jobs:
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           ./build-runtime.sh --variant logging --prefix "$PWD/out" \
             --et-src "$PWD/et-src/executorch" --et-tag "v${ETVER}"
+      - name: Extras members + ETNPExtras relocatability gate
+        # Runs immediately after the build so a missing member or a leaked absolute prefix fails
+        # here rather than 20 minutes later inside a downstream gate, where the cause is far less
+        # obvious. This is the PR-time counterpart of the same check in release.yml; see issue #26 —
+        # it needs a built prefix, so it is not part of the hermetic suite.
+        run: PREFIX="$PWD/out" bash test/extras_members.sh
       - name: Live round-trip (export -> run vs eager)
         uses: ./.github/actions/lstm-roundtrip
         with:
