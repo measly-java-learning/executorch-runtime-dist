@@ -5,7 +5,7 @@
 > (**Repo A**) now builds, attests, and **publishes** the ExecuTorch runtime. The engine should
 > **download** it instead of building it from source in its own CI.
 >
-> This document is your input: the **frozen contract** (C1–C10), the **one contract change** made
+> This document is your input: the **frozen contract** (C1–C11), the **one contract change** made
 > during Repo A's implementation, your **punch-list**, and **concrete consumption recipes**. Assume no
 > prior context. Producer repo: `measly-java-learning/executorch-runtime-dist`.
 >
@@ -48,7 +48,7 @@
 
 ---
 
-## 2. The Contract (C1–C10) — frozen
+## 2. The Contract (C1–C11) — frozen
 
 - **C1 — Asset names:** `executorch-runtime-<etver>-<variant>-<platform>.tar.gz`, plus a sibling `<asset>.sha256`.
 - **C2 — Tarball layout:** one top-level dir `executorch-runtime-<etver>-<variant>-<platform>/` containing
@@ -91,6 +91,16 @@
   Pinned as `ET_RUNTIME_OPENVINO_{VERSION,URL,SHA256}`. Consumers set `OPENVINO_LIB_PATH` to the
   absolute path of `lib/libopenvino_c.so`. See `docs/openvino-python-consumer.md` and
   `docs/openvino-jni-consumer.md`.
+- **C11 — XNNPACK workspace-size backend option:** the XNNPACK delegate ships a **read-only** backend
+  option — backend `XnnpackBackend`, key `workspace_size_bytes` — reporting the process-wide XNNPACK
+  workspace arena size in bytes as an `int`, **saturating at `INT_MAX`** (it never wraps negative).
+  It reads **0 until the first XNNPACK-delegated method loads** — the arena is created lazily during
+  delegate init, so a zero is not a broken accessor. `set_option` on this key returns
+  `Error::InvalidArgument`. The figure is process-wide across all XNNPACK delegate instances because
+  the build pins `EXECUTORCH_XNNPACK_SHARED_WORKSPACE=ON`, and it includes allocator alignment
+  padding as a **high-water mark** (the arena grows and is never shrunk). **Not upstream:** this is a
+  vendored patch in this distribution — code depending on it will not build against a stock
+  ExecuTorch. See `docs/xnnpack-workspace-size-consumer.md`.
 
 ---
 
