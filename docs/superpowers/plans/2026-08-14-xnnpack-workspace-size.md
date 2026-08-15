@@ -512,22 +512,41 @@ Confirm `HERE` is the variable `build-runtime.sh` uses for its own directory; if
 After the install + relocatability repair, before license passthrough, add:
 
 ```bash
-# Prove the workspace-size patch survived compilation, not merely that a file was edited. The
-# accessor is a published consumer contract; a future ET bump that drops the patch must fail the
-# build here rather than regress a consumer's memory accounting silently.
-# Windows: MSVC has no nm, and the archive is a .lib — skip, the Linux gate covers the contract.
+# Prove the workspace-size patches survived compilation, not merely that files were edited. The
+# accessor and the option key are a published consumer contract; a future ET bump that drops a
+# patch must fail the build here rather than regress a consumer's memory accounting silently.
+# Windows: MSVC has no nm, and the archives are .lib — skip, the Linux gate covers the contract.
 if [ "$IS_WINDOWS" -eq 0 ]; then
-  echo ">> verifying xnn_get_workspace_size is present in the installed XNNPACK backend"
-  _xnnlib="$PREFIX/lib/libxnnpack_backend.a"
-  [ -f "$_xnnlib" ] || { echo "   FAIL: $_xnnlib missing" >&2; exit 1; }
-  # `|| true`: grep exits 1 on no-match, which would abort under set -e before the message below.
-  if [ -z "$(nm -g --defined-only "$_xnnlib" 2>/dev/null | grep 'xnn_get_workspace_size' || true)" ]; then
-    echo "   FAIL: xnn_get_workspace_size not found in $_xnnlib" >&2
-    echo "   The patch applied but the symbol did not survive the build. Check that the ET pin" >&2
-    echo "   still compiles src/runtime.c into the xnnpack backend archive." >&2
+  echo ">> verifying workspace-size symbols are present in the installed prefix"
+  # Patch A (xnn_get_workspace_size) compiles into the XNNPACK submodule, which this ET pin ships
+  # as its OWN archive (libXNNPACK.a) rather than folded into libxnnpack_backend.a. Scanning every
+  # lib/*.a tests the property that matters — the symbol is somewhere in the shipped prefix —
+  # without depending on a pin's archive layout.
+  # Patch C (total_workspace_size) and patch D (workspace_size_option_key) live in the ET-side
+  # backend archive. The option key is a namespace-scope const char[] (internal linkage), so it is
+  # a LOCAL symbol: include local symbols (no `-g` flag). `nm -C` demangles so the guard reads
+  # source names. Patch B (XNNWorkspace::size()) is defined inline in its header and its only call
+  # site inlines it away in Release, so it emits no symbol of its own; it is covered by patch C
+  # (its sole caller) plus the behavioural gate (test/xnnpack_workspace_run.sh), which exercises
+  # the whole chain end to end.
+  # `|| true`: nm exits nonzero when the glob matches no archive; grep exits 1 on no-match —
+  # neither may abort under set -e before the messages below.
+  _wsyms="$(nm -C --defined-only "$PREFIX"/lib/*.a 2>/dev/null || true)"
+  _wsfail=""
+  for _sym in xnn_get_workspace_size XNNWorkspaceManager::total_workspace_size workspace_size_option_key; do
+    # case, not `grep -q | printf`: grep -q exits the moment it matches, SIGPIPE-killing the
+    # writer, and pipefail then reports the pipeline failed — a false FAIL on a good build.
+    case "$_wsyms" in
+      *"$_sym"*) ;;
+      *) echo "   FAIL: $_sym not found in $PREFIX/lib" >&2; _wsfail=1 ;;
+    esac
+  done
+  if [ -n "$_wsfail" ]; then
+    echo "   A workspace-size patch applied but a required symbol did not survive the build." >&2
+    echo "   Check that the ET pin still compiles the patched sources into the shipped archives." >&2
     exit 1
   fi
-  echo "   ok: accessor present"
+  echo "   ok: workspace-size symbols present"
 fi
 ```
 
