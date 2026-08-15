@@ -13,6 +13,13 @@ on:
       - 'scripts/vendor-openvino.sh'
       - 'scripts/lib/openvino.sh'
       - 'scripts/lib/cmakeflags.sh'
+      # Workspace-size surface. These run only in `full`, so without a trigger an edit to one would
+      # ship with no run at all.
+      - 'scripts/patch-et-xnnpack-workspace.sh'
+      - 'scripts/emit-xnnpack-fixtures.py'
+      - 'patches/**'
+      - 'test/xnnpack_workspace_run.sh'
+      - 'test/xnnpack_workspace/**'
 
 permissions:
   contents: read
@@ -214,3 +221,11 @@ jobs:
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           pip install "nncf==3.1.0"
           python scripts/emit-openvino-fixtures.py "$PWD/ovfixtures-dryrun"
+      - name: XNNPACK workspace-size gate (fixture emit + behavioural probe)
+        # The nm guard in build-runtime.sh proves the symbol exists; only this proves the value is
+        # reachable through the published option and reflects a live arena. torch and the pinned
+        # executorch package are already installed by the round-trip action above.
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          python scripts/emit-xnnpack-fixtures.py "$PWD/xnnfixtures-dryrun"
+          bash test/xnnpack_workspace_run.sh "$PWD/out" "$PWD/xnnfixtures-dryrun"

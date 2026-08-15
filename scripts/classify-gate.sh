@@ -29,9 +29,10 @@ if grep -qx 'build-runtime.sh' "$CHANGED"; then
 fi
 
 # (1b) an OpenVINO vendoring/SSOT change alters a PUBLISHED artifact's contents (the C10 bundle:
-# its members, pinned version, or license set). tier1/tier2 only rebuild extras against a
-# downloaded release and would never exercise it, so force a full run.
-if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh)' "$CHANGED"; then
+# its members, pinned version, or license set). Likewise the workspace-size surface (patch script,
+# fixture emitter, patches, gate probe) only runs in `full` — tier1/tier2 only rebuild extras
+# against a downloaded release and would never exercise it, so force a full run.
+if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh|patch-et-xnnpack-workspace\.sh|emit-xnnpack-fixtures\.py)|patches/.*|test/xnnpack_workspace(_run\.sh|/.*)' "$CHANGED"; then
   emit full ""; exit 0
 fi
 
