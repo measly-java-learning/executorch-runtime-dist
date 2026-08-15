@@ -511,90 +511,132 @@ git commit -m "perf(gate): cache full-aot's C++ compilation with ccache"
 ### Task 5: Structural guard for the wiring
 
 **Files:**
-- Create: `test/ccache_gate_wiring.test.sh`
+- Create: `test/lib/check_ccache_wiring.py` — the structural checks
+- Create: `test/ccache_gate_wiring.test.sh` — thin invoker (needed for `test/run.sh`'s glob)
 
 The failure mode is silent: every one of these can break while the gate still passes, just slowly.
 
-- [ ] **Step 1: Write the test**
+**Why two files:** per CLAUDE.md's convention, non-trivial Python does not live in a bash heredoc.
+The shell script keeps the orchestration (skip logic, failure accounting) and the YAML-structural
+logic goes in a file that can be linted, run directly (`python3 test/lib/check_ccache_wiring.py
+.github/workflows/extras-gate.yml`), and given a traceback with real line numbers.
+
+- [ ] **Step 1: Write the checker**
+
+```python
+#!/usr/bin/env python3
+"""Assert the full-aot ccache wiring is intact.
+
+Usage: check_ccache_wiring.py <path to extras-gate.yml>
+
+Every assertion here protects against a change that leaves the gate GREEN but the cache useless -
+the failure mode is a slow gate nobody investigates, not a red X.
+"""
+import sys
+
+import yaml
+
+
+def main(path: str) -> int:
+    fails = 0
+
+    def ok(cond, msg):
+        nonlocal fails
+        if cond:
+            print(f"ok: {msg}")
+        else:
+            print(f"FAIL: {msg}", file=sys.stderr)
+            fails += 1
+
+    jobs = yaml.safe_load(open(path))["jobs"]
+    aot = jobs["full-aot"]
+    steps = aot["steps"]
+    runs = "\n".join(str(s.get("run", "")) for s in steps)
+
+    ok("./scripts/install-ccache.sh" in runs, "full-aot installs the pinned ccache")
+    ok("ccache -z" in runs, "counters zeroed, so stats measure THIS run not the restored lifetime")
+    ok("ccache -M" in runs, "cache size is capped (the 10GB repo budget is shared)")
+    ok("./scripts/ccache-stats.sh" in runs, "hit rate is reported")
+
+    # The tokenizers sub-build is the ~5min one and is NOT covered by ExecuTorch's find_program.
+    ok("CMAKE_CXX_COMPILER_LAUNCHER=ccache" in runs,
+       "launcher injected for the tokenizers sub-build")
+
+    # The threshold must NOT live in a file the cache key hashes, or tuning it invalidates
+    # every cache.
+    env = aot.get("env", {})
+    ok("CCACHE_MIN_HIT_RATE" in env, "threshold lives in workflow env, not scripts/lib")
+    ok(str(env.get("CCACHE_DIR", "")).endswith(".ccache"), "CCACHE_DIR is under the workspace")
+
+    cache_steps = [s for s in steps if "actions/cache" in str(s.get("uses", ""))]
+    ok(len(cache_steps) == 1, "exactly one cache step")
+    if cache_steps:
+        with_ = cache_steps[0]["with"]
+        key = str(with_["key"])
+        ok("github.sha" in key, "key has a unique suffix (actions/cache never overwrites a key)")
+        ok("hashFiles" in key, "key is invalidated by patches/lib/recipe changes")
+        ok("restore-keys" in with_, "prefix fallback exists so a novel key still starts warm")
+
+    # Enforcement must be conditional on an EXACT match, never a prefix restore.
+    stats = [s for s in steps if "ccache-stats.sh" in str(s.get("run", ""))]
+    ok(bool(stats), "a stats step exists")
+    if stats:
+        enforce = str(stats[0].get("env", {}).get("CCACHE_ENFORCE", ""))
+        ok("cache-hit" in enforce,
+           "enforcement is gated on an exact cache-key match, not a prefix hit")
+
+    # Scope discipline: full-build is deliberately NOT wired - it is not on the critical path,
+    # so caching it buys zero wall clock. See the plan's global constraints.
+    build_runs = "\n".join(str(s.get("run", "")) for s in jobs["full-build"]["steps"])
+    ok("install-ccache.sh" not in build_runs,
+       "full-build is deliberately NOT cached (see the plan's scope constraint)")
+
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print(__doc__, file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main(sys.argv[1]))
+```
+
+- [ ] **Step 2: Write the thin invoker**
 
 ```bash
 #!/usr/bin/env bash
-# Structural guard for the full-aot ccache wiring. Every assertion here protects against a change
-# that leaves the gate GREEN but the cache useless.
+# Structural guard for the full-aot ccache wiring. The checks live in
+# test/lib/check_ccache_wiring.py - this script only orchestrates, per CLAUDE.md's convention
+# against non-trivial Python embedded in shell.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/assert.sh"
-wf="$here/../.github/workflows/extras-gate.yml"
 command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 required"; exit 0; }
 
-python3 - "$wf" <<'PY'
-import sys, yaml
-fails = 0
-def ok(c, m):
-    global fails
-    if c:
-        print(f"ok: {m}")
-    else:
-        print(f"FAIL: {m}", file=sys.stderr)
-        fails += 1
-
-jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
-aot = jobs["full-aot"]
-steps = aot["steps"]
-runs = "\n".join(str(s.get("run", "")) for s in steps)
-names = [str(s.get("name", "")) for s in steps]
-
-ok("./scripts/install-ccache.sh" in runs, "full-aot installs the pinned ccache")
-ok("ccache -z" in runs, "counters are zeroed, so stats measure THIS run not the restored lifetime")
-ok("ccache -M" in runs, "cache size is capped (10GB repo budget is shared)")
-ok("./scripts/ccache-stats.sh" in runs, "hit rate is reported")
-
-# The tokenizers sub-build is the ~5min one and is NOT covered by ExecuTorch's find_program.
-ok("CMAKE_CXX_COMPILER_LAUNCHER=ccache" in runs, "launcher injected for the tokenizers sub-build")
-
-# The threshold must NOT live in a file the cache key hashes, or tuning it invalidates everything.
-env = aot.get("env", {})
-ok("CCACHE_MIN_HIT_RATE" in env, "threshold lives in workflow env, not scripts/lib")
-ok(str(env.get("CCACHE_DIR", "")).endswith(".ccache"), "CCACHE_DIR is under the workspace")
-
-cache_steps = [s for s in steps if "actions/cache" in str(s.get("uses", ""))]
-ok(len(cache_steps) == 1, "exactly one cache step")
-c = cache_steps[0]
-key = str(c["with"]["key"])
-ok("github.sha" in key, "key carries a unique suffix (actions/cache never overwrites a key)")
-ok("hashFiles" in key, "key is invalidated by patches/lib/recipe changes")
-ok("restore-keys" in c["with"], "prefix fallback exists so a novel key still starts warm")
-
-# Enforcement must be conditional on an EXACT match.
-stats = [s for s in steps if "ccache-stats.sh" in str(s.get("run", ""))][0]
-enforce = str(stats.get("env", {}).get("CCACHE_ENFORCE", ""))
-ok("cache-hit" in enforce, "enforcement is gated on an exact cache-key match, not a prefix hit")
-
-# Scope discipline: full-build is deliberately NOT wired (it is not on the critical path).
-ok("install-ccache.sh" not in "\n".join(str(s.get("run","")) for s in jobs["full-build"]["steps"]),
-   "full-build is deliberately NOT cached (see the plan's scope constraint)")
-
-sys.exit(1 if fails else 0)
-PY
-rc=$?
-[ "$rc" -eq 0 ] || ASSERT_FAILS=$((ASSERT_FAILS+1))
+python3 "$here/lib/check_ccache_wiring.py" "$here/../.github/workflows/extras-gate.yml" \
+  || ASSERT_FAILS=$((ASSERT_FAILS+1))
 exit "$ASSERT_FAILS"
 ```
 
-- [ ] **Step 2: Run it**
+- [ ] **Step 3: Run it**
 
-Run: `bash test/ccache_gate_wiring.test.sh` → all `ok:`, exit 0.
+```bash
+bash test/ccache_gate_wiring.test.sh
+# and directly, which is the point of the split:
+python3 test/lib/check_ccache_wiring.py .github/workflows/extras-gate.yml
+```
+Expected: all `ok:` lines, exit 0.
 
-- [ ] **Step 3: Prove it is not vacuous**
+- [ ] **Step 4: Prove it is not vacuous**
 
 Temporarily delete the `ccache -z` line from the workflow, re-run, confirm it FAILS, then restore.
 A guard nobody has seen fail is a guard nobody should trust.
 
-- [ ] **Step 4: Run the whole suite and commit**
+- [ ] **Step 5: Run the whole suite and commit**
 
 ```bash
 bash test/run.sh
-git add test/ccache_gate_wiring.test.sh
+git add test/ccache_gate_wiring.test.sh test/lib/check_ccache_wiring.py
 git commit -m "test(ccache): structural guard for the full-aot wiring"
 ```
 
