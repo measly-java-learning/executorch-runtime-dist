@@ -1,0 +1,25 @@
+name: unit
+# The hermetic shell unit suite (test/*.test.sh via test/run.sh). Deliberately its OWN workflow
+# rather than a job in extras-gate.yml: that workflow is gated by a `paths:` filter, and any job
+# added there inherits it. This suite guards scripts/lib/*.sh, the asset-naming and pin contracts,
+# gate classification, and the gate scripts' input validation — surfaces largely OUTSIDE that
+# filter. Twice now a routing rule or gate script has shipped with nothing running it because a
+# paths filter did not list the file; a suite whose whole job is catching that must not be filtered.
+#
+# No `paths:` here for the same reason, and because there is nothing to save: the suite is hermetic
+# — no ExecuTorch checkout, no container, no build, no network — and runs in ~2s.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest      # no container: bash + coreutils + git + python3 is the whole dep set
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the hermetic unit suite
+        run: bash test/run.sh
