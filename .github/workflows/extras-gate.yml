@@ -134,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
-          pip install ninja numpy    # cmake is present in the manylinux image (as in release.yml)
+          pip install -r requirements/extras-build.txt    # cmake is present in the manylinux image (as in release.yml)
           ./build-runtime.sh --extras-only --variant logging --prefix "$PWD/prefix"
           FIXTURES_DIR="$PWD/fixtures" ETNP_PREFIX="$PWD/prefix" \
             python extras/lstm/test/consumer_smoke.py
@@ -167,7 +167,7 @@ jobs:
           tar -C prefix -xzf "gate-inputs/executorch-runtime-${ETVER}-logging-linux-x86_64.tar.gz" --strip-components=1
           rm -f  prefix/lib/libetnp_ops_*.a prefix/lib/libhwy.a
           rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
-          pip install ninja
+          pip install -r requirements/extras-build.txt
           ./build-runtime.sh --extras-only --variant logging --prefix "$PWD/prefix"
       - name: Live round-trip (export -> run vs eager)
         uses: ./.github/actions/lstm-roundtrip
@@ -176,9 +176,14 @@ jobs:
           # NOT the github.workspace expression (host path — invisible inside the container).
           prefix: prefix
 
-  # Fallback: any build-runtime.sh change (or no matching release) → a full-build
-  # release DRY-RUN. Full ET compile + live round-trip + fixture-emit (not published),
-  # so a green gate means the eventual release tag will build — before spending a pkgrev.
+  # Fallback: any build-runtime.sh change (or no matching release) -> a full release DRY-RUN,
+  # so a green gate means the eventual release tag will build before a pkgrev is spent.
+  #
+  # Split into three jobs because the two heavy halves are INDEPENDENT: the C++ recipe build
+  # (~12min) needs no python, and building ExecuTorch's python package (~15min, what
+  # install_executorch.sh does) needs no built prefix. Run sequentially they cost ~30min of wall
+  # clock; run in parallel with a fixtures hand-off, ~19min. Runner minutes are slightly higher —
+  # this trades them for latency on the gate every recipe change has to pass.
   full-build:
     needs: classify
     if: needs.classify.outputs.mode == 'full'
@@ -193,7 +198,7 @@ jobs:
         uses: ./.github/actions/checkout-executorch
         with:
           ref: v${{ needs.classify.outputs.etver }}
-      - name: Full build (release dry-run — full ET compile)
+      - name: Full build (release dry-run - full ET compile)
         run: |
           set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
@@ -201,52 +206,135 @@ jobs:
             --et-src "$PWD/et-src/executorch" --et-tag "v${ETVER}"
       - name: Extras members + ETNPExtras relocatability gate
         # Runs immediately after the build so a missing member or a leaked absolute prefix fails
-        # here rather than 20 minutes later inside a downstream gate, where the cause is far less
-        # obvious. This is the PR-time counterpart of the same check in release.yml; see issue #26 —
-        # it needs a built prefix, so it is not part of the hermetic suite.
+        # here rather than later in full-gates, where the cause is far less obvious. This is the
+        # PR-time counterpart of the same check in release.yml; see issue #26 - it needs a built
+        # prefix, so it is not part of the hermetic suite.
         run: PREFIX="$PWD/out" bash test/extras_members.sh
-      - name: Live round-trip (export -> run vs eager)
-        uses: ./.github/actions/lstm-roundtrip
+      - name: Pack the prefix for full-gates
+        # tar, not a raw directory upload: the prefix is ~1200 small files and upload-artifact is
+        # far slower per-file than per-byte. Symlinks and modes also survive a tar; the OpenVINO
+        # and workspace gates link against this tree, so mode bits matter.
+        run: tar -czf prefix.tar.gz -C "$PWD" out
+      - uses: actions/upload-artifact@v7
         with:
-          # workspace-relative (built at $PWD/out above); see the note in the tier2 job.
-          prefix: out
-      - name: Fixture-emit dry-run (prove emit works; not published)
+          name: full-prefix
+          path: prefix.tar.gz
+          retention-days: 1
+
+  # Builds ExecuTorch's PYTHON package from the same pinned source and mints every fixture the
+  # gates consume. Deliberately does NOT need the built prefix, which is what lets it run in
+  # parallel with full-build. Everything it produces is a FILE, so it hands off as an artifact.
+  full-aot:
+    needs: classify
+    if: needs.classify.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    container:
+      image: "quay.io/pypa/manylinux_2_28_x86_64"
+    env:
+      ETVER: ${{ needs.classify.outputs.etver }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout ExecuTorch source
+        uses: ./.github/actions/checkout-executorch
+        with:
+          ref: v${{ needs.classify.outputs.etver }}
+      - name: Install the AOT toolchain (executorch python package from the pinned source)
+        # This is the ~15min half. It compiles ExecuTorch a second time - the python package -
+        # which every emitter below imports. Nothing here touches the recipe's install prefix.
+        run: |
+          set -euo pipefail
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          (cd et-src/executorch && ./install_executorch.sh)
+          pip install -r requirements/extras-build.txt
+      - name: Emit LSTM fixtures FRESH from the branch AOT
+        # These are the export half of the live round-trip: lstm_case.build_case() is the same
+        # source test_lstm_roundtrip.py uses, so a golden minted here is an eager-torch golden
+        # for the branch's own AOT definition. full-gates runs them against the branch's runtime
+        # and compares - the two halves together are the round-trip, split across jobs.
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
-          python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures-dryrun"
+          python extras/lstm/aot/emit_fixtures.py "$PWD/fixtures-dryrun/lstm"
+      - name: Emit OpenVINO fixtures (prove the delegated export works; not published)
+        # The openvino wheel is a REAL dependency of this emit: the ET partitioner imports
+        # openvino.frontend.pytorch at module scope. Before the job split it was satisfied by
+        # accident - the bundle-smoke step that pip-installed it happened to run earlier in the
+        # same job. That step now lives in full-gates, so install it here explicitly rather than
+        # depending on step order in another job. Version comes from the openvino.sh SSOT, the
+        # same pin the vendored bundle is built from.
+        run: |
+          set -euo pipefail
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          pip install -r requirements/openvino-aot.txt
+          python scripts/emit-openvino-fixtures.py "$PWD/fixtures-dryrun/openvino"
+      - name: Emit XNNPACK-delegated fixtures for the workspace-size gate
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          python scripts/emit-xnnpack-fixtures.py "$PWD/fixtures-dryrun/xnnpack"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: full-fixtures
+          path: fixtures-dryrun/**
+          retention-days: 1
+
+  # Everything that needs BOTH halves. Cheap (~2min): no compiler-bound work, just linking small
+  # probes against the prefix and running them over the freshly minted fixtures.
+  full-gates:
+    needs: [classify, full-build, full-aot]
+    if: needs.classify.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    container:
+      image: "quay.io/pypa/manylinux_2_28_x86_64"
+    env:
+      ETVER: ${{ needs.classify.outputs.etver }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: full-prefix
+      - uses: actions/download-artifact@v8
+        with:
+          name: full-fixtures
+          path: fixtures-dryrun
+      - name: Unpack the prefix
+        run: |
+          set -euo pipefail
+          tar -xzf prefix.tar.gz
+          [ -f out/lib/cmake/ExecuTorch/executorch-config.cmake ] \
+            || { echo "::error::unpacked prefix is not an ET install"; exit 1; }
+      - name: Live round-trip (fresh export -> run vs eager)
+        # The verify half of the round-trip. consumer_smoke.py builds lstm_runner against the
+        # prefix, runs the .pte, and compares to the golden at 1e-4 - the same runner, tolerance
+        # and case source test_lstm_roundtrip.py uses. The fixtures here are FRESH from this
+        # branch's AOT (see full-aot), not the published ones, so this catches AOT<->runtime
+        # drift exactly as the pytest form did.
+        run: |
+          set -euo pipefail
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          pip install -r requirements/extras-build.txt
+          FIXTURES_DIR="$PWD/fixtures-dryrun/lstm" ETNP_PREFIX="$PWD/out" \
+            python extras/lstm/test/consumer_smoke.py
       - name: OpenVINO bundle dry-run (vendor + full smoke gate)
         # classify-gate.sh routes every OpenVINO change to `full`, so `full` has to actually
-        # exercise OpenVINO — otherwise the routing buys nothing but "the flag still compiles".
-        # This vendors the C10 bundle and runs both smoke stages (resolve + blob import), which is
+        # exercise OpenVINO - otherwise the routing buys nothing but "the flag still compiles".
+        # This vendors the bundle and runs both smoke stages (resolve + blob import), which is
         # what catches a member-list regression such as a dropped libopenvino_ir_frontend.
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           . ./scripts/lib/openvino.sh
           ./scripts/vendor-openvino.sh --out "$PWD/ovstage-dryrun"
-          pip install "openvino==${OV_VERSION}"
+          pip install -r requirements/openvino-runtime.txt
           bash test/openvino_smoke.sh "$PWD/ovstage-dryrun/$(ov_asset_stem linux-x86_64)"
-      - name: OpenVINO fixture-emit dry-run (prove the delegated export works; not published)
-        # torch + the pinned executorch package are already installed by the round-trip action
-        # above, so this only needs the AOT-side OpenVINO deps.
-        run: |
-          export PATH=/opt/python/cp312-cp312/bin:$PATH
-          pip install "nncf==3.1.0"
-          python scripts/emit-openvino-fixtures.py "$PWD/ovfixtures-dryrun"
       - name: OpenVINO end-to-end (fixture .pte through the runtime against the bundle)
-        # The two steps above verify each half in isolation: the fixture is known to EXPORT, and
+        # The two checks above verify each half in isolation: the fixture is known to EXPORT, and
         # the bundle is known to import a synthetic blob. Neither loads a .pte through ExecuTorch,
-        # so delegate registration and the Method init path were previously untested — the gap
+        # so delegate registration and the Method init path were previously untested - the gap
         # that let a bundle missing libopenvino_ir_frontend reach a green gate. See issue #20.
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           . ./scripts/lib/openvino.sh
           bash test/openvino_fixture_run.sh "$PWD/out" \
-            "$PWD/ovstage-dryrun/$(ov_asset_stem linux-x86_64)" "$PWD/ovfixtures-dryrun"
-      - name: XNNPACK workspace-size gate (fixture emit + behavioural probe)
+            "$PWD/ovstage-dryrun/$(ov_asset_stem linux-x86_64)" "$PWD/fixtures-dryrun/openvino"
+      - name: XNNPACK workspace-size gate (behavioural probe)
         # The nm guard in build-runtime.sh proves the symbol exists; only this proves the value is
-        # reachable through the published option and reflects a live arena. torch and the pinned
-        # executorch package are already installed by the round-trip action above.
-        run: |
-          export PATH=/opt/python/cp312-cp312/bin:$PATH
-          python scripts/emit-xnnpack-fixtures.py "$PWD/xnnfixtures-dryrun"
-          bash test/xnnpack_workspace_run.sh "$PWD/out" "$PWD/xnnfixtures-dryrun"
+        # reachable through the published option and reflects a live arena.
+        run: bash test/xnnpack_workspace_run.sh "$PWD/out" "$PWD/fixtures-dryrun/xnnpack"
