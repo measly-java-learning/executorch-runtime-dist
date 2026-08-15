@@ -165,7 +165,7 @@ never invoke. Worth knowing before someone adds `--clean` and silently destroys 
 ## Cache keys
 
 ```
-key:  ccache-<job>-<arch>-et<etver>-<hashFiles(patches/*, scripts/lib/*, build-runtime.sh)>-<sha>
+key:  ccache-<job>-<arch>-et<etver>-<hashFiles(.build-image, patches/*, scripts/lib/*, build-runtime.sh)>-<sha>
 restore-keys:
   ccache-<job>-<arch>-et<etver>-<same hash>-
   ccache-<job>-<arch>-et<etver>-
@@ -177,6 +177,11 @@ restore-keys:
   the SSOT libraries that compose cmake flags, and the build recipe.
 - `<arch>` is present so a future aarch64 job cannot restore x86-64 objects. (It would only miss,
   but it would also waste the download.)
+- **`.build-image` is in the hashed set, and must stay there.** ccache hashes the compiler binary,
+  so a container digest bump misses every object. Without the image in the key, that bump would
+  produce an EXACT key match with a 0% hit rate — and since enforcement fires on exact matches, an
+  unrelated upstream image rebuild would fail the gate with an error blaming ccache. Pinning the
+  image in a repo file is what makes this expressible as `hashFiles` at all.
 
 ## Verification and enforcement
 

@@ -6,6 +6,7 @@ on:
       - 'build-runtime.sh'
       - 'scripts/classify-gate.sh'
       - '.github/workflows/extras-gate.yml'
+      - '.build-image'
       # OpenVINO surface. classify-gate.sh routes these to `full`, but that rule is dead unless
       # the workflow actually STARTS for them — a PR touching only vendor-openvino.sh would
       # otherwise get no gate at all. cmakeflags.sh is here because it now decides whether the
@@ -36,6 +37,7 @@ jobs:
       mode: ${{ steps.c.outputs.mode }}
       etver: ${{ steps.c.outputs.etver }}
       release_tag: ${{ steps.c.outputs.release_tag }}
+      image: ${{ steps.img.outputs.image }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -46,6 +48,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}   # classify-gate.sh's gh release lookup
         run: ./scripts/classify-gate.sh changed.txt | tee -a "$GITHUB_OUTPUT"
+      - id: img
+        # The build container is pinned by digest in .build-image. container.image is resolved
+        # before any step runs, so it cannot read $GITHUB_ENV - it has to come through a job
+        # output. Bare `cat` plus a non-empty check: the file is one line and holds no comments.
+        run: |
+          set -euo pipefail
+          image="$(cat .build-image)"
+          test -n "$image" || { echo "empty .build-image" >&2; exit 1; }
+          echo "image=$image" | tee -a "$GITHUB_OUTPUT"
 
   # Download + verify (sha256 + attestation) the logging tarballs (both arches) and the
   # fixtures in an ubuntu job, because `gh` is not present in the manylinux containers.
@@ -105,13 +116,15 @@ jobs:
     if: needs.classify.outputs.mode == 'tier1' || needs.classify.outputs.mode == 'tier2'
     runs-on: ${{ matrix.combo.runs_on }}
     container:
-      image: ${{ matrix.combo.container }}
+      image: ${{ needs.classify.outputs.image }}
     strategy:
       fail-fast: false
       matrix:
         combo:
-          - { platform: linux-x86_64,  container: "quay.io/pypa/manylinux_2_28_x86_64",  runs_on: ubuntu-latest }
-          - { platform: linux-aarch64, container: "quay.io/pypa/manylinux_2_28_aarch64", runs_on: ubuntu-24.04-arm }
+          # No container here: .build-image is a multi-arch manifest list, so ONE reference
+          # resolves per-arch and both rows share the pin from classify's output.
+          - { platform: linux-x86_64,  runs_on: ubuntu-latest }
+          - { platform: linux-aarch64, runs_on: ubuntu-24.04-arm }
     env:
       ETVER: ${{ needs.classify.outputs.etver }}
     steps:
@@ -146,7 +159,7 @@ jobs:
     if: needs.classify.outputs.mode == 'tier2'
     runs-on: ubuntu-latest
     container:
-      image: "quay.io/pypa/manylinux_2_28_x86_64"
+      image: ${{ needs.classify.outputs.image }}
     env:
       ETVER: ${{ needs.classify.outputs.etver }}
     steps:
@@ -189,7 +202,7 @@ jobs:
     if: needs.classify.outputs.mode == 'full'
     runs-on: ubuntu-latest
     container:
-      image: "quay.io/pypa/manylinux_2_28_x86_64"
+      image: ${{ needs.classify.outputs.image }}
     env:
       ETVER: ${{ needs.classify.outputs.etver }}
     steps:
@@ -229,7 +242,7 @@ jobs:
     if: needs.classify.outputs.mode == 'full'
     runs-on: ubuntu-latest
     container:
-      image: "quay.io/pypa/manylinux_2_28_x86_64"
+      image: ${{ needs.classify.outputs.image }}
     env:
       ETVER: ${{ needs.classify.outputs.etver }}
     steps:
@@ -283,7 +296,7 @@ jobs:
     if: needs.classify.outputs.mode == 'full'
     runs-on: ubuntu-latest
     container:
-      image: "quay.io/pypa/manylinux_2_28_x86_64"
+      image: ${{ needs.classify.outputs.image }}
     env:
       ETVER: ${{ needs.classify.outputs.etver }}
     steps:

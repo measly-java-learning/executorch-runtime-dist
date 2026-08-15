@@ -451,9 +451,9 @@ After `- uses: actions/checkout@v7` and BEFORE `Install the AOT toolchain`:
           # the cache would be written once and then frozen forever. restore-keys supply the
           # nearest prior cache. This is hit-rate tuning only - ccache re-hashes every object, so a
           # stale restore cannot produce a wrong artifact, only a slower build.
-          key: ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-${{ hashFiles('patches/*.patch', 'scripts/lib/*.sh', 'build-runtime.sh') }}-${{ github.sha }}
+          key: ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-${{ hashFiles('.build-image', 'patches/*.patch', 'scripts/lib/*.sh', 'build-runtime.sh') }}-${{ github.sha }}
           restore-keys: |
-            ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-${{ hashFiles('patches/*.patch', 'scripts/lib/*.sh', 'build-runtime.sh') }}-
+            ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-${{ hashFiles('.build-image', 'patches/*.patch', 'scripts/lib/*.sh', 'build-runtime.sh') }}-
             ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-
       - name: Configure ccache
         # -z zeroes the counters so the stats step measures THIS run, not the restored cache's

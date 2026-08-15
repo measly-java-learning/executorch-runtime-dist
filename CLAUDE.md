@@ -50,13 +50,13 @@ bash test/openvino_fixture_run.sh <built-prefix> <bundle-dir> <fixture-dir>
 
 ### Building the runtime locally
 
-`build-runtime.sh` is the single build entrypoint. It **must run inside the
-`quay.io/pypa/manylinux_2_28_x86_64` container** and **never clones ExecuTorch** — the
+`build-runtime.sh` is the single build entrypoint. It **must run inside the manylinux_2_28
+container pinned by digest in `.build-image`** and **never clones ExecuTorch** — the
 caller always supplies a checked-out ET source tree (with submodules) via `--et-src`:
 
 ```bash
 docker run --rm -v "$PWD":/work -v /path/to/executorch:/executorch \
-  -w /work quay.io/pypa/manylinux_2_28_x86_64 \
+  -w /work "$(cat .build-image)" \
   bash -lc 'export PATH=/opt/python/cp312-cp312/bin:$PATH; \
     ./build-runtime.sh --variant logging --prefix /work/out --et-src /executorch'
 ```
