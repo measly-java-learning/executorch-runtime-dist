@@ -22,13 +22,14 @@ cannot do better than its slowest half, so further gains must make `full-aot` it
 
 ### `full-aot` is the critical path; `full-build` is not
 
-Across the three green runs measured so far:
+Across the four green runs measured so far:
 
 | run | `full-build` | `full-aot` | wall clock |
 |---|---|---|---|
 | 31909631718 | 1080s | 1297s | 1369s |
 | 31910447973 | 803s | 1250s | 1326s |
 | 31910949775 | 832s | 1276s | 1358s |
+| 31913009925 | 796s | **1468s** | 1541s |
 
 `full-aot` is the critical path in **every** run, and `full-build` has never come within 170s of
 it. Two consequences that drive the implementation order:
@@ -41,9 +42,18 @@ it. Two consequences that drive the implementation order:
    answered until we know how far `full-aot` actually falls, and one that costs a share of the
    10GB cache budget to answer wrongly.
 
-Note also that `full-build` has ranged 803–1080s across three runs — **±30% runner variance** on an
-unchanged build. Any single-run ccache measurement smaller than that is noise. Conclusions need
-either a repeated run or a difference large enough to clear that band.
+### Runner variance sets the measurement bar
+
+Both jobs vary substantially on an **unchanged** build:
+
+- `full-build`: 796–1080s (the 1080s is the outlier; the other three cluster at 796–832s)
+- `full-aot`: **1250–1468s — a 218s spread, ~17%**
+
+The `full-aot` number is the one that matters, and it is worse than an early reading of three
+runs suggested (1250–1297s looked stable; the fourth run landed at 1468s). **A ccache result must
+clear ~218s to mean anything.** A single run either side of the change cannot settle it — the
+measurement needs repeated runs, or an improvement large enough to dwarf the band. Anything
+smaller is indistinguishable from a noisy runner.
 
 Inside `full-aot`'s 1297s, ~1127s is building: ~2293 C++ translation units for the ExecuTorch
 python package, plus a ~5 minute `pytorch_tokenizers` build. **ExecuTorch is pinned** (v1.3.1,
@@ -80,7 +90,32 @@ why the aggressive `restore-keys` fallback below is safe.
 
 ## Mechanism
 
-ccache is not in `quay.io/pypa/manylinux_2_28_x86_64`; `dnf install -y ccache` provides **3.7.7**.
+ccache is not in `quay.io/pypa/manylinux_2_28_x86_64`.
+
+### Install from the pinned upstream release, not dnf
+
+`dnf install -y ccache` works but provides **3.7.7** — six major versions behind, with prose-only
+statistics (see below). Instead, fetch the pinned upstream release tarball:
+
+```
+https://github.com/ccache/ccache/releases/download/v4.13.6/ccache-4.13.6-linux-x86_64-glibc.tar.xz
+```
+
+- **1.2 MB**, so the download is faster than the dnf transaction and its metadata refresh.
+- **Verified to run on this container**: ccache 4.13.6 executes correctly on
+  AlmaLinux 8.10 / **glibc 2.28**, which is manylinux_2_28's floor. The `-glibc` build is
+  sufficient; the `musl-static` variant is available as a fallback if a future base image drifts.
+- Pin the **version and SHA-256** in `scripts/lib/`, following the existing `OV_WHEEL_SHA256`
+  pattern — this repo already treats "pinned version + pinned hash in an SSOT lib" as the way to
+  vendor a third-party binary, and reusing it keeps the integrity check uniform.
+
+Note on signatures: the release assets carry **minisign** signatures (`.minisig`), which verify
+against ccache's published public key via `minisign -V` — this is *not* a GitHub build attestation,
+so `gh attestation verify` does not apply and no sigstore bundle is published alongside. Our own
+pinned SHA-256 is the stronger control for this use anyway: it asserts the exact bytes we tested,
+requires no additional tooling inside the container, and matches how the OpenVINO wheel is already
+vendored. (`gh` is also not present in the manylinux containers — the reason the gate's download
+step runs in a separate ubuntu job.)
 
 ### Not the PATH shim
 
@@ -164,16 +199,29 @@ Tune upward once real hit rates are known.
 inside the key's `hashFiles` set.** Otherwise raising the threshold changes the cache key and
 invalidates every cache, making the tuning step expensive precisely when we want it cheap.
 
-Hit rate is defined as `(direct hits + preprocessed hits) / (direct hits + preprocessed hits +
-misses)`, computed over the counters ccache reports for **that run only** — `ccache -z` must zero
-the statistics after restoring the cache and before the build, or the restored cache's lifetime
+Hit rate is defined as:
+
+```
+(direct_cache_hit + preprocessed_cache_hit)
+-------------------------------------------------------
+(direct_cache_hit + preprocessed_cache_hit + cache_miss)
+```
+
+computed over the counters ccache reports for **that run only** — `ccache -z` must zero the
+statistics after restoring the cache and before the build, or the restored cache's lifetime
 counters would be measured instead of this run's, and the number would drift upward forever
 regardless of what actually happened.
 
-Implementation note: the container ships ccache **3.7.7**, whose `-s` output differs from 4.x. The
-parser must target the 3.x format (`cache hit (direct)`, `cache hit (preprocessed)`, `cache miss`)
-and be tested against real captured output, not assumed. A parser that silently yields 0 hits would
-fail every run; one that silently yields 100% would make the gate vacuous.
+Read the counters with **`ccache --print-stats`**, not `ccache -s`. Pinning 4.13.6 (rather than
+inheriting dnf's 3.7.7) buys a tab-separated machine-readable format, so the parser is a `grep`/
+`awk` over stable key names instead of a regex over prose that changes between versions. The three
+key names above are verified against real 4.13.6 output in the manylinux container, not assumed.
+For reference, `ccache -s` in 4.x prints only a size summary by default — the detailed counters
+need `-v` — which is another reason to use `--print-stats`.
+
+The parser still needs a guard: it must fail loudly if the expected keys are absent, because a
+parser that silently yields 0 hits fails every run, and one that silently yields 100% makes the
+whole check vacuous.
 
 ## Expected outcome — falsifiable
 
@@ -198,8 +246,11 @@ makes rather than an assumption it relies on.
    below 2GB. **Revisit after the first measurement.**
 2. **First-run regression.** Any PR whose key is novel pays ccache overhead plus upload. Acceptable
    for a gate; it is one reason this stays out of `release.yml`.
-3. **ccache 3.7.7 is old** (current is 4.x). Adequate — direct/preprocessed modes both exist — but
-   its stats format and defaults differ from documentation written for 4.x.
+3. **A pinned ccache is one more third-party binary to keep current.** 4.13.6 is pinned by version
+   and SHA-256, so it will not drift on its own — but it also will not pick up upstream fixes
+   without a deliberate bump, and bumping it changes `scripts/lib/` and therefore invalidates every
+   cache. That invalidation is correct (cache formats can change between versions) but means a
+   ccache bump costs one full-price run per job.
 4. **`install_executorch.sh --clean` would wipe the cache.** Not used today; noted so a future
    change does not silently negate this work.
 
