@@ -51,6 +51,51 @@ assert_eq "$?" "0" "compare.py: explicit loose tolerance is honoured"
 python3 "$cmp_py" "$tmp/ref.bin" >/dev/null 2>&1
 assert_eq "$?" "2" "compare.py: missing argument is a usage error"
 
+# --- the bf16 tolerance, pinned by test rather than by comment -------------------------------
+# OpenVINO picks inference precision from the CPU it lands on, so a bf16-capable runner computes
+# the same model in bf16 and lands ~2.5e-3 from the f32 eager golden. Both answers are correct;
+# this repo ships packaging, not kernels. The value below is the real diff measured when the gate
+# failed on such a runner (v1.3.1-9 era, extras-gate run 31926391167).
+mkfloats "$tmp/bf16.bin" 1.00249892 2.0 3.0
+python3 "$cmp_py" "$tmp/bf16.bin" "$tmp/ref.bin" 1e-2 >/dev/null 2>&1
+assert_eq "$?" "0" "compare.py: a bf16-magnitude diff passes at the gate's 1e-2"
+python3 "$cmp_py" "$tmp/bf16.bin" "$tmp/ref.bin" 1e-4 >/dev/null 2>&1
+assert_eq "$?" "1" "compare.py: the same diff fails at the old 1e-4 (the flake being fixed)"
+
+# The tolerance only helps if the GATE actually passes it; a future edit dropping the argument
+# would silently restore the flake, and only a bf16 runner draw would notice.
+# shellcheck disable=SC2016  # matching the gate's literal text, including an unexpanded $refbin
+if grep -qE 'compare\.py".*"\$refbin" 1e-2' "$gate"; then
+  printf 'ok: gate invokes compare.py with the bf16-tolerant 1e-2\n'
+else
+  printf 'FAIL: gate must pass 1e-2 to compare.py\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1))
+fi
+
+# Reporting the precision is the other half: a silent shift to bf16 must stay visible in the log
+# so the next person does not re-derive it from scratch. Match the probe INVOCATION and the line
+# that extracts its output, not the bare word "PRECISION" -- this file's own comments contain that
+# word, so a looser grep would be satisfied by the documentation of the thing it is checking.
+if grep -q 'devices_probe' "$gate"; then
+  printf 'ok: gate asks the bundle (devices_probe), not /proc/cpuinfo\n'
+else
+  printf 'FAIL: gate must query the bundle through devices_probe\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1))
+fi
+if grep -q 'PRECISION\\|CAPABILITIES' "$gate"; then
+  printf 'ok: gate extracts the precision line from the probe output\n'
+else
+  printf 'FAIL: gate must print the probe PRECISION/CAPABILITIES lines\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1))
+fi
+
+# --- devices_probe.c compiles ----------------------------------------------------------------
+# It needs no OpenVINO headers (dlopen + dlsym only), so a syntax check is hermetic. Nothing else
+# compiles it without a vendored bundle, i.e. without paying for a full gate run first.
+if command -v gcc >/dev/null 2>&1; then
+  gcc -fsyntax-only "$here/openvino/devices_probe.c" 2>/dev/null
+  assert_eq "$?" "0" "devices_probe.c compiles"
+else
+  printf 'FAIL: gcc is required to syntax-check devices_probe.c\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1))
+fi
+
 # --- gate script: input validation ----------------------------------------------------------
 bash "$gate" >/dev/null 2>&1
 assert_eq "$?" "1" "gate: no arguments is a usage error"

@@ -8,7 +8,8 @@
 #      gate could pass vacuously on a .pte that never reached OpenVINO at all.
 #   2. EXECUTION — run with OPENVINO_LIB_PATH pointing into the bundle and LD_LIBRARY_PATH
 #      explicitly unset, so the bundle must self-resolve via $ORIGIN exactly as a consumer's will.
-#   3. CORRECTNESS — compare against the fixture's out.bin at 1e-4.
+#   3. CORRECTNESS — compare against the fixture's out.bin at 1e-2, after reporting the precision
+#      OpenVINO chose. See the stage 3 comment for why the tolerance is not tighter.
 #
 # Stages 1 and 2 are separate PROCESSES, which is a requirement rather than a style choice: the
 # delegate resolves libopenvino_c.so behind a std::call_once with no retry, so a failed resolution
@@ -87,9 +88,33 @@ env -u LD_LIBRARY_PATH OPENVINO_LIB_PATH="$lib" \
 echo "ok: fixture executed through the OpenVINO delegate"
 
 echo "== Stage 3: compare delegated output to the eager golden =="
+# Report what precision the bundle will infer at, BEFORE the numbers, so a reader never has to
+# guess why the diff is what it is. Asked of the bundle under test through the C API rather than
+# of /proc/cpuinfo (which describes the CPU, not OpenVINO's choice) or of the python openvino
+# wheel (which would be a different OpenVINO than the one being gated, and would give stage 3 the
+# AOT dependency compare.py exists to avoid). Non-fatal: this is diagnostics, not an assertion.
+# `if`, not an `&&`/`||` chain, for the reason documented at the top of this file — and so a probe
+# that runs but prints nothing is not mistaken for a probe that failed.
+if gcc "$HERE/openvino/devices_probe.c" -o "$SCRATCH/devices_probe" -ldl 2>/dev/null \
+   && env -u LD_LIBRARY_PATH "$SCRATCH/devices_probe" "$lib" >"$SCRATCH/probe.out" 2>/dev/null
+then
+  sed -n 's/^\(PRECISION\|CAPABILITIES\) /  ov \1 /p' "$SCRATCH/probe.out"
+else
+  echo "  ov PRECISION (probe unavailable)"
+fi
+
 # NOTE: this feeds the fixture's own in.bin. ExecuTorch's executor_runner synthesizes its inputs
 # (ones) instead of reading a file, so comparing ITS output against out.bin reports a spurious
 # mismatch — the reason this gate uses a purpose-built runner.
-python3 "$HERE/openvino/compare.py" "$SCRATCH/got.bin" "$refbin"
+#
+# TOLERANCE: 1e-2, not the 1e-4 this used to carry. OpenVINO selects inference precision from the
+# CPU it lands on, and GitHub's runner pool is mixed: on a bf16-capable machine (avx512_bf16/AMX)
+# the delegate computes in bf16 and lands ~2.5e-3 from the f32 eager golden, where an older runner
+# lands at ~6e-8. Both are CORRECT OpenVINO results, so a tolerance between them was asserting a
+# property this repo does not own — which runner it drew — and failed the gate at random (first
+# seen in extras-gate run 31926391167). What stage 3 exists to catch is a delegate that returned
+# zeros, garbage, or the wrong model; every one of those is orders of magnitude out and still
+# fails at 1e-2. The precision line above keeps a silent shift visible rather than invisible.
+python3 "$HERE/openvino/compare.py" "$SCRATCH/got.bin" "$refbin" 1e-2
 
 echo "GATE PASS: fixture .pte runs on the vendored bundle and matches the eager golden"
