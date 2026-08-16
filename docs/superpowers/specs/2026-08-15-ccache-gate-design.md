@@ -287,8 +287,22 @@ key, and that key hashes the recipe inputs it actually compiles from (`build-run
 *different* inputs hash (restore falls back to the loose `-et<ver>-` prefix → enforcement off,
 reporting only), never an exact match that would fail the gate for doing the right thing.
 
-**Real cache size: ~50 MB per job** (vs the 2G cap). Two caches × every open PR against the 10GB
-repo budget cannot thrash at 50 MB each, so the cap stays 2G (risk 1, resolved by measurement).
+### Measured — phase two (`full-build`, same PR)
+
+| run | commit | `full-build` duration | hit rate | cache |
+|---|---|---|---|---|
+| 31919650432 (cold) | `d941ed9` | 993s | 1.4% (26/1898) | not found; saved 31.9 MB |
+| 31920354817 (warm) | `4e5ff58` (empty) | **271s** | **100.0%** (1898/1898) | restored 31 MB, re-saved |
+
+Same shape as `full-aot`: the cold run lands inside the 796–1080s baseline band (993s) with a ~0%
+hit rate and enforcement correctly off (`matched: none`); the warm run restores, hits 100.0%, and
+engages enforcement for the first time on this job — passing on 100% ≫ 1%. Duration falls to 271s
+(−73%). Wall clock for the `full` gate is now ~7–8 min (max of the two heavy jobs plus `full-gates`),
+down from the 1369–1541s (~23–26 min) pre-ccache band.
+
+**Real cache size: ~31–51 MB per job** (full-build 31.9 MB, full-aot 49–51 MB; vs the 2G cap). Two
+caches × every open PR against the 10GB repo budget cannot thrash at these sizes, so the cap stays
+2G (risk 1, resolved by measurement).
 
 ## Known risks
 
