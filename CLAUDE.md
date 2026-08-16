@@ -187,6 +187,17 @@ downstream" and `docs/handover-to-engine.md`.
 
 - Shell scripts run under `set -euo pipefail`. `grep` exits 1 on no-match, which aborts
   under `set -e`/`pipefail` — existing code guards these with `|| true`; keep that pattern.
+- **Don't embed complex Python in a shell script.** Shell scripts stay shell — this is not a
+  push toward Python. It is a rule about mixing two languages in one file. A short inline
+  one-liner is fine (reading a field out of `gh api` JSON, a `python3 -c "import yaml;
+  yaml.safe_load(open(f))"` parse check). Real logic is not: helper functions, control flow,
+  accumulated assertion state — anything worth running or testing on its own. That goes in a
+  `.py` file the script calls, because a heredoc has no linting, can't be run directly, and
+  gives tracebacks pointing at `<stdin>` with line numbers matching nothing. Structural tests
+  that parse workflow YAML are the usual case: put the checks in `test/lib/<name>.py` and keep
+  a thin `<name>.test.sh` invoker, which `test/run.sh`'s `*.test.sh` glob still needs.
+  (`test/extras_gate_full_split.test.sh` predates this rule and violates it — fix it when
+  next touched, don't copy it.)
 - The recipe is idempotent: re-runs must not fail on already-patched sources or existing
   build trees.
 - Design docs and plans live in `docs/superpowers/{specs,plans,notes}/`; op-specific docs
