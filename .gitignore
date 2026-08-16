@@ -2,6 +2,8 @@
 # narrower pattern missed. A local build then leaves ~1200 files of installed ExecuTorch sitting
 # untracked-but-not-ignored, where a `git add -A` sweeps them into a commit.
 out*/
+# The gate's ccache directory (full-aot job); must never be committed.
+.ccache/
 et-build/
 spike/*.log
 et-build-*/

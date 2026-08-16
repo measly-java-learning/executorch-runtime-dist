@@ -58,7 +58,8 @@ hash-pinned tarballs. Pushing a version tag is the **only** CI trigger.
 3. `.github/workflows/release.yml` takes it from there: it checks out this repo
    and a matching checkout of `pytorch/executorch` (with submodules) at the
    derived ExecuTorch tag, builds all three variants (`bare`/`logging`/`devtools`)
-   for `linux-x86_64` inside `quay.io/pypa/manylinux_2_28_x86_64`, attests each
+   for `linux-x86_64` inside the digest-pinned manylinux_2_28 container (`.build-image`),
+   attests each
    tarball's build provenance, and publishes a GitHub Release containing:
    - the 3 tarballs and their matching `.sha256` files
    - a ready-to-paste `EtRuntimePin.cmake`
@@ -72,7 +73,7 @@ hash-pinned tarballs. Pushing a version tag is the **only** CI trigger.
 ## Building locally
 
 `build-runtime.sh` is the single entrypoint for the build recipe.
-It must run **inside** the `quay.io/pypa/manylinux_2_28_x86_64` container, and
+It must run **inside** the manylinux_2_28 container pinned by digest in `.build-image`, and
 it never clones ExecuTorch itself — the caller always supplies the source tree:
 
 ```
@@ -96,7 +97,7 @@ container — the mount stands in for CI's `actions/checkout` of ExecuTorch:
 
 ```bash
 docker run --rm -v "$PWD":/work -v /path/to/executorch:/executorch \
-  -w /work quay.io/pypa/manylinux_2_28_x86_64 \
+  -w /work "$(cat .build-image)" \
   bash -lc 'export PATH=/opt/python/cp312-cp312/bin:$PATH; \
     ./build-runtime.sh --variant logging --prefix /work/out --et-src /executorch'
 ```

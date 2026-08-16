@@ -12,8 +12,8 @@ env:
   # (e.g. linux-aarch64) later is a one-line append here; no job-level YAML changes needed.
   PLATFORMS: >-
     [
-        {"platform":"linux-x86_64","container":"quay.io/pypa/manylinux_2_28_x86_64","runs_on":"ubuntu-latest"},
-        {"platform":"linux-aarch64","container":"quay.io/pypa/manylinux_2_28_aarch64","runs_on":"ubuntu-24.04-arm"}
+        {"platform":"linux-x86_64","runs_on":"ubuntu-latest"},
+        {"platform":"linux-aarch64","runs_on":"ubuntu-24.04-arm"}
     ]
 
 jobs:
@@ -24,7 +24,13 @@ jobs:
       contents: read
     outputs:
       platforms: ${{ steps.platforms.outputs.platforms }}
+      image: ${{ steps.img.outputs.image }}
     steps:
+      # REQUIRED by the `img` step below, which reads .build-image off disk. The `platforms` step
+      # only reads workflow env, so nothing forced a checkout here until the pin arrived - and
+      # release.yml has no PR gate, so an empty workspace would only surface on a real release tag,
+      # failing setup and cascading to build/openvino/pin/release.
+      - uses: actions/checkout@v7
         # `tee -a` used in place of `>>` to simplify debugging
       - id: platforms
         run: |
@@ -33,12 +39,20 @@ jobs:
             echo "$PLATFORMS"
             echo "EOF"
           } | tee -a "$GITHUB_OUTPUT"
+      - id: img
+        # Same reason as extras-gate's classify: container.image resolves before steps, so the
+        # digest in .build-image reaches the container jobs as an output, not via $GITHUB_ENV.
+        run: |
+          set -euo pipefail
+          image="$(cat .build-image)"
+          test -n "$image" || { echo "empty .build-image" >&2; exit 1; }
+          echo "image=$image" | tee -a "$GITHUB_OUTPUT"
 
   build:
     needs: setup
     runs-on: ${{ matrix.combo.runs_on }}
     container:
-      image: ${{ matrix.combo.container }}
+      image: ${{ needs.setup.outputs.image }}
     permissions:
       contents: read
       id-token: write
@@ -215,9 +229,10 @@ jobs:
   # OpenVINO version rather than ET version. Runs in manylinux for the same glibc floor as the
   # runtime tarballs.
   openvino:
+    needs: setup          # for the .build-image digest, same pin as every other container job
     runs-on: ubuntu-latest
     container:
-      image: quay.io/pypa/manylinux_2_28_x86_64
+      image: ${{ needs.setup.outputs.image }}
     permissions:
       contents: read
       id-token: write
