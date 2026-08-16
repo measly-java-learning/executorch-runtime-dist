@@ -12,3 +12,14 @@ etnp-extras-*/
 dist/
 __pycache__/
 *.pyc
+# Python virtual environments. A bare `venv/` was committed once already (1945 files, ~99MB in
+# 1c2669f) by exactly the `git add -A` sweep described at the top of this file, and a checked-in
+# venv is dead weight either way: it bakes absolute interpreter paths, so it is unusable on any
+# other machine. Cover the common names rather than the one that bit us -- `*-venv/` catches the
+# `.export-venv/` that extras/README.md tells you to create right here in the repo.
+venv/
+.venv/
+env/
+ENV/
+*-venv/
+*.venv/
