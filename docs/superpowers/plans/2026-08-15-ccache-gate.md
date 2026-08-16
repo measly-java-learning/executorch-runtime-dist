@@ -6,13 +6,15 @@
 with ccache, enforced by a hit-rate floor so the cache cannot silently stop working.
 
 **Architecture:** A pinned ccache binary is fetched from its upstream GitHub release and verified
-against a SHA-256 held in a new `scripts/lib/ccache.sh` SSOT. `actions/cache` restores a per-job
-cache into `$GITHUB_WORKSPACE/.ccache` before the build and saves it after. ExecuTorch's own CMake
-auto-detects ccache; the `pytorch_tokenizers` sub-build needs an explicit `CMAKE_ARGS` injection.
-After the build, `ccache --print-stats` is parsed, written to the job summary, and enforced against
-a floor — but only when the cache key matched exactly.
+against a SHA-256 held in a new `scripts/lib/ccache.sh` SSOT. A `actions/cache/restore` +
+`actions/cache/save` pair moves a per-job cache through `$GITHUB_WORKSPACE/.ccache`. ExecuTorch's
+own CMake auto-detects ccache; the `pytorch_tokenizers` sub-build needs an explicit `CMAKE_ARGS`
+injection. After the build, `ccache --print-stats` is parsed, written to the job summary, and
+enforced against a floor — but only when the restored cache came from the same build inputs.
 
-**Tech Stack:** bash, GitHub Actions (`actions/cache@v4`), ccache 4.13.6, manylinux_2_28 container.
+**Tech Stack:** bash, GitHub Actions (`actions/cache/restore@v4` + `actions/cache/save@v4` —
+the split, not the combined action; only the split exposes `cache-matched-key`), ccache 4.13.6,
+the digest-pinned manylinux_2_28 container from `.build-image`.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-ccache-gate-design.md`
 
@@ -22,13 +24,25 @@ a floor — but only when the cache key matched exactly.
   path, so caching it buys zero wall clock. Do not wire it in this plan.
 - **Success metric is `full-aot`'s own duration** (baseline band 1250–1468s, ~218s of noise), never gate wall clock and
   never `full-build`.
-- **Threshold value MUST live in the workflow `env` block**, never in `scripts/lib/*` or
-  `build-runtime.sh` — those are inside the cache key's `hashFiles` set, so putting it there would
-  make every threshold tweak invalidate every cache.
+- **Threshold value MUST live in the workflow `env` block**, never in a file the cache key hashes
+  (see the key below), so tuning it cannot invalidate every cache.
+- **The cache key hashes ONLY what changes full-aot's compiled objects: `.build-image` and
+  `scripts/lib/ccache.sh`.** Nothing else. `full-aot` runs `checkout-executorch` +
+  `install_executorch.sh` — it never runs `build-runtime.sh` and never applies `patches/*`, so
+  hashing those would throw away a 20-minute cache for changes that cannot affect one object it
+  compiles. Do NOT add `scripts/lib/*.sh` as a glob either: that sweeps in `openvino.sh` and
+  `naming.sh`, which are actively edited and affect packaging, not compilation. Under-hashing is
+  safe here (ccache re-hashes every object, so a mismatched restore merely misses); over-hashing
+  costs a full-price rebuild for nothing.
 - **Initial threshold: 1%.** Not a guess at the real rate; it catches only "the cache stopped
   working entirely" and cannot flap. Tune up later.
-- **Enforce only on an exact key match** (`cache-hit == 'true'`). A prefix restore-key hit must
-  report but never fail — the first run after an ET pin bump legitimately misses everything.
+- **Enforce only when the restored cache came from the SAME build inputs** — i.e. when
+  `cache-matched-key` starts with the primary key minus its `-<sha>` suffix. A restore from a
+  different input set (a new container digest, a ccache bump) must report but never fail: that run
+  legitimately misses everything.
+  **Do NOT use `cache-hit == 'true'`.** It means an *exact* primary-key match, and the primary key
+  ends in `github.sha`, so it is true only when re-running an identical commit — enforcement would
+  never fire on a real PR, leaving a guard that looks present and checks nothing.
 - `CCACHE_DIR=$GITHUB_WORKSPACE/.ccache` (the mounted volume; the default `/root/.ccache` is in the
   container's ephemeral layer).
 - `ccache -M 2G` and `ccache -z` before the build.
@@ -46,7 +60,8 @@ a floor — but only when the cache key matched exactly.
 | `scripts/install-ccache.sh` (new) | Download → verify SHA-256 → install to `/usr/local/bin`. Idempotent. |
 | `scripts/ccache-stats.sh` (new) | Parse `--print-stats`, emit summary, enforce the floor. |
 | `test/ccache_lib.test.sh` (new) | Hermetic: SSOT shape, installer/stats behaviour on fixtures. |
-| `test/ccache_gate_wiring.test.sh` (new) | Hermetic: the workflow wires it correctly. |
+| `test/ccache_gate_wiring.test.sh` (new) | Thin invoker for the wiring guard. |
+| `test/lib/check_ccache_wiring.py` (new) | The wiring checks (no complex Python in shell). |
 | `.github/workflows/extras-gate.yml` | `full-aot` gains install + cache + stats steps. |
 | `.gitignore` | ignore `.ccache/` |
 
@@ -75,7 +90,8 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 . "$root/scripts/lib/ccache.sh"
 
-assert_eq "4.13.6" "$CCACHE_VERSION" "pinned ccache version"
+# NB: assert.sh takes (actual, expected, msg) in that order.
+assert_eq "$CCACHE_VERSION" "4.13.6" "pinned ccache version"
 # a sha256 is 64 lowercase hex chars - catches a truncated or placeholder paste
 if printf '%s' "$CCACHE_SHA256" | grep -qE '^[0-9a-f]{64}$'; then
   echo "ok: CCACHE_SHA256 is a well-formed sha256"
@@ -412,6 +428,11 @@ git commit -m "feat(ccache): hit-rate parser with a loud-failure guard"
 - Modify: `.github/workflows/extras-gate.yml` (the `full-aot` job)
 - Modify: `.gitignore`
 
+**Interfaces:**
+- Consumes: `scripts/install-ccache.sh` (Task 2), `scripts/ccache-stats.sh` (Task 3).
+- Produces: the `ccache-restore` step id, whose `cache-primary-key` and `cache-matched-key`
+  outputs the stats step reads. Task 5's guard asserts this wiring.
+
 - [ ] **Step 1: Add `.ccache/` to `.gitignore`**
 
 ```
@@ -444,16 +465,23 @@ After `- uses: actions/checkout@v7` and BEFORE `Install the AOT toolchain`:
         run: ./scripts/install-ccache.sh
       - name: Restore ccache
         id: ccache-restore
-        uses: actions/cache@v4
+        # RESTORE + SAVE as separate actions, not the combined `actions/cache`. The combined action
+        # exposes only `cache-hit` (an EXACT primary-key match). Our primary key ends in
+        # `github.sha`, so an exact match happens only when re-running an identical commit - every
+        # normal push restores via a restore-key instead. Enforcing on `cache-hit` would therefore
+        # mean the threshold NEVER fires on a real PR: a vacuous guard. `actions/cache/restore`
+        # additionally exposes `cache-matched-key`, which is what makes the enforcement condition
+        # below expressible.
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          # <sha> suffix is REQUIRED: actions/cache never overwrites an existing key, so without it
-          # the cache would be written once and then frozen forever. restore-keys supply the
-          # nearest prior cache. This is hit-rate tuning only - ccache re-hashes every object, so a
-          # stale restore cannot produce a wrong artifact, only a slower build.
-          key: ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-${{ hashFiles('.build-image', 'patches/*.patch', 'scripts/lib/*.sh', 'build-runtime.sh') }}-${{ github.sha }}
+          # <sha> suffix is REQUIRED: a cache key is write-once, so without it the cache would be
+          # written on the first run and then frozen forever. restore-keys supply the nearest prior
+          # cache. This is hit-rate tuning only - ccache re-hashes every object, so a stale restore
+          # cannot produce a wrong artifact, only a slower build.
+          key: ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-${{ hashFiles('.build-image', 'scripts/lib/ccache.sh') }}-${{ github.sha }}
           restore-keys: |
-            ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-${{ hashFiles('.build-image', 'patches/*.patch', 'scripts/lib/*.sh', 'build-runtime.sh') }}-
+            ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-${{ hashFiles('.build-image', 'scripts/lib/ccache.sh') }}-
             ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-
       - name: Configure ccache
         # -z zeroes the counters so the stats step measures THIS run, not the restored cache's
@@ -483,13 +511,39 @@ Then modify the existing `Install the AOT toolchain` step to export `CMAKE_ARGS`
 Immediately after that step:
 
 ```yaml
+      - name: Save ccache
+        # Explicit save, because the restore/save split has no automatic post-step. `always()` so a
+        # failed build still banks the objects it did compile - they are valid regardless of why
+        # the job failed, and re-compiling them next run is pure waste.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
       - name: ccache stats
-        # Enforce ONLY on an exact key match. On a restore-key (prefix) hit the cache is from a
-        # different input set - the first run after an ET pin bump legitimately misses everything,
-        # and failing it would punish the run for doing the right thing.
+        # Enforce only when the restored cache came from the SAME build inputs. `cache-matched-key`
+        # reports which key actually matched; if it carries our inputs hash, the restored objects
+        # are the ones this build should be reusing and a low hit rate means ccache is broken. If
+        # it matched only the looser `-et<ver>-` prefix (a different image or ccache version), the
+        # run legitimately misses everything and must NOT be failed for it.
+        #
+        # Deliberately NOT `cache-hit == 'true'`: that requires an exact match including the sha,
+        # which only happens when re-running an identical commit, so enforcement would never fire.
         env:
-          CCACHE_ENFORCE: ${{ steps.ccache-restore.outputs.cache-hit == 'true' && '1' || '0' }}
-        run: ./scripts/ccache-stats.sh
+          CCACHE_PRIMARY_KEY: ${{ steps.ccache-restore.outputs.cache-primary-key }}
+          CCACHE_MATCHED_KEY: ${{ steps.ccache-restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+          # Strip the trailing -<sha> to get the inputs-identifying prefix.
+          prefix="${CCACHE_PRIMARY_KEY%-*}-"
+          if [ -n "$CCACHE_MATCHED_KEY" ] && [ "${CCACHE_MATCHED_KEY#"$prefix"}" != "$CCACHE_MATCHED_KEY" ]; then
+            echo "restored a cache built from identical inputs - enforcing the floor"
+            export CCACHE_ENFORCE=1
+          else
+            echo "no cache, or one from different inputs (matched: ${CCACHE_MATCHED_KEY:-none}) - reporting only"
+            export CCACHE_ENFORCE=0
+          fi
+          ./scripts/ccache-stats.sh
 ```
 
 - [ ] **Step 4: Verify the YAML parses and the suite is green**
@@ -568,22 +622,38 @@ def main(path: str) -> int:
     ok("CCACHE_MIN_HIT_RATE" in env, "threshold lives in workflow env, not scripts/lib")
     ok(str(env.get("CCACHE_DIR", "")).endswith(".ccache"), "CCACHE_DIR is under the workspace")
 
-    cache_steps = [s for s in steps if "actions/cache" in str(s.get("uses", ""))]
-    ok(len(cache_steps) == 1, "exactly one cache step")
-    if cache_steps:
-        with_ = cache_steps[0]["with"]
-        key = str(with_["key"])
-        ok("github.sha" in key, "key has a unique suffix (actions/cache never overwrites a key)")
-        ok("hashFiles" in key, "key is invalidated by patches/lib/recipe changes")
-        ok("restore-keys" in with_, "prefix fallback exists so a novel key still starts warm")
+    restore = [s for s in steps if "actions/cache/restore" in str(s.get("uses", ""))]
+    save = [s for s in steps if "actions/cache/save" in str(s.get("uses", ""))]
+    ok(len(restore) == 1, "exactly one cache restore step")
+    ok(len(save) == 1, "exactly one cache save step")
+    # The COMBINED action exposes only cache-hit, which cannot express the condition below.
+    combined = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")]
+    ok(not combined, "uses the restore/save split, not the combined actions/cache")
 
-    # Enforcement must be conditional on an EXACT match, never a prefix restore.
+    if restore:
+        with_ = restore[0]["with"]
+        key = str(with_["key"])
+        ok("github.sha" in key, "key has a unique suffix (a cache key is write-once)")
+        ok("hashFiles" in key, "key tracks the build inputs")
+        ok("restore-keys" in with_, "prefix fallback exists so a novel key still starts warm")
+        # OVER-hashing costs a ~20 minute rebuild for a change that cannot affect a single object
+        # full-aot compiles: it never runs build-runtime.sh and never applies patches/*.
+        ok("build-runtime.sh" not in key,
+           "key does NOT hash build-runtime.sh (full-aot never runs it)")
+        ok("patches/" not in key, "key does NOT hash patches/* (full-aot never applies them)")
+        ok("scripts/lib/*.sh" not in key,
+           "key does NOT glob scripts/lib (openvino.sh/naming.sh do not affect compilation)")
+
+    # Enforcement must key off WHICH key matched, not cache-hit: the primary key ends in the sha,
+    # so cache-hit is true only when re-running an identical commit and would never fire on a PR.
     stats = [s for s in steps if "ccache-stats.sh" in str(s.get("run", ""))]
     ok(bool(stats), "a stats step exists")
     if stats:
-        enforce = str(stats[0].get("env", {}).get("CCACHE_ENFORCE", ""))
-        ok("cache-hit" in enforce,
-           "enforcement is gated on an exact cache-key match, not a prefix hit")
+        blob = str(stats[0].get("env", {})) + str(stats[0].get("run", ""))
+        ok("cache-matched-key" in blob,
+           "enforcement compares the MATCHED key, so it can actually fire on a PR")
+        ok("cache-hit" not in blob,
+           "enforcement does not use cache-hit (exact match incl. sha = never fires)")
 
     # Scope discipline: full-build is deliberately NOT wired - it is not on the critical path,
     # so caching it buys zero wall clock. See the plan's global constraints.
