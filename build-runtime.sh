@@ -111,7 +111,7 @@ build_extras() {
   # BEFORE install_executorch.sh provides a full env, and the full build already
   # installed it in phase 1 (redundant here, harmless).
   echo ">> ensuring extras build deps (pyyaml for schema-gen)"
-  pip install -q pyyaml \
+  python -m pip install -q pyyaml \
     || echo ">> WARNING: pyyaml install failed; schema-gen will fail if absent"
   # Place the extras build tree NEXT TO the ET build tree (its sibling), exactly as the
   # pre-refactor inline code did — for both the default and an explicit --build-dir. This
@@ -211,9 +211,14 @@ fi
 # Rather than the full `install_requirements.sh` from the ExecuTorch source,
 # just install the minimal set of deps for our build process
 echo ">> installing python deps"
-pip install -U pip setuptools wheel pyyaml
-pip install ninja
-pip install "$TORCH_SPEC" --index-url https://download.pytorch.org/whl/cpu
+# `python -m pip`, never the bare `pip` console script. On Windows pip cannot upgrade itself
+# through pip.exe -- the running executable is locked, so pip refuses outright and tells you to
+# re-run it this way. It stayed invisible while the runner image happened to ship the newest pip
+# and `-U pip` was a no-op; the day upstream published a newer one, both Windows jobs failed.
+# Harmless on Linux, where the same call works either way.
+python -m pip install -U pip setuptools wheel pyyaml
+python -m pip install ninja
+python -m pip install "$TORCH_SPEC" --index-url https://download.pytorch.org/whl/cpu
 
 echo ">> Toolchain versions"
 cmake --version
