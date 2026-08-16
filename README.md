@@ -124,10 +124,12 @@ the pinned, hash-verified tarball it points at:
 ```cmake
 include(cmake/EtRuntimePin.cmake)
 
+et_runtime_dist_url("logging" "linux-x86_64" ET_URL ET_SHA)
+
 include(FetchContent)
 FetchContent_Declare(et_runtime
-  URL       "${ET_RUNTIME_URL_logging_linux-x86_64}"
-  URL_HASH  "SHA256=${ET_RUNTIME_SHA256_logging_linux-x86_64}"
+  URL       "${ET_URL}"
+  URL_HASH  "SHA256=${ET_SHA}"
 )
 FetchContent_MakeAvailable(et_runtime)
 
@@ -138,6 +140,14 @@ find_package(ExecuTorch REQUIRED
 Because the pin file records both the download URL and the SHA-256 hash for
 every variant/platform pair, `FetchContent` re-verifies the tarball on every
 build — the same guarantee `sha256sum -c` gives you locally.
+
+Select rows through `et_runtime_dist_url(<variant> <platform> <out_url> <out_sha>)` rather than
+reading `ET_RUNTIME_URL_<variant>_<platform>` directly. The variables are still there and still
+supported, but building their names from your own variant/platform values makes a combination this
+release never published expand to an empty string — which surfaces as a puzzling `FetchContent`
+error rather than as the real problem. The selector fails at configure time instead, naming the
+variant and platform it could not find. Only the pair it returns is ever downloaded, so unused
+variants cost nothing.
 
 ### Choosing a Windows artifact: `/MD` vs `/MT`
 
@@ -162,9 +172,10 @@ do not rely on the linker to tell you.
 
 ```cmake
 # JNI consumer: select the static-CRT artifact
+et_runtime_dist_url("logging" "windows-x86_64-static" ET_URL ET_SHA)
 FetchContent_Declare(et_runtime
-  URL       "${ET_RUNTIME_URL_logging_windows-x86_64-static}"
-  URL_HASH  "SHA256=${ET_RUNTIME_SHA256_logging_windows-x86_64-static}"
+  URL       "${ET_URL}"
+  URL_HASH  "SHA256=${ET_SHA}"
 )
 # ...and compile your own JNI target to match:
 set_property(TARGET my_jni_lib PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")

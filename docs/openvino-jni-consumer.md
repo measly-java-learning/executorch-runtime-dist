@@ -36,6 +36,31 @@ model at load with `failed to import model for device 'CPU' (status=-1)`.
 `RPATH=$ORIGIN`, so a flat directory resolves the entire graph with no `LD_LIBRARY_PATH`, no
 `ldconfig`, and no system install. Splitting them across directories breaks that.
 
+## Getting the bundle
+
+The release pins it in `EtRuntimePin.cmake`, so fetch it the same hash-verified way you fetch the
+runtime tarball. Two things make this conditional rather than unconditional: a release that did not
+run the OpenVINO job publishes no bundle and therefore defines none of these vars, and the bundle is
+built for one platform while the pin is a single file every platform's build includes. Guard on both
+by comparing `ET_RUNTIME_OPENVINO_PLATFORM` against the row you are building:
+
+```cmake
+include(cmake/EtRuntimePin.cmake)
+
+if(DEFINED ET_RUNTIME_OPENVINO_URL AND ET_RUNTIME_ROW STREQUAL ET_RUNTIME_OPENVINO_PLATFORM)
+  include(FetchContent)
+  FetchContent_Declare(openvino_runtime
+    URL       "${ET_RUNTIME_OPENVINO_URL}"
+    URL_HASH  "SHA256=${ET_RUNTIME_OPENVINO_SHA256}")
+  FetchContent_MakeAvailable(openvino_runtime)
+  # This is the path to hand to setenv() below -- the file, not the directory.
+  set(OPENVINO_C_LIB "${openvino_runtime_SOURCE_DIR}/lib/libopenvino_c.so")
+endif()
+```
+
+Vendor that `lib/` directory into your jar as described above, and resolve the extracted
+`libopenvino_c.so` at runtime — the build-time path does not survive into the shipped jar.
+
 ## The critical part: you cannot use `LD_LIBRARY_PATH` from Java
 
 glibc's dynamic loader reads `LD_LIBRARY_PATH` **once, at process start**. A JVM cannot change
