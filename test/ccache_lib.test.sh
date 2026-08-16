@@ -24,4 +24,15 @@ case "$CCACHE_MEMBER" in
   *"${CCACHE_VERSION}"*/ccache) echo "ok: archive member is derived from CCACHE_VERSION" ;;
   *) echo "FAIL: CCACHE_MEMBER not version-derived: $CCACHE_MEMBER" >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
 esac
+# The installer must REFUSE a tarball whose hash does not match. This is the whole point of
+# pinning; an installer that downloads and runs whatever it got is not a pin.
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+printf 'not a real tarball' > "$tmp/fake.tar.gz"
+if CCACHE_LOCAL_ARCHIVE="$tmp/fake.tar.gz" CCACHE_PREFIX_DIR="$tmp/bin" \
+     "$root/scripts/install-ccache.sh" >/dev/null 2>&1; then
+  echo "FAIL: installer accepted a tarball with the wrong hash" >&2
+  ASSERT_FAILS=$((ASSERT_FAILS+1))
+else
+  echo "ok: installer rejects a hash mismatch"
+fi
 exit "$ASSERT_FAILS"
