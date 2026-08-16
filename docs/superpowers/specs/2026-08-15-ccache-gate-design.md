@@ -183,6 +183,18 @@ restore-keys:
   unrelated upstream image rebuild would fail the gate with an error blaming ccache. Pinning the
   image in a repo file is what makes this expressible as `hashFiles` at all.
 
+> **Implemented hash sets (PR #32).** The two jobs have different compiled-input surfaces, so they
+> hash different sets:
+> - `full-aot`: `hashFiles('.build-image', 'scripts/lib/ccache.sh')` — it never runs
+>   `build-runtime.sh` and never applies `patches/*`, so hashing those would cold-miss a ~20-minute
+>   cache for changes that cannot affect a single object it compiles (under-hashing is safe: ccache
+>   re-hashes every object, a mismatched restore merely misses).
+> - `full-build`: `hashFiles('.build-image', 'build-runtime.sh', 'patches/*', 'scripts/lib/*.sh')` —
+>   it compiles from all of them, and the enforcement floor requires recipe changes to change the
+>   inputs hash (otherwise a recipe edit restores an "identical-inputs" cache that then misses
+>   everything and fails the gate). `scripts/lib/ccache.sh` sits inside the `scripts/lib/*.sh` glob,
+>   so a ccache bump correctly invalidates both caches.
+
 ## Verification and enforcement
 
 A cache that silently stops hitting is invisible: CI just gets slow again, which is precisely the
@@ -243,12 +255,47 @@ below `full-build`'s ~800–1080s band, at which point `full-build` becomes the 
 second cache earns its keep — that is the trigger for phase two, and it is a prediction this design
 makes rather than an assumption it relies on.
 
+### Measured — 2026-08-16 (PR #32)
+
+The two-run measurement on the first PR implementing this design:
+
+| run | commit | `full-aot` duration | hit rate | cache |
+|---|---|---|---|---|
+| 31917183475 (cold) | `bca3fbb` | 1491s | 0.1% (1/1917) | not found; saved 50.9 MB |
+| 31918839955 (warm) | `aa1e579` (empty) | **372s** | **100.0%** (1917/1917) | restored 49 MB, re-saved |
+
+- **Cold run** behaved as predicted: cache miss on restore, hit rate ~0%, duration *at or above*
+  the 1250–1468s baseline band (1491s, from ccache overhead plus the upload) — the slower cold run
+  is expected, not a regression.
+- **Warm run** settled it in one shot: all 1917 compilations hit (100.0%), duration **372s** —
+  878s below the band's lower edge and ~5× the ~218s noise band, so the improvement dwarfs runner
+  variance and no repeat measurement is needed.
+- The **enforcement path fired correctly for the first time**: the restored cache carried the
+  inputs-identifying hash, so `cache-matched-key` matched the primary-key prefix, `CCACHE_ENFORCE=1`
+  engaged, and 100% ≫ the 1% floor — the gate passed with the floor actually live.
+- Run 31917183475 also exposed an unrelated flake: `full-gates`' OpenVINO end-to-end compare
+  failed once at `max abs diff 0.0025` (tol 0.0001) and passed on rerun at `5.96e-08` — bit-identical
+  to the four pre-ccache runs, with the same inputs and the same pinned container. The delta is
+  runner hardware (torch vs OpenVINO FP dispatch). Not ccache-related, but a measurement run can
+  land red on it; re-run the job before reading anything into a red run.
+
+**Phase-two decision: WIRE `full-build`.** The trigger above has fired: `full-aot` at 372s is below
+`full-build`'s 800–1080s band, so the critical path has moved to `full-build` and its cache now buys
+wall clock. `full-build` gets the same install/restore/configure/save/stats wiring with its own
+key, and that key hashes the recipe inputs it actually compiles from (`build-runtime.sh`,
+`patches/*`, `scripts/lib/*.sh`) — the enforcement-correct choice: a recipe change must produce a
+*different* inputs hash (restore falls back to the loose `-et<ver>-` prefix → enforcement off,
+reporting only), never an exact match that would fail the gate for doing the right thing.
+
+**Real cache size: ~50 MB per job** (vs the 2G cap). Two caches × every open PR against the 10GB
+repo budget cannot thrash at 50 MB each, so the cap stays 2G (risk 1, resolved by measurement).
+
 ## Known risks
 
 1. **Cache budget thrash.** Two caches × up to 2GB × every open PR, LRU across a 10GB repo limit.
    With several concurrent PRs this could evict caches faster than they are reused, giving cost
-   without benefit. The real per-cache size is unknown until the first run; it may argue for a cap
-   below 2GB. **Revisit after the first measurement.**
+   without benefit. **Resolved by measurement (PR #32):** each cache is ~50 MB, so eviction under
+   the 10GB repo budget is not plausible; the 2G cap is retained as a safety bound.
 2. **First-run regression.** Any PR whose key is novel pays ccache overhead plus upload. Acceptable
    for a gate; it is one reason this stays out of `release.yml`.
 3. **A pinned ccache is one more third-party binary to keep current.** 4.13.6 is pinned by version
