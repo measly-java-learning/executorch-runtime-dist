@@ -19,7 +19,8 @@ upstream `executorch` Python package and needs torch. This repo ships runtime ar
 **Option A — our published asset (preferred).** Each release publishes
 `openvino-runtime-<ovver>-linux-x86_64.tar.gz` with a SHA-256 and a build attestation, pinned in
 `EtRuntimePin.cmake` as `ET_RUNTIME_OPENVINO_URL` / `ET_RUNTIME_OPENVINO_SHA256` /
-`ET_RUNTIME_OPENVINO_VERSION`. It is a flat directory that self-resolves, and the hash pin means
+`ET_RUNTIME_OPENVINO_VERSION` / `ET_RUNTIME_OPENVINO_PLATFORM` (the one platform the bundle is
+built for; the vars are absent entirely from a release that published no bundle). It is a flat directory that self-resolves, and the hash pin means
 you get identical bytes on every build.
 
 **Option B — pip.** `pip install "openvino>=2025.1.0,<2026.0.0"`.
