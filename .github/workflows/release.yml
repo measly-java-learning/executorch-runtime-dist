@@ -26,6 +26,11 @@ jobs:
       platforms: ${{ steps.platforms.outputs.platforms }}
       image: ${{ steps.img.outputs.image }}
     steps:
+      # REQUIRED by the `img` step below, which reads .build-image off disk. The `platforms` step
+      # only reads workflow env, so nothing forced a checkout here until the pin arrived - and
+      # release.yml has no PR gate, so an empty workspace would only surface on a real release tag,
+      # failing setup and cascading to build/openvino/pin/release.
+      - uses: actions/checkout@v7
         # `tee -a` used in place of `>>` to simplify debugging
       - id: platforms
         run: |

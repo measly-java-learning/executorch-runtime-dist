@@ -31,8 +31,8 @@ Decision logic lives in `scripts/classify-gate.sh` (unit-tested in `test/classif
 Use the manylinux docker loop (same two caller-owned boundaries as CI):
 ```bash
 # tier1 mechanics against a local ./prefix (extracted logging tarball) + ./fixtures:
-docker run --rm -v "$PWD":/work -w /work quay.io/pypa/manylinux_2_28_x86_64 bash -lc '
-  export PATH=/opt/python/cp312-cp312/bin:$PATH; pip install ninja numpy
+docker run --rm -v "$PWD":/work -w /work "$(cat .build-image)" bash -lc '
+  export PATH=/opt/python/cp312-cp312/bin:$PATH; pip install -r requirements/extras-build.txt
   rm -f prefix/lib/libetnp_ops_*.a prefix/lib/libhwy.a; rm -rf prefix/lib/cmake/ETNPExtras prefix/include/etnp
   ./build-runtime.sh --extras-only --variant logging --prefix /work/prefix
   FIXTURES_DIR=/work/fixtures ETNP_PREFIX=/work/prefix python extras/lstm/test/consumer_smoke.py'

@@ -58,6 +58,26 @@ def container_images(path: pathlib.Path):
             yield f"{path.name}:{job_name}", str(image)
 
 
+def readers_without_checkout(path: pathlib.Path):
+    """Yield jobs that read the pin file in a step but never check the repo out first.
+
+    GitHub Actions does not auto-checkout. A job whose only workspace need was the pin file has
+    nothing else forcing a checkout, so `cat .build-image` fails on an empty workspace. release.yml
+    shipped exactly that: its setup job read the pin with no checkout, and since it only runs on a
+    tag push and has no PR gate, the break would first appear on a real release - failing setup and
+    cascading to every job that needs it.
+    """
+    doc = yaml.safe_load(open(path)) or {}
+    for job_name, job in (doc.get("jobs") or {}).items():
+        checked_out = False
+        for step in job.get("steps") or []:
+            if "actions/checkout" in str(step.get("uses", "")):
+                checked_out = True
+            if PIN_FILE in str(step.get("run", "")) and not checked_out:
+                yield f"{path.name}:{job_name}"
+                break
+
+
 def main(root_arg: str) -> int:
     root = pathlib.Path(root_arg)
     fails = 0
@@ -78,6 +98,14 @@ def main(root_arg: str) -> int:
                 fails += 1
             else:
                 print(f"ok: {where} takes its image from an expression")
+
+        offenders = list(readers_without_checkout(wf))
+        for where in offenders:
+            print(f"FAIL: {where} reads {PIN_FILE} but never checks out the repo first "
+                  f"(the workspace is empty, so cat fails)", file=sys.stderr)
+            fails += 1
+        if not offenders:
+            print(f"ok: {wf.name} readers of {PIN_FILE} check out first")
 
     return 1 if fails else 0
 

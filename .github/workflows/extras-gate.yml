@@ -7,6 +7,11 @@ on:
       - 'scripts/classify-gate.sh'
       - '.github/workflows/extras-gate.yml'
       - '.build-image'
+      # ccache surface: these run ONLY in full-build/full-aot, so a version bump that
+      # touched nothing else would otherwise start no workflow at all.
+      - 'scripts/lib/ccache.sh'
+      - 'scripts/install-ccache.sh'
+      - 'scripts/ccache-stats.sh'
       # OpenVINO surface. classify-gate.sh routes these to `full`, but that rule is dead unless
       # the workflow actually STARTS for them — a PR touching only vendor-openvino.sh would
       # otherwise get no gate at all. cmakeflags.sh is here because it now decides whether the

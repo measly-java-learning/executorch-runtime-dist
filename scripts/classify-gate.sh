@@ -36,6 +36,11 @@ fi
 # edited. tier1/tier2 only rebuild extras against a downloaded release and would never exercise
 # any of this, so force a full run.
 #
+# The ccache scripts are here for the same reason as the OpenVINO and workspace gate scripts: they
+# execute ONLY in full-build/full-aot. A PR bumping CCACHE_VERSION and its SHA - which the plan
+# anticipates - touches nothing else, so without this it would route to tier1 and never run the
+# installer it changed.
+#
 # .build-image is here because it pins the container every build runs in: a digest bump changes the
 # compiler, glibc and CPython under every job, so it must run the full gate rather than tier1.
 #
@@ -44,7 +49,7 @@ fi
 # to tier1, so the `full` jobs skipped — a PR could restructure them into something broken and
 # merge green. Found exactly that way: the PR that split `full` into parallel jobs went green
 # without running any of them.
-if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh|patch-et-xnnpack-workspace\.sh|emit-xnnpack-fixtures\.py)|patches/.*|test/xnnpack_workspace(_run\.sh|/.*)|test/openvino(_smoke\.sh|_fixture_run\.sh|/.*)|\.github/workflows/extras-gate\.yml|\.build-image' "$CHANGED"; then
+if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh|patch-et-xnnpack-workspace\.sh|emit-xnnpack-fixtures\.py)|patches/.*|test/xnnpack_workspace(_run\.sh|/.*)|test/openvino(_smoke\.sh|_fixture_run\.sh|/.*)|\.github/workflows/extras-gate\.yml|\.build-image|scripts/(lib/ccache\.sh|install-ccache\.sh|ccache-stats\.sh)' "$CHANGED"; then
   emit full ""; exit 0
 fi
 
