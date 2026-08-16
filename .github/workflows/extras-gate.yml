@@ -245,20 +245,93 @@ jobs:
       image: ${{ needs.classify.outputs.image }}
     env:
       ETVER: ${{ needs.classify.outputs.etver }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      # Floor for the ccache hit rate, enforced only on an exact cache-key match. Deliberately
+      # low: it catches "the cache stopped working", not "the cache is suboptimal". It lives in
+      # this env block ON PURPOSE - scripts/lib/* is inside the cache key's hashFiles() set, so
+      # tuning it there would invalidate every cache on every tweak.
+      CCACHE_MIN_HIT_RATE: "1"
     steps:
       - uses: actions/checkout@v7
       - name: Checkout ExecuTorch source
         uses: ./.github/actions/checkout-executorch
         with:
           ref: v${{ needs.classify.outputs.etver }}
+      - name: Install pinned ccache
+        run: ./scripts/install-ccache.sh
+      - name: Restore ccache
+        id: ccache-restore
+        # RESTORE + SAVE as separate actions, not the combined `actions/cache`. The combined action
+        # exposes only `cache-hit` (an EXACT primary-key match). Our primary key ends in
+        # `github.sha`, so an exact match happens only when re-running an identical commit - every
+        # normal push restores via a restore-key instead. Enforcing on `cache-hit` would therefore
+        # mean the threshold NEVER fires on a real PR: a vacuous guard. `actions/cache/restore`
+        # additionally exposes `cache-matched-key`, which is what makes the enforcement condition
+        # below expressible.
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          # <sha> suffix is REQUIRED: a cache key is write-once, so without it the cache would be
+          # written on the first run and then frozen forever. restore-keys supply the nearest prior
+          # cache. This is hit-rate tuning only - ccache re-hashes every object, so a stale restore
+          # cannot produce a wrong artifact, only a slower build.
+          key: ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-${{ hashFiles('.build-image', 'scripts/lib/ccache.sh') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-${{ hashFiles('.build-image', 'scripts/lib/ccache.sh') }}-
+            ccache-full-aot-x86_64-et${{ needs.classify.outputs.etver }}-
+      - name: Configure ccache
+        # -z zeroes the counters so the stats step measures THIS run, not the restored cache's
+        # lifetime. Without it the reported rate drifts upward forever and the floor is meaningless.
+        run: |
+          set -euo pipefail
+          ccache -M 2G
+          ccache -z
+          ccache --version | head -1
       - name: Install the AOT toolchain (executorch python package from the pinned source)
         # This is the ~15min half. It compiles ExecuTorch a second time - the python package -
         # which every emitter below imports. Nothing here touches the recipe's install prefix.
         run: |
           set -euo pipefail
           export PATH=/opt/python/cp312-cp312/bin:$PATH
+          # ExecuTorch's own CMakeLists auto-detects ccache (find_program at CMakeLists.txt:187),
+          # but pytorch_tokenizers is a SEPARATE cmake project with no ccache logic - and it is the
+          # ~5 minute sdist build. Its setup.py forwards CMAKE_ARGS, so inject the launcher here.
+          export CMAKE_ARGS="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache"
           (cd et-src/executorch && ./install_executorch.sh)
           pip install -r requirements/extras-build.txt
+      - name: Save ccache
+        # Explicit save, because the restore/save split has no automatic post-step. `always()` so a
+        # failed build still banks the objects it did compile - they are valid regardless of why
+        # the job failed, and re-compiling them next run is pure waste.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
+      - name: ccache stats
+        # Enforce only when the restored cache came from the SAME build inputs. `cache-matched-key`
+        # reports which key actually matched; if it carries our inputs hash, the restored objects
+        # are the ones this build should be reusing and a low hit rate means ccache is broken. If
+        # it matched only the looser `-et<ver>-` prefix (a different image or ccache version), the
+        # run legitimately misses everything and must NOT be failed for it.
+        #
+        # Deliberately NOT `cache-hit == 'true'`: that requires an exact match including the sha,
+        # which only happens when re-running an identical commit, so enforcement would never fire.
+        env:
+          CCACHE_PRIMARY_KEY: ${{ steps.ccache-restore.outputs.cache-primary-key }}
+          CCACHE_MATCHED_KEY: ${{ steps.ccache-restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+          # Strip the trailing -<sha> to get the inputs-identifying prefix.
+          prefix="${CCACHE_PRIMARY_KEY%-*}-"
+          if [ -n "$CCACHE_MATCHED_KEY" ] && [ "${CCACHE_MATCHED_KEY#"$prefix"}" != "$CCACHE_MATCHED_KEY" ]; then
+            echo "restored a cache built from identical inputs - enforcing the floor"
+            export CCACHE_ENFORCE=1
+          else
+            echo "no cache, or one from different inputs (matched: ${CCACHE_MATCHED_KEY:-none}) - reporting only"
+            export CCACHE_ENFORCE=0
+          fi
+          ./scripts/ccache-stats.sh
       - name: Emit LSTM fixtures FRESH from the branch AOT
         # These are the export half of the live round-trip: lstm_case.build_case() is the same
         # source test_lstm_roundtrip.py uses, so a golden minted here is an eager-torch golden
