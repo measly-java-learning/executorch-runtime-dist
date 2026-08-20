@@ -386,10 +386,12 @@ jobs:
           # ExecuTorch's own CMakeLists auto-detects ccache (find_program at CMakeLists.txt:187),
           # but pytorch_tokenizers is a SEPARATE cmake project with no ccache logic - and it is the
           # ~5 minute sdist build. Its setup.py forwards CMAKE_ARGS, so inject the launcher here.
-          # et_aot_cmake_args carries the flags this AOT build needs regardless of ccache; it is
-          # the SSOT shared with .github/actions/lstm-roundtrip, which runs the same install.
+          # ET v1.4.1's pybind11 3.0 needs a shared libpython the manylinux base does not ship;
+          # et_aot_install_build_deps supplies it. SSOT shared with .github/actions/lstm-roundtrip,
+          # which runs the same install — see scripts/lib/aot.sh for why this is not cmake flags.
           . ./scripts/lib/aot.sh
-          export CMAKE_ARGS="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache $(et_aot_cmake_args)"
+          et_aot_install_build_deps
+          export CMAKE_ARGS="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache"
           (cd et-src/executorch && ./install_executorch.sh)
           pip install -r requirements/extras-build.txt
       - name: Save ccache
