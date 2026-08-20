@@ -380,7 +380,10 @@ jobs:
           # ExecuTorch's own CMakeLists auto-detects ccache (find_program at CMakeLists.txt:187),
           # but pytorch_tokenizers is a SEPARATE cmake project with no ccache logic - and it is the
           # ~5 minute sdist build. Its setup.py forwards CMAKE_ARGS, so inject the launcher here.
-          export CMAKE_ARGS="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache"
+          # et_aot_cmake_args carries the flags this AOT build needs regardless of ccache; it is
+          # the SSOT shared with .github/actions/lstm-roundtrip, which runs the same install.
+          . ./scripts/lib/aot.sh
+          export CMAKE_ARGS="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache $(et_aot_cmake_args)"
           (cd et-src/executorch && ./install_executorch.sh)
           pip install -r requirements/extras-build.txt
       - name: Save ccache

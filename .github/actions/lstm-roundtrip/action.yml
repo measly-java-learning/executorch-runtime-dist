@@ -34,6 +34,11 @@ runs:
         case "$prefix" in /*) ;; *) prefix="$PWD/$prefix" ;; esac
         [ -d "$prefix" ] || { echo "::error::ETNP_PREFIX '$prefix' not found (cwd=$PWD); pass a workspace-relative prefix (e.g. out), not a host absolute path"; exit 1; }
         # AOT export needs the executorch python package from the SAME pinned ET source.
+        # et_aot_cmake_args is the SSOT for the flags that build needs (see scripts/lib/aot.sh);
+        # the gate's full-aot step sources the same function, so the two installs cannot drift.
+        # Sourced from $PWD, the real workspace root where this repo is checked out.
+        . ./scripts/lib/aot.sh
+        export CMAKE_ARGS="${CMAKE_ARGS:+$CMAKE_ARGS }$(et_aot_cmake_args)"
         (cd "${{ inputs.executorch-src }}" && ./install_executorch.sh)
         pip install -r requirements/roundtrip.txt
         ETNP_PREFIX="$prefix" python -m pytest extras/lstm/test/test_lstm_roundtrip.py -v
