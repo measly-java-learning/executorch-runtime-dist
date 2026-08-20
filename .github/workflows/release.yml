@@ -1,7 +1,7 @@
 name: release
 on:
   push:
-    tags: ['v*-*']          # v<etver>-<pkgrev>, e.g. v1.3.1-1
+    tags: ['v*-*']          # v<etver>-<pkgrev>, e.g. v1.4.1-1
 
 permissions:
   contents: read
@@ -330,5 +330,5 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --title "${GITHUB_REF_NAME}" \
-            --notes "ExecuTorch runtime ${GITHUB_REF_NAME} (torch 2.12.0+cpu). Per-artifact toolchain in each BUILDINFO." \
+            --notes "ExecuTorch runtime ${GITHUB_REF_NAME} (torch 2.13.0+cpu). Per-artifact toolchain in each BUILDINFO." \
           || gh release upload "${GITHUB_REF_NAME}" dist/* --clobber

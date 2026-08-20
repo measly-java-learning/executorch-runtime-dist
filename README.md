@@ -46,13 +46,13 @@ records whether a build carries them (`usdt=on|off`).
 Releases are built once per ExecuTorch version and published as attested,
 hash-pinned tarballs. Pushing a version tag is the **only** CI trigger.
 
-1. Pick the tag `v<etver>-<pkgrev>` (e.g. `v1.3.1-1`; bump `<pkgrev>` to re-roll
+1. Pick the tag `v<etver>-<pkgrev>` (e.g. `v1.4.1-1`; bump `<pkgrev>` to re-roll
    the same ExecuTorch version, for example after a recipe fix).
 2. Push the tag:
 
    ```bash
-   git tag v1.3.1-1
-   git push origin v1.3.1-1
+   git tag v1.4.1-1
+   git push origin v1.4.1-1
    ```
 
 3. `.github/workflows/release.yml` takes it from there: it checks out this repo
@@ -84,7 +84,7 @@ build-runtime.sh --variant <bare|logging|devtools> --prefix <install-dir> \
 - `--et-src` must point at a checkout of `pytorch/executorch` at the target tag,
   **with submodules** — CI supplies this via a second `actions/checkout`; locally
   you provide it yourself (e.g. a mounted directory).
-- `--et-tag` is just the version label recorded alongside the build (default `v1.3.1`).
+- `--et-tag` is just the version label recorded alongside the build (default `v1.4.1`).
 - `--build-dir` is the CMake build tree; it defaults to
   `<dirname of --prefix>/et-build-<variant>`, and is left in place (not deleted)
   so it can be inspected or reused for an incremental rebuild.
@@ -108,8 +108,8 @@ Each release asset ships with a `.sha256` file and a build-provenance attestatio
 Verify both before consuming a tarball:
 
 ```bash
-sha256sum -c executorch-runtime-1.3.1-logging-linux-x86_64.tar.gz.sha256
-gh attestation verify executorch-runtime-1.3.1-logging-linux-x86_64.tar.gz \
+sha256sum -c executorch-runtime-1.4.1-logging-linux-x86_64.tar.gz.sha256
+gh attestation verify executorch-runtime-1.4.1-logging-linux-x86_64.tar.gz \
   --repo measly-java-learning/executorch-runtime-dist
 ```
 

@@ -16,8 +16,8 @@
 #
 # TORCH IS DELIBERATELY ABSENT - do not "fix" this by adding it.
 # scripts/emit-{openvino,xnnpack}-fixtures.py and extras/lstm/aot/* all import torch, but torch is
-# installed by ExecuTorch's own install_executorch.sh, which pins torch==2.12.0 from
-# download.pytorch.org and yields a LOCAL-VERSION build (2.12.0+cpu). Compiling that into a lock
+# installed by ExecuTorch's own install_executorch.sh, which pins torch==2.13.0 from
+# download.pytorch.org and yields a LOCAL-VERSION build (2.13.0+cpu). Compiling that into a lock
 # against PyPI resolves a different artifact for the same version string, so the lock would either
 # reinstall over ExecuTorch's torch or fail outright - and it would duplicate a pin upstream owns,
 # which then has to move in lockstep with every ET pin bump. That is precisely the drift trap the

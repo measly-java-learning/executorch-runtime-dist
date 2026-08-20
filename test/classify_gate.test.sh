@@ -38,7 +38,7 @@ printf '%s\n' "$out" | grep -q '^etver=1.3.1$' || { echo "FAIL etver parse"; fai
 # (integration: proves classify reads the pin without regex-scraping the source)
 printf 'extras/lstm/runtime/lstm_cell.cc\n' > "$tmp/ch"
 out="$(GATE_RELEASE_TAG="v1.3.1-2" "$root/scripts/classify-gate.sh" "$tmp/ch")"
-printf '%s\n' "$out" | grep -q '^etver=1.3.1$' || { echo "FAIL: etver via --print-et-tag"; fail=1; }
+printf '%s\n' "$out" | grep -q '^etver=1.4.1$' || { echo "FAIL: etver via --print-et-tag"; fail=1; }
 
 # transient gh failure (no GATE_RELEASE_TAG) exits non-zero — must NOT silently emit full
 printf 'extras/lstm/runtime/lstm_cell.cc\n' > "$tmp/ch"

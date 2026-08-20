@@ -89,8 +89,10 @@ PR gate rebuilds a branch's custom ops without paying for a full ET compile.
 After `cmake --install`, the recipe rewrites the exported CMake configs so the tarball is
 portable. This is the heart of what makes the artifact usable downstream — treat these
 `sed` steps as load-bearing, not incidental:
-- Patches an ET 1.3.1 install bug where some targets install to `${CMAKE_BINARY_DIR}/lib`
-  instead of `${CMAKE_INSTALL_LIBDIR}` (upstream issue pytorch/executorch#20709).
+- Patches an ET install bug where some targets install to `${CMAKE_BINARY_DIR}/lib`
+  instead of `${CMAKE_INSTALL_LIBDIR}` (upstream issue pytorch/executorch#20709). **Fixed
+  upstream as of the v1.4.1 pin**, so this step is now a no-op that reports `nothing to
+  patch`; retiring it is tracked in https://github.com/measly-java-learning/executorch-runtime-dist/issues/38.
 - Rewrites any leaked absolute `--prefix` in `lib/cmake` to `${PACKAGE_PREFIX_DIR}`.
 - Normalizes absolute system-lib paths (`/usr/lib64/libm.so`, etc.) to bare `-l<name>`
   so consumers on Debian/Ubuntu multiarch (where these live elsewhere) can link.
@@ -159,7 +161,7 @@ C++ kernel + static-init registrar), `aot/` (torch export definition), `test/` (
 ### CI workflows
 
 - **`.github/workflows/release.yml`** — the *only* release trigger is pushing a tag
-  `v<etver>-<pkgrev>` (e.g. `v1.3.1-1`; bump `<pkgrev>` to re-roll the same ET version).
+  `v<etver>-<pkgrev>` (e.g. `v1.4.1-1`; bump `<pkgrev>` to re-roll the same ET version).
   Matrix of {variant} × {platform}; the **Linux** platforms are a single JSON source-of-truth in the
   workflow `env.PLATFORMS`. Windows is a **separate `build-windows` job, not in `env.PLATFORMS`**
   (it needs MSVC on a non-container runner); it has its own {variant} × {platform} matrix over

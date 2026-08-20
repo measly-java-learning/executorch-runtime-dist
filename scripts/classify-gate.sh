@@ -14,7 +14,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 CHANGED="${1:?usage: classify-gate.sh <changed-files-file>}"
 
-# etver from the branch's ET pin (v1.3.1 -> 1.3.1). Ask build-runtime.sh to PRINT the tag
+# etver from the branch's ET pin (v1.4.1 -> 1.4.1). Ask build-runtime.sh to PRINT the tag
 # rather than regex-scraping the source: the script that defines DEFAULT_ET_TAG reports it
 # through the shell, so any valid quoting (single/double/none) works and a brittle sed can't
 # silently yield an empty tag.
