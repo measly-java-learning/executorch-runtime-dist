@@ -36,6 +36,16 @@ while read -r f; do
     "$rel calls et_aot_cmake_args"
 done <<< "$callers"
 
+# Both AOT-install files must be in extras-gate's `paths:` filter. They run only in full-aot and
+# live-roundtrip, so if the filter does not list them an AOT-only change starts NO workflow and
+# ships ungated — and the round-trip action is shared with release.yml, so that lands at the tag.
+# The workflow's own comments record this trap biting twice before.
+gate="$root/.github/workflows/extras-gate.yml"
+paths_block="$(sed -n '/^on:/,/^permissions:/p' "$gate")"
+for p in "scripts/lib/aot.sh" ".github/actions/lstm-roundtrip/action.yml"; do
+  assert_contains "$paths_block" "'$p'" "extras-gate paths filter lists $p"
+done
+
 # A second spelling of the flag anywhere else is the drift this SSOT exists to prevent.
 strays="$(grep -rl 'EXECUTORCH_BUILD_PYBIND' "$root/.github" "$root/scripts" "$root/build-runtime.sh" 2>/dev/null \
           | grep -v "^$root/scripts/lib/aot\.sh$" || true)"

@@ -31,6 +31,12 @@ on:
       - 'patches/**'
       - 'test/xnnpack_workspace_run.sh'
       - 'test/xnnpack_workspace/**'
+      # AOT-install surface, same reasoning again: these decide how the ExecuTorch python package
+      # is built, and they run ONLY in full-aot and live-roundtrip. An edit to either would
+      # otherwise start no workflow at all — and the round-trip action is shared with release.yml,
+      # so an ungated change there surfaces at the tag rather than on the PR.
+      - 'scripts/lib/aot.sh'
+      - '.github/actions/lstm-roundtrip/action.yml'
 
 permissions:
   contents: read
