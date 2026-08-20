@@ -26,8 +26,9 @@
 # inconsistency any future ET bump is free to reshuffle. Installing the devel package instead needs
 # none, and keeps us on the configuration upstream actually tests.
 #
-# TEMPORARY. This belongs in the build image, not in a CI step — see the executorch-dist-build
-# image work tracked against measly-java-learning/base-docker-images. build-runtime.sh already
+# TEMPORARY. This belongs in the build image, not in a CI step — tracked in
+# https://github.com/measly-java-learning/executorch-runtime-dist/issues/41 (a separate
+# executorch-dist-build image in measly-java-learning/base-docker-images). build-runtime.sh already
 # installs systemtap-sdt-devel and pip-installs ninja at build time for the same reason, and that
 # image would absorb all three. When it lands, this function becomes an assertion, matching the
 # MEASLY_DJL_PINNED_IMAGE contract: inside a pinned image a missing tool is a broken image, not
