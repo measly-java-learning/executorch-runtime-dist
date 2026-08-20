@@ -1,10 +1,10 @@
 diff --git a/backends/xnnpack/runtime/XNNPACKBackend.h b/backends/xnnpack/runtime/XNNPACKBackend.h
-index eb40047..6ce9403 100644
+index 1053a20..4f63797 100644
 --- a/backends/xnnpack/runtime/XNNPACKBackend.h
 +++ b/backends/xnnpack/runtime/XNNPACKBackend.h
-@@ -13,6 +13,12 @@ const char workspace_sharing_mode_option_key[] = "workspace_sharing_mode";
- // across delegate instances. Changes only affect subsequently loaded models.
- const char weight_cache_option_key[] = "weight_cache_enabled";
+@@ -31,6 +31,12 @@ const char packed_cache_path_option_key[] = "packed_cache_path";
+ // @lint-ignore CLANGTIDY facebook-hte-CArray
+ const char save_weight_cache_on_disk_option_key[] = "save_weight_cache_on_disk";
  
 +/// The key for the read-only workspace size option. Returns the total size in bytes of all live
 +/// XNNPACK workspaces as an int, saturating at INT_MAX. Reads 0 until the first XNNPACK-delegated
@@ -16,7 +16,7 @@ index eb40047..6ce9403 100644
  /// set_option API to control memory sharing between CALL_DELEGATE instances.
  /// This is useful for reducing memory consumption.
 diff --git a/backends/xnnpack/runtime/XNNWorkspace.h b/backends/xnnpack/runtime/XNNWorkspace.h
-index b7ef442..5a3b615 100644
+index e1b452a..48368bf 100644
 --- a/backends/xnnpack/runtime/XNNWorkspace.h
 +++ b/backends/xnnpack/runtime/XNNWorkspace.h
 @@ -55,6 +55,14 @@ class XNNWorkspace {
@@ -35,10 +35,10 @@ index b7ef442..5a3b615 100644
      lock_required_ = false;
    }
 diff --git a/backends/xnnpack/runtime/XNNWorkspaceManager.cpp b/backends/xnnpack/runtime/XNNWorkspaceManager.cpp
-index d3550da..98be4f3 100644
+index e115074..40eb832 100644
 --- a/backends/xnnpack/runtime/XNNWorkspaceManager.cpp
 +++ b/backends/xnnpack/runtime/XNNWorkspaceManager.cpp
-@@ -132,4 +132,22 @@ XNNWorkspaceManager::get_or_create_model_workspace(uintptr_t program_id) const {
+@@ -134,4 +134,22 @@ XNNWorkspaceManager::get_or_create_model_workspace(uintptr_t program_id) const {
    return workspace;
  }
  
@@ -85,7 +85,7 @@ index 2e5689f..669d0a6 100644
    // The active sharing mode. Changes to this affect only models loaded after
    // the change.
 diff --git a/backends/xnnpack/runtime/XnnpackBackendOptions.cpp b/backends/xnnpack/runtime/XnnpackBackendOptions.cpp
-index aa5f6f0..8d0d2e1 100644
+index 9820e7a..d557b2a 100644
 --- a/backends/xnnpack/runtime/XnnpackBackendOptions.cpp
 +++ b/backends/xnnpack/runtime/XnnpackBackendOptions.cpp
 @@ -8,6 +8,7 @@
@@ -96,10 +96,10 @@ index aa5f6f0..8d0d2e1 100644
  #include <cstring>
  
  namespace executorch::backends::xnnpack {
-@@ -37,6 +38,13 @@ Error XnnpackBackendOptions::get_option(BackendOption& option) const {
-     option.value = static_cast<int>(sharing_mode_.load());
-   } else if (strcmp(option.key, weight_cache_option_key) == 0) {
-     option.value = weight_cache_enabled_.load();
+@@ -44,6 +45,13 @@ Error XnnpackBackendOptions::get_option(BackendOption& option) const {
+         std::min(packed_cache_path_.size(), runtime::kMaxOptionValueLength - 1);
+     memcpy(arr.data(), packed_cache_path_.data(), len);
+     option.value = arr;
 +  } else if (strcmp(option.key, workspace_size_option_key) == 0) {
 +    const size_t total = workspace_manager_.total_workspace_size();
 +    // Saturate rather than narrow. OptionValue has no 64-bit alternative and adding one would
@@ -110,10 +110,10 @@ index aa5f6f0..8d0d2e1 100644
    }
    return Error::Ok;
  }
-@@ -66,6 +74,11 @@ Error XnnpackBackendOptions::set_option(const BackendOption& option) {
+@@ -97,6 +105,11 @@ Error XnnpackBackendOptions::set_option(const BackendOption& option) {
+     if (*val) {
+       return save_weights_cache_locked();
      }
-     ET_LOG(Debug, "Setting XNNPACK weight cache enabled to %d.", *val);
-     weight_cache_enabled_.store(*val);
 +  } else if (strcmp(option.key, workspace_size_option_key) == 0) {
 +    // The existing chain ends in an implicit no-op success, so without this a write would look
 +    // like it worked. This option is derived state and read-only.

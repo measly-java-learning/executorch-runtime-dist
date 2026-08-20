@@ -16,8 +16,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # As we run as root inside a container, set this flag to avoid log spam
 export PIP_ROOT_USER_ACTION=ignore
-DEFAULT_ET_TAG="v1.3.1"
-TORCH_SPEC="torch==2.12.0+cpu"
+DEFAULT_ET_TAG="v1.4.1"
+TORCH_SPEC="torch==2.13.0+cpu"
 
 usage() {
   cat <<'EOF'
@@ -25,7 +25,7 @@ Usage: build-runtime.sh --variant <bare|logging|devtools> --prefix <install-dir>
                         [--et-tag <label>] [--build-dir <dir>]
        build-runtime.sh --print-flags --variant <variant> [--platform <platform>]  # dry: print effective cmake flags, no build
 Runs inside manylinux_2_28. --et-src is a checked-out ExecuTorch tree (with submodules); the recipe does not clone.
---et-tag is the version label (default v1.3.1). --build-dir is the CMake build tree (default:
+--et-tag is the version label (default v1.4.1). --build-dir is the CMake build tree (default:
 <dirname of --prefix>/et-build-<variant>); it persists for inspection and incremental rebuilds — put it
 on a mounted volume to inspect artifacts out of the container. Set SKIP_ET_BUILD=1 to reuse an existing --prefix install.
 EOF
@@ -181,7 +181,7 @@ mkdir -p "$ET_BUILD"
 
 # An upstream issue for this has been opened here:
 # https://github.com/pytorch/executorch/issues/20709
-# ET 1.3.1 install bug: a few targets install to ${CMAKE_BINARY_DIR}/lib (the build dir) instead of
+# ET install bug (fixed upstream as of the v1.4.1 pin, so this is now a no-op): a few targets install to ${CMAKE_BINARY_DIR}/lib (the build dir) instead of
 # ${CMAKE_INSTALL_LIBDIR}, so their .a is missing from the prefix and the exported ExecuTorchTargets
 # bakes an absolute build-tree path (breaks find_package relocation). Rewrite to match sibling targets.
 echo ">> patching ET install-destination bug (CMAKE_BINARY_DIR/lib -> CMAKE_INSTALL_LIBDIR)"

@@ -31,6 +31,12 @@ on:
       - 'patches/**'
       - 'test/xnnpack_workspace_run.sh'
       - 'test/xnnpack_workspace/**'
+      # AOT-install surface, same reasoning again: these decide how the ExecuTorch python package
+      # is built, and they run ONLY in full-aot and live-roundtrip. An edit to either would
+      # otherwise start no workflow at all — and the round-trip action is shared with release.yml,
+      # so an ungated change there surfaces at the tag rather than on the PR.
+      - 'scripts/lib/aot.sh'
+      - '.github/actions/lstm-roundtrip/action.yml'
 
 permissions:
   contents: read
@@ -380,6 +386,11 @@ jobs:
           # ExecuTorch's own CMakeLists auto-detects ccache (find_program at CMakeLists.txt:187),
           # but pytorch_tokenizers is a SEPARATE cmake project with no ccache logic - and it is the
           # ~5 minute sdist build. Its setup.py forwards CMAKE_ARGS, so inject the launcher here.
+          # ET v1.4.1's pybind11 3.0 needs a shared libpython the manylinux base does not ship;
+          # et_aot_install_build_deps supplies it. SSOT shared with .github/actions/lstm-roundtrip,
+          # which runs the same install — see scripts/lib/aot.sh for why this is not cmake flags.
+          . ./scripts/lib/aot.sh
+          et_aot_install_build_deps
           export CMAKE_ARGS="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache"
           (cd et-src/executorch && ./install_executorch.sh)
           pip install -r requirements/extras-build.txt

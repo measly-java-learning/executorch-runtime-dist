@@ -38,7 +38,7 @@ aot_body=(
   "# The ExecuTorch OpenVINO partitioner imports openvino.frontend.pytorch at module scope, so the"
   "# wheel is a hard import dependency of the export - not just a runtime concern."
   "#"
-  "# torch is NOT here on purpose: install_executorch.sh supplies it (torch==2.12.0+cpu from"
+  "# torch is NOT here on purpose: install_executorch.sh supplies it (torch==2.13.0+cpu from"
   "# download.pytorch.org) and locking it against PyPI would resolve a different artifact. See the"
   "# TORCH IS DELIBERATELY ABSENT note in requirements/extras-build.in."
   "openvino==${OV_VERSION}"
