@@ -88,26 +88,25 @@ Write the diff below to `patches/et-openvino-windows.patch` verbatim. It is the 
 
 ```diff
 diff --git a/backends/openvino/CMakeLists.txt b/backends/openvino/CMakeLists.txt
-index 5b7a1349b..40cf69d20 100644
+index 5b7a1349b..dacbe4e9d 100644
 --- a/backends/openvino/CMakeLists.txt
 +++ b/backends/openvino/CMakeLists.txt
-@@ -28,14 +28,20 @@ set(COMMON_INCLUDE_DIRS ${EXECUTORCH_ROOT}/..)
+@@ -28,14 +28,19 @@ set(COMMON_INCLUDE_DIRS ${EXECUTORCH_ROOT}/..)
  # Include utility CMake scripts from ExecuteTorch
  include(${EXECUTORCH_ROOT}/tools/cmake/Utils.cmake)
  
 -# The backend resolves OpenVINO C API symbols via dlopen/dlsym at runtime, so
 -# there is no build-time dependency on the OpenVINO SDK.
-+# The backend resolves OpenVINO C API symbols at runtime (dlopen/dlsym on POSIX,
-+# LoadLibraryEx/GetProcAddress on Windows), so there is no build-time dependency on the
-+# OpenVINO SDK.
++# The backend resolves OpenVINO C API symbols at runtime (dlopen or LoadLibraryEx), so there
++# is no build-time dependency on the OpenVINO SDK.
  
  # Define OpenVINO backend as a static library
  add_library(openvino_backend STATIC)
  
 -# Enable exceptions and RTTI for OpenVINO backend
 -target_compile_options(openvino_backend PRIVATE -frtti -fexceptions)
-+# Enable exceptions and RTTI for OpenVINO backend. MSVC spells both differently and rejects the
-+# GCC/Clang forms; note this branch also covers clang-cl, which CMake reports as MSVC.
++# Enable exceptions and RTTI. MSVC rejects the GCC/Clang spelling; this branch also covers
++# clang-cl, which CMake reports as MSVC.
 +if(MSVC)
 +  target_compile_options(openvino_backend PRIVATE /EHsc /GR)
 +else()
@@ -117,16 +116,14 @@ index 5b7a1349b..40cf69d20 100644
  # Add source files for OpenVINO backend
  target_sources(
 diff --git a/backends/openvino/runtime/OpenvinoApi.h b/backends/openvino/runtime/OpenvinoApi.h
-index 90403e24b..b37e80100 100644
+index 90403e24b..48236ee7f 100644
 --- a/backends/openvino/runtime/OpenvinoApi.h
 +++ b/backends/openvino/runtime/OpenvinoApi.h
-@@ -8,7 +8,19 @@
+@@ -8,7 +8,17 @@
  
  #pragma once
  
 +#ifdef _WIN32
-+// WIN32_LEAN_AND_MEAN/NOMINMAX are not optional here: windows.h otherwise defines min/max as
-+// macros, which breaks any std::min/std::max in a translation unit that includes this header.
 +#ifndef WIN32_LEAN_AND_MEAN
 +#define WIN32_LEAN_AND_MEAN
 +#endif
@@ -140,13 +137,11 @@ index 90403e24b..b37e80100 100644
  #include <cstddef>
  #include <cstdint>
  #include <memory>
-@@ -99,7 +111,13 @@ using ov_shape_free_fn = ov_status_e (*)(ov_shape_t*);
+@@ -99,7 +109,11 @@ using ov_shape_free_fn = ov_status_e (*)(ov_shape_t*);
  struct DlCloser {
    void operator()(void* handle) {
      if (handle) {
 +#ifdef _WIN32
-+      // HMODULE is a pointer type, so it round-trips through the void* that DlHandle stores
-+      // and no change to DlHandle itself is needed.
 +      FreeLibrary(static_cast<HMODULE>(handle));
 +#else
        dlclose(handle);
@@ -155,10 +150,10 @@ index 90403e24b..b37e80100 100644
    }
  };
 diff --git a/backends/openvino/runtime/OpenvinoBackend.cpp b/backends/openvino/runtime/OpenvinoBackend.cpp
-index 3cf87e6ab..0ecd95f73 100644
+index 3cf87e6ab..c66b436db 100644
 --- a/backends/openvino/runtime/OpenvinoBackend.cpp
 +++ b/backends/openvino/runtime/OpenvinoBackend.cpp
-@@ -23,10 +23,76 @@ namespace openvino {
+@@ -23,10 +23,61 @@ namespace openvino {
  
  namespace {
  
@@ -169,10 +164,8 @@ index 3cf87e6ab..0ecd95f73 100644
 +#endif
 +
 +#ifdef _WIN32
-+// A drive-qualified ("C:\\...") or UNC ("\\\\server\\share") path.  This distinction is load
-+// bearing, not cosmetic: LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR below is only meaningful for an
-+// absolute path, and LoadLibraryEx FAILS outright when those flags are combined with a bare
-+// filename.  So the two cases must take different branches.
++// LoadLibraryEx FAILS when a LOAD_LIBRARY_SEARCH_* flag is paired with a bare filename, so the
++// absolute and bare cases below must take different branches.
 +bool is_absolute_path(const char* path) {
 +  if (!path || !path[0]) {
 +    return false;
@@ -183,20 +176,9 @@ index 3cf87e6ab..0ecd95f73 100644
 +  return path[1] == ':' && (path[2] == '\\' || path[2] == '/');
 +}
 +
-+// Open a library the way dlopen(RTLD_NOW|RTLD_LOCAL) behaves on Linux, which is not what a
-+// plain LoadLibrary does.
-+//
-+// The shipped OpenVINO bundle is a FLAT directory: openvino_c.dll sits next to openvino.dll,
-+// tbb12.dll and the plugins.  On Linux that self-resolves because the libraries carry
-+// RPATH=$ORIGIN.  Windows has no $ORIGIN, and a plain LoadLibrary on an absolute path does NOT
-+// search the loaded DLL's own directory for its dependencies -- it fails with
-+// ERROR_MOD_NOT_FOUND (126) naming nothing useful.
-+//
-+// LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR restores that behaviour.  LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
-+// must accompany it: passing ANY LOAD_LIBRARY_SEARCH_* flag switches the loader to the
-+// alternate search order, which otherwise drops System32 -- where the MSVC runtime the OpenVINO
-+// DLLs import from lives.  With only the first flag the load fails with the same error 126.
-+// Note DEFAULT_DIRS deliberately does not include PATH, so this is stricter than LoadLibrary.
++// DEFAULT_DIRS is required, not belt-and-braces: any LOAD_LIBRARY_SEARCH_* flag switches the
++// loader to the alternate search order, which drops System32 -- where the MSVC runtime the
++// OpenVINO DLLs import from lives. DLL_LOAD_DIR alone fails with ERROR_MOD_NOT_FOUND.
 +void* open_library(const char* path) {
 +  int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
 +  if (wlen <= 0) {
@@ -212,8 +194,6 @@ index 3cf87e6ab..0ecd95f73 100644
 +        nullptr,
 +        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 +  }
-+  // A bare filename: fall back to the normal search order (which includes PATH), matching what
-+  // dlopen("libopenvino_c.so") does with the default soname.
 +  return LoadLibraryW(wpath.c_str());
 +}
 +#endif
@@ -235,7 +215,7 @@ index 3cf87e6ab..0ecd95f73 100644
    dlerror(); // Clear any stale error state.
    void* sym = dlsym(handle, name);
    const char* err = dlerror();
-@@ -35,6 +101,7 @@ FuncPtr load_symbol(void* handle, const char* name) {
+@@ -35,6 +86,7 @@ FuncPtr load_symbol(void* handle, const char* name) {
      return nullptr;
    }
    return reinterpret_cast<FuncPtr>(sym);
@@ -243,7 +223,7 @@ index 3cf87e6ab..0ecd95f73 100644
  }
  
  } // namespace
-@@ -47,6 +114,23 @@ bool OpenvinoBackend::ensure_loaded() const {
+@@ -47,6 +99,21 @@ bool OpenvinoBackend::ensure_loaded() const {
      const char* lib_path = std::getenv("OPENVINO_LIB_PATH");
      const char* effective_path = lib_path ? lib_path : kDefaultLibName;
  
@@ -254,11 +234,9 @@ index 3cf87e6ab..0ecd95f73 100644
 +          Error,
 +          "OpenVINO runtime not found (LoadLibrary failed for '%s', "
 +          "GetLastError=%lu). Set OPENVINO_LIB_PATH to the ABSOLUTE path of "
-+          "'openvino_c.dll', or put it on PATH. Note error 126 "
-+          "(ERROR_MOD_NOT_FOUND) can also mean the DLL was found but a "
-+          "dependency was not -- the OpenVINO DLLs need the Microsoft Visual "
-+          "C++ runtime installed. Install OpenVINO with: "
-+          "pip install \"openvino>=2025.1.0,<2026.0.0\"",
++          "'openvino_c.dll'. Error 126 may instead mean a DEPENDENCY was not "
++          "found: the OpenVINO DLLs require the MSVC redistributable. Install "
++          "OpenVINO with: pip install \"openvino>=2025.1.0,<2026.0.0\"",
 +          effective_path,
 +          static_cast<unsigned long>(GetLastError()));
 +      return;
@@ -267,7 +245,7 @@ index 3cf87e6ab..0ecd95f73 100644
      void* handle = dlopen(effective_path, RTLD_NOW | RTLD_LOCAL);
      if (!handle) {
        ET_LOG(
-@@ -58,6 +142,7 @@ bool OpenvinoBackend::ensure_loaded() const {
+@@ -58,6 +125,7 @@ bool OpenvinoBackend::ensure_loaded() const {
            dlerror());
        return;
      }
