@@ -6,8 +6,17 @@ set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/assert.sh"
 . "$here/../scripts/lib/openvino.sh"
+. "$here/../scripts/lib/python.sh"
 
-command -v zip >/dev/null 2>&1 || { echo "SKIP: zip not available"; exit 0; }
+# The synthetic wheel is BUILT with the same interpreter vendor-openvino.sh EXTRACTS with, via the
+# same et_python_bin resolution -- so this test cannot pass on a machine where the script it
+# exercises would fail, which is exactly what the old `command -v zip || SKIP` allowed.
+#
+# Not `zip`: the script stopped needing unzip (Git for Windows ships none), and requiring the zip
+# CLI here made the suite's dependency set larger than unit.yml claims. A missing interpreter is a
+# HARD failure, never a skip -- a skip that exits 0 is indistinguishable from a pass, which is how
+# a broken vendor script reaches a release with a green suite.
+PY="$(et_python_bin)" || { echo "FAIL: no python interpreter; vendor-openvino.sh cannot run" >&2; exit 1; }
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -23,7 +32,7 @@ for f in runtime-third-party-programs.txt onetbb_third-party-programs.txt onednn
   printf 'notice stub %s\n' "$f" > "$wheelsrc/openvino-${OV_VERSION}.dist-info/licenses/licensing/$f"
 done
 wheel="$tmp/openvino-${OV_VERSION}-${OV_WHEEL_PYTAG}-${OV_WHEEL_PYTAG}-manylinux2014_x86_64.whl"
-( cd "$wheelsrc" && zip -q -r "$wheel" . )
+( cd "$wheelsrc" && "$PY" -m zipfile -c "$wheel" openvino "openvino-${OV_VERSION}.dist-info" )
 printf 'hwloc BSD-3-Clause stub\n' > "$tmp/hwloc-COPYING"
 
 out="$tmp/out"
@@ -76,7 +85,7 @@ for f in runtime-third-party-programs.txt onetbb_third-party-programs.txt onednn
   printf 'notice stub %s\n' "$f" > "$winwheelsrc/openvino-${OV_VERSION}.dist-info/licenses/licensing/$f"
 done
 winwheel="$tmp/openvino-${OV_VERSION}-${OV_WHEEL_PYTAG}-${OV_WHEEL_PYTAG}-win_amd64.whl"
-( cd "$winwheelsrc" && zip -q -r "$winwheel" . )
+( cd "$winwheelsrc" && "$PY" -m zipfile -c "$winwheel" openvino "openvino-${OV_VERSION}.dist-info" )
 
 winout="$tmp/winout"
 winbundle="$(bash "$here/../scripts/vendor-openvino.sh" --platform windows-x86_64 --out "$winout" \

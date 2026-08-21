@@ -17,12 +17,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/openvino.sh"
+. "$HERE/lib/python.sh"
 
-# Resolve the interpreter once: stock Ubuntu ships only python3, while Git for Windows and CI
-# ship `python`; both names run `-m pip` and `-m zipfile`.
-if command -v python >/dev/null 2>&1; then PY="python"
-elif command -v python3 >/dev/null 2>&1; then PY="python3"
-else echo "vendor-openvino.sh: neither 'python' nor 'python3' on PATH (pip download + zipfile extraction need one)" >&2; exit 1; fi
+# Resolve the interpreter once. et_python_bin is shared with the hermetic test that drives this
+# script, so the two cannot disagree about which interpreter exists.
+PY="$(et_python_bin)" || exit 1
 
 PLATFORM="linux-x86_64"
 OUT=""; WHEEL=""; HWLOC_LICENSE=""
