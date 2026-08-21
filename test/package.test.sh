@@ -51,6 +51,8 @@ assert_eq "$?" "1" "missing .etnp_usdt is a hard error"
 # --- provenance: --toolchain override + recorded preset (Windows-parity plumbing) ---
 pw="$(mktemp -d)/pfxw"
 mkdir -p "$pw/lib/cmake/ExecuTorch" "$pw/include" "$pw/THIRD-PARTY-NOTICES"
+# windows-x86_64 ships the OpenVINO delegate too; package.sh asserts the MSVC archive is really there.
+: > "$pw/lib/openvino_backend.lib"
 : > "$pw/lib/cmake/ExecuTorch/executorch-config.cmake"; : > "$pw/include/et.h"; : > "$pw/LICENSE"
 : > "$pw/THIRD-PARTY-NOTICES/xnnpack_LICENSE"; echo deadbeef > "$pw/.et_commit"; echo "n/a" > "$pw/.etnp_usdt"
 outw="$(mktemp -d)"
