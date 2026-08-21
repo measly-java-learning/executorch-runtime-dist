@@ -36,9 +36,9 @@ python "$HERE/openvino/make_blob.py" "$SCRATCH/smoke.blob"
 # Build in the scratch dir, NOT the bundle dir: LOAD_LIBRARY_SEARCH_DEFAULT_DIRS includes the
 # application directory, so an exe sitting next to the DLLs would satisfy the negative control
 # from its own directory and make the control vacuous.
-( cd "$SCRATCH" && cl /nologo /W3 /O2 /D_CRT_SECURE_NO_WARNINGS \
+( cd "$SCRATCH" && cl -nologo -W3 -O2 -D_CRT_SECURE_NO_WARNINGS \
     "$(cygpath -w "$HERE/openvino/win_origin_probe.c")" \
-    /Fe:probe.exe psapi.lib >/dev/null )
+    -Fe:probe.exe psapi.lib >/dev/null )
 probe="$SCRATCH/probe.exe"
 
 winbundle="$(cygpath -w "$lib")"
