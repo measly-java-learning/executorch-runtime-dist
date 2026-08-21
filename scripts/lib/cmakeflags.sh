@@ -4,11 +4,11 @@
 # two can never drift. Excludes only genuinely machine-specific flags (-DCMAKE_INSTALL_PREFIX), which
 # the build sets separately and which are deliberately not recorded.
 #
-# Takes a PLATFORM because EXECUTORCH_BUILD_OPENVINO is linux-x86_64 only: the backend uses
-# dlopen/${CMAKE_DL_LIBS} and compiles with -frtti/-fexceptions (GCC/Clang spelling, breaks MSVC),
-# and the Intel CPU plugin it dlopens is x86-64. Upstream gates its own extra the same way
-# (platform_system == 'Linux'). The backend adds no build-time dependency: it resolves the OpenVINO
-# C API at RUNTIME via dlopen, so no SDK is needed in the build container.
+# Takes a PLATFORM because EXECUTORCH_BUILD_OPENVINO is set only where ov_enabled_for_platform
+# says so — linux-x86_64 plus both windows-x86_64 platforms; see lib/openvino.sh. Linux resolves
+# the C API at runtime via dlopen; the Windows loader arm (LoadLibraryExW) and the MSVC /EHsc /GR
+# compile spelling come from the vendored OpenVINO Windows patch. Either way the backend adds no
+# build-time dependency: resolution is at RUNTIME, so no SDK is needed in the build container.
 # EXECUTORCH_XNNPACK_SHARED_WORKSPACE is pinned, not inherited. It controls whether XNNPACK delegate
 # instances share one workspace arena; the workspace_size_bytes backend option reports a single
 # process-wide figure, which is only meaningful under Global sharing. Upstream's default is ON but
