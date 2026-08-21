@@ -95,12 +95,13 @@ portable. This is the heart of what makes the artifact usable downstream — tre
 
 ### Vendored XNNPACK workspace-size patches
 
-`scripts/patch-et-xnnpack-workspace.sh` applies a small vendored patch set (`patches/*.patch`) to the
-caller-supplied ExecuTorch checkout during the build's patch phase, before configure. It exposes the
-XNNPACK delegate's workspace arena size through the **read-only** `workspace_size_bytes` backend
-option — the consumer contract documented in `docs/xnnpack-workspace-size-consumer.md`. Upstream
-XNNPACK has no size accessor, so this is a local addition; code depending on it will not build against
-a stock ExecuTorch.
+`scripts/patch-et-sources.sh` applies the vendored patch set (`patches/*.patch`) to the
+caller-supplied ExecuTorch checkout during the build's patch phase, before configure. Two concerns:
+the XNNPACK **workspace-size** accessor (the read-only `workspace_size_bytes` backend option — the
+consumer contract in `docs/xnnpack-workspace-size-consumer.md`), and the **OpenVINO Windows** port
+(`LoadLibraryEx`/`GetProcAddress` instead of `dlopen`, plus the MSVC spelling of `-frtti
+-fexceptions`). Both are local additions; code depending on either will not build against a stock
+ExecuTorch.
 
 - **Keep `patches/*.patch` and `test/fixtures/etpatch/` in lockstep when the ET pin moves.** The
   hermetic patch test patches the real anchor text, so a stale fixture makes the patch test pass

@@ -185,10 +185,10 @@ if [ "$IS_WINDOWS" -eq 1 ]; then
     "$ET_SRC/third-party/CMakeLists.txt" || true
 fi
 
-# Workspace-size accessor patches (see scripts/patch-et-xnnpack-workspace.sh). Applied here, with
+# Workspace-size accessor patches (see scripts/patch-et-sources.sh). Applied here, with
 # the other source patches, because they must land before configure. Not guarded by platform:
 # XNNPACK builds on every platform we ship.
-"$HERE/scripts/patch-et-xnnpack-workspace.sh" "$ET_SRC"
+"$HERE/scripts/patch-et-sources.sh" "$ET_SRC"
 
 # Rather than the full `install_requirements.sh` from the ExecuTorch source,
 # just install the minimal set of deps for our build process

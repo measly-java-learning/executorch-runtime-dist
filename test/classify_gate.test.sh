@@ -62,7 +62,7 @@ printf '%s\n' "$out" | grep -q '^release_tag=v1.3.1-2$' || { echo "FAIL: stub ne
 # kernel-only tier1 gate.
 for f in scripts/vendor-openvino.sh scripts/lib/openvino.sh \
          test/openvino_smoke.sh test/openvino_fixture_run.sh test/openvino/ov_runner.cpp \
-         scripts/patch-et-xnnpack-workspace.sh \
+         scripts/patch-et-sources.sh \
          patches/et-xnnpack-workspace-size.patch test/xnnpack_workspace_run.sh \
          .github/workflows/extras-gate.yml; do
   cf="$(mktemp)"; printf '%s\n' "$f" > "$cf"
@@ -88,7 +88,7 @@ assert_contains "$out" "mode=tier1" "release.yml is not routed to full"
 wf="$here/../.github/workflows/extras-gate.yml"
 for p in scripts/vendor-openvino.sh scripts/lib/openvino.sh scripts/lib/cmakeflags.sh \
          test/openvino_smoke.sh test/openvino_fixture_run.sh 'test/openvino/**' \
-         scripts/patch-et-xnnpack-workspace.sh scripts/emit-xnnpack-fixtures.py \
+         scripts/patch-et-sources.sh scripts/emit-xnnpack-fixtures.py \
          'patches/**' test/xnnpack_workspace_run.sh 'test/xnnpack_workspace/**'; do
   assert_contains "$(cat "$wf")" "'$p'" "extras-gate workflow triggers on $p"
 done

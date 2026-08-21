@@ -26,7 +26,7 @@ on:
       - 'test/openvino/**'
       # Workspace-size surface, same reasoning: these run only in `full`, so without a trigger an
       # edit to one would ship with no run at all.
-      - 'scripts/patch-et-xnnpack-workspace.sh'
+      - 'scripts/patch-et-sources.sh'
       - 'scripts/emit-xnnpack-fixtures.py'
       - 'patches/**'
       - 'test/xnnpack_workspace_run.sh'

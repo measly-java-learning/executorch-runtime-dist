@@ -9,7 +9,7 @@ root="$(cd "$here/.." && pwd)"
 # NOTE: we check git's TRACKED mode via `git ls-files -s`, NOT the working-tree bit — the original
 # failure was a script that was +x locally but committed as 100644, which a `test -x` check misses.
 for s in build-runtime.sh scripts/package.sh scripts/gen-pin.sh scripts/gen-buildinfo.sh scripts/derive-version.sh \
-         scripts/vendor-openvino.sh scripts/package-openvino-fixtures.sh scripts/patch-et-xnnpack-workspace.sh; do
+         scripts/vendor-openvino.sh scripts/package-openvino-fixtures.sh scripts/patch-et-sources.sh; do
   mode="$(cd "$root" && git ls-files -s -- "$s" | awk '{print $1}')"
   assert_eq "$mode" "100755" "$s committed executable (100755)"
 done
