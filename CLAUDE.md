@@ -89,10 +89,6 @@ PR gate rebuilds a branch's custom ops without paying for a full ET compile.
 After `cmake --install`, the recipe rewrites the exported CMake configs so the tarball is
 portable. This is the heart of what makes the artifact usable downstream — treat these
 `sed` steps as load-bearing, not incidental:
-- Patches an ET install bug where some targets install to `${CMAKE_BINARY_DIR}/lib`
-  instead of `${CMAKE_INSTALL_LIBDIR}` (upstream issue pytorch/executorch#20709). **Fixed
-  upstream as of the v1.4.1 pin**, so this step is now a no-op that reports `nothing to
-  patch`; retiring it is tracked in https://github.com/measly-java-learning/executorch-runtime-dist/issues/38.
 - Rewrites any leaked absolute `--prefix` in `lib/cmake` to `${PACKAGE_PREFIX_DIR}`.
 - Normalizes absolute system-lib paths (`/usr/lib64/libm.so`, etc.) to bare `-l<name>`
   so consumers on Debian/Ubuntu multiarch (where these live elsewhere) can link.

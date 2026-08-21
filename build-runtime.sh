@@ -179,24 +179,6 @@ fi
 ET_BUILD="${BUILD_DIR:-$(dirname "$PREFIX")/et-build-$VARIANT}"
 mkdir -p "$ET_BUILD"
 
-# An upstream issue for this has been opened here:
-# https://github.com/pytorch/executorch/issues/20709
-# ET install bug (fixed upstream as of the v1.4.1 pin, so this is now a no-op): a few targets install to ${CMAKE_BINARY_DIR}/lib (the build dir) instead of
-# ${CMAKE_INSTALL_LIBDIR}, so their .a is missing from the prefix and the exported ExecuTorchTargets
-# bakes an absolute build-tree path (breaks find_package relocation). Rewrite to match sibling targets.
-echo ">> patching ET install-destination bug (CMAKE_BINARY_DIR/lib -> CMAKE_INSTALL_LIBDIR)"
-# `|| true`: grep exits 1 when there's nothing to match (e.g. an already-patched checkout on an
-# idempotent re-run); that must not abort the recipe under `set -e`/`pipefail`.
-patch_files="$(grep -rl 'DESTINATION ${CMAKE_BINARY_DIR}/lib' --include=CMakeLists.txt "$ET_SRC" || true)"
-if [ -n "$patch_files" ]; then
-  printf '%s\n' "$patch_files" | while read -r f; do
-    echo "   patch: ${f#"$ET_SRC"/}"
-    sed -i 's#DESTINATION ${CMAKE_BINARY_DIR}/lib#DESTINATION ${CMAKE_INSTALL_LIBDIR}#g' "$f"
-  done
-else
-  echo "   (nothing to patch — source already patched)"
-fi
-
 if [ "$IS_WINDOWS" -eq 1 ]; then
   echo ">> patching flatc_ep BUILD_BYPRODUCTS for WIN32 (.exe) — upstream flatc byproduct bug"
   sed -i 's#\(BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc\)$#\1.exe#' \
