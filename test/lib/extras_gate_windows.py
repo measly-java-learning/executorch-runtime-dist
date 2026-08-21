@@ -43,6 +43,7 @@ def main() -> int:
         ("build-runtime.ps1", "must build through the same entrypoint release.yml uses"),
         ("scripts/package.sh", "must package: package.sh carries the OpenVINO archive assertion"),
         ("checkout-executorch", "must check out the pinned ExecuTorch source"),
+        ("openvino_backend.lib", "must assert the delegate archive exists: EXECUTORCH_BUILD_OPENVINO is a cache var cmake only warns about when unused"),
     ]:
         if needle not in steps:
             fails.append(f"{JOB} {why} (missing {needle})")
