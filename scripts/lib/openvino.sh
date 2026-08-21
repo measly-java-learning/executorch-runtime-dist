@@ -72,12 +72,25 @@ EOF
 # THE platform -> "is the OpenVINO delegate compiled in?" predicate. One mapping, consumed by
 # cmakeflags.sh (which sets EXECUTORCH_BUILD_OPENVINO) and package.sh (which records
 # openvino_version in BUILDINFO and asserts the archive is actually present). Encoding this in two
-# places is exactly the drift CLAUDE.md warns about: a future linux-aarch64 enablement that updated
-# only one would ship a tarball whose BUILDINFO lies about its contents.
+# places is exactly the drift CLAUDE.md warns about: an enablement that updated only one would ship
+# a tarball whose BUILDINFO lies about its contents. Windows is enabled here as of the OpenVINO
+# Windows port (issue #37): the delegate compiles and ships, but the win_amd64 RUNTIME BUNDLE does
+# not exist yet, so a Windows consumer must point OPENVINO_LIB_PATH at their own openvino_c.dll.
 ov_enabled_for_platform() { # <platform> -> 0 (enabled) / 1 (not)
   case "${1:-}" in
-    linux-x86_64) return 0 ;;
+    linux-x86_64|windows-x86_64|windows-x86_64-static) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+# Platform -> the delegate archive the build produces. MSVC does not use the lib*.a convention, so
+# package.sh's existence assertion cannot hardcode one spelling. Kept beside the predicate above
+# deliberately: the two are read together, and a platform added to one without the other produces a
+# release that fails at packaging rather than at configure.
+ov_backend_archive_name() { # <platform>
+  case "${1:-}" in
+    windows-*) printf 'openvino_backend.lib' ;;
+    *)         printf 'libopenvino_backend.a' ;;
   esac
 }
 

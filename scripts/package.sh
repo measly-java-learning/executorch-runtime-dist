@@ -54,8 +54,9 @@ done
 # on the archive itself; the platform predicate lives in lib/openvino.sh so it cannot drift from the
 # one cmakeflags.sh uses to set the flag.
 if ov_enabled_for_platform "$PLATFORM"; then
-  [ -f "$PREFIX/lib/libopenvino_backend.a" ] || {
-    echo "package.sh: platform '$PLATFORM' enables OpenVINO but $PREFIX/lib/libopenvino_backend.a" >&2
+  _ov_archive="$(ov_backend_archive_name "$PLATFORM")"
+  [ -f "$PREFIX/lib/$_ov_archive" ] || {
+    echo "package.sh: platform '$PLATFORM' enables OpenVINO but $PREFIX/lib/$_ov_archive" >&2
     echo "  is missing — the delegate was not built. Refusing to record openvino_version for a" >&2
     echo "  tarball that does not contain it." >&2
     exit 1; }

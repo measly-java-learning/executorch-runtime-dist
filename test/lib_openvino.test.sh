@@ -53,7 +53,15 @@ ov_fixtures_name >/dev/null 2>&1; assert_eq "$?" "2" "fixtures name without etve
 # disagree about whether a tarball contains the delegate.
 ov_enabled_for_platform linux-x86_64  && printf 'ok: enabled on linux-x86_64\n'   || { printf 'FAIL: linux-x86_64\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
 ov_enabled_for_platform linux-aarch64 && { printf 'FAIL: aarch64 must be off\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); } || printf 'ok: off on linux-aarch64\n'
-ov_enabled_for_platform windows-x86_64 && { printf 'FAIL: windows must be off\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); } || printf 'ok: off on windows-x86_64\n'
+ov_enabled_for_platform windows-x86_64 && printf 'ok: enabled on windows-x86_64\n' || { printf 'FAIL: windows-x86_64\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
+ov_enabled_for_platform windows-x86_64-static && printf 'ok: enabled on windows-x86_64-static\n' || { printf 'FAIL: windows-x86_64-static\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
+
+# MSVC does not use the lib*.a convention. package.sh asserts the delegate archive EXISTS before
+# recording openvino_version, so a single hardcoded spelling would fail every Windows release the
+# moment the predicate above turned Windows on.
+assert_eq "$(ov_backend_archive_name linux-x86_64)"          "libopenvino_backend.a" "POSIX archive name"
+assert_eq "$(ov_backend_archive_name windows-x86_64)"        "openvino_backend.lib"  "MSVC archive name"
+assert_eq "$(ov_backend_archive_name windows-x86_64-static)" "openvino_backend.lib"  "MSVC archive name (static CRT)"
 ov_enabled_for_platform "" && { printf 'FAIL: empty must be off\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); } || printf 'ok: off on empty platform\n'
 
 # The name wrappers must PROPAGATE ov_asset_stem's validation, not swallow it in a command
