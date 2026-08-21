@@ -7,29 +7,26 @@ here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../scripts/lib/openvino.sh"   # ov_enabled_for_platform
 . "$here/../scripts/lib/cmakeflags.sh"
 
-# OpenVINO is linux-x86_64 ONLY: the backend uses dlopen/CMAKE_DL_LIBS and -frtti/-fexceptions
-# (GCC spelling), and the Intel CPU plugin is x86-64.
+# OpenVINO is enabled on linux-x86_64 and both Windows platforms (windows-x86_64,
+# windows-x86_64-static). Linux resolves the C API via dlopen; Windows uses the LoadLibraryExW
+# loader and the MSVC /EHsc /GR compile spelling from the vendored OpenVINO Windows patch.
 assert_contains "$(common_cmake_flags linux-x86_64)" "-DEXECUTORCH_BUILD_OPENVINO=ON" \
   "openvino enabled on linux-x86_64"
 case "$(common_cmake_flags linux-aarch64)" in
   *OPENVINO*) printf 'FAIL: openvino must not be enabled on linux-aarch64\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
   *) printf 'ok: openvino absent on linux-aarch64\n' ;;
 esac
-case "$(common_cmake_flags windows-x86_64)" in
-  *OPENVINO*) printf 'FAIL: openvino must not be enabled on windows\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
-  *) printf 'ok: openvino absent on windows-x86_64\n' ;;
-esac
+assert_contains "$(common_cmake_flags windows-x86_64)" "-DEXECUTORCH_BUILD_OPENVINO=ON" \
+  "openvino enabled on windows-x86_64"
 
 # Variant-independent: present for all three Linux variants.
 for v in bare logging devtools; do
   assert_contains "$(effective_cmake_flags linux-x86_64 "$v")" "-DEXECUTORCH_BUILD_OPENVINO=ON" \
     "effective flags carry openvino for variant $v"
 done
-# Windows composition is untouched.
-case "$(effective_cmake_flags windows-x86_64-static logging)" in
-  *OPENVINO*) printf 'FAIL: windows effective flags must not carry openvino\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
-  *) printf 'ok: windows effective flags clean\n' ;;
-esac
+# Windows effective flags carry the OpenVINO flag as well (composition otherwise unchanged).
+assert_contains "$(effective_cmake_flags windows-x86_64-static logging)" "-DEXECUTORCH_BUILD_OPENVINO=ON" \
+  "windows effective flags carry openvino"
 # Pre-existing invariants must survive the signature change.
 assert_contains "$(common_cmake_flags linux-x86_64)" "-DEXECUTORCH_BUILD_XNNPACK=ON" "xnnpack still present"
 assert_contains "$(common_cmake_flags linux-x86_64)" "-DCMAKE_POSITION_INDEPENDENT_CODE=ON" "PIC still present"

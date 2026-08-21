@@ -108,3 +108,27 @@ rather than at install time.
 | Works once, then never again in the same process | first load failed; `std::call_once` does not retry — fix the env and restart |
 | `IMPORT FAILED` at model load | blob/runtime version mismatch; re-export or upgrade the runtime |
 | Delegate silently unused | the `.pte` was not exported with the OpenVINO partitioner |
+
+## Windows
+
+The delegate ships in the `windows-x86_64` and `windows-x86_64-static` tarballs, but **no Windows
+OpenVINO runtime bundle is published yet** — `EtRuntimePin.cmake` carries bundle rows for
+`linux-x86_64` only. On Windows, point `OPENVINO_LIB_PATH` at the absolute path of an
+`openvino_c.dll` you supply yourself, most easily from the same PyPI wheel this project vendors on
+Linux:
+
+```
+py -3.12 -m pip install openvino==2025.4.1
+set OPENVINO_LIB_PATH=%VIRTUAL_ENV%\Lib\site-packages\openvino\libs\openvino_c.dll
+```
+
+`OPENVINO_LIB_PATH` **must be absolute on Windows.** The backend passes an absolute path to
+`LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, which is what lets a flat bundle resolve
+its own siblings — Windows has no `$ORIGIN`. A bare filename falls back to the default search order
+(PATH), which will not find the sibling DLLs of an arbitrary directory.
+
+The OpenVINO DLLs are built against the dynamic CRT and import `MSVCP140.dll` / `VCRUNTIME140.dll`
+from System32, so the **Microsoft Visual C++ redistributable must be installed**. Without it the
+load fails with error 126 (`ERROR_MOD_NOT_FOUND`), which names nothing useful. A `/MT` static
+consumer against these `/MD` DLLs is safe: every OpenVINO allocation is released through an
+OpenVINO-side free function, so no CRT object crosses the boundary.

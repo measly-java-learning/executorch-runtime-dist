@@ -95,12 +95,13 @@ portable. This is the heart of what makes the artifact usable downstream — tre
 
 ### Vendored XNNPACK workspace-size patches
 
-`scripts/patch-et-xnnpack-workspace.sh` applies a small vendored patch set (`patches/*.patch`) to the
-caller-supplied ExecuTorch checkout during the build's patch phase, before configure. It exposes the
-XNNPACK delegate's workspace arena size through the **read-only** `workspace_size_bytes` backend
-option — the consumer contract documented in `docs/xnnpack-workspace-size-consumer.md`. Upstream
-XNNPACK has no size accessor, so this is a local addition; code depending on it will not build against
-a stock ExecuTorch.
+`scripts/patch-et-sources.sh` applies the vendored patch set (`patches/*.patch`) to the
+caller-supplied ExecuTorch checkout during the build's patch phase, before configure. Two concerns:
+the XNNPACK **workspace-size** accessor (the read-only `workspace_size_bytes` backend option — the
+consumer contract in `docs/xnnpack-workspace-size-consumer.md`), and the **OpenVINO Windows** port
+(`LoadLibraryEx`/`GetProcAddress` instead of `dlopen`, plus the MSVC spelling of `-frtti
+-fexceptions`). Both are local additions; code depending on either will not build against a stock
+ExecuTorch.
 
 - **Keep `patches/*.patch` and `test/fixtures/etpatch/` in lockstep when the ET pin moves.** The
   hermetic patch test patches the real anchor text, so a stale fixture makes the patch test pass
@@ -124,16 +125,19 @@ never drift. When changing anything they define, change it here, not at a call s
   go through it, so they cannot diverge.
 - `naming.sh` — asset/tarball/sha/fixtures naming (contract C1).
 
-### OpenVINO (`linux-x86_64` only)
+### OpenVINO (`linux-x86_64` + both Windows platforms)
 
-All three Linux x86-64 variants build the ExecuTorch OpenVINO delegate
-(`EXECUTORCH_BUILD_OPENVINO=ON`, gated in `common_cmake_flags`). The backend resolves the
-OpenVINO C API via `dlopen` at runtime, so the build needs **no** OpenVINO SDK — it only adds a
-43 KB static archive. The OpenVINO runtime itself ships as a **separate** hash-pinned asset
-(contract C10) assembled by `scripts/vendor-openvino.sh` from the Apache-2.0 PyPI wheel;
-`scripts/lib/openvino.sh` is the SSOT for its version, members, and naming. Consumers must set
-`OPENVINO_LIB_PATH` to the absolute path of `libopenvino_c.so` — see the two handover docs in
-`docs/`.
+All three Linux x86-64 variants and both Windows platforms (`windows-x86_64`,
+`windows-x86_64-static`) build the ExecuTorch OpenVINO delegate (`EXECUTORCH_BUILD_OPENVINO=ON`,
+gated in `common_cmake_flags` on `ov_enabled_for_platform`). The backend resolves the OpenVINO C
+API at runtime — via `dlopen` on POSIX, via `LoadLibraryExW` on Windows (the loader arm and the
+MSVC `/EHsc /GR` compile spelling come from the vendored OpenVINO Windows patch) — so the build
+needs **no** OpenVINO SDK; the delegate is a small static archive (`libopenvino_backend.a` on
+POSIX, `openvino_backend.lib` under MSVC). The OpenVINO runtime itself ships as a **separate**
+hash-pinned asset (contract C10) assembled by `scripts/vendor-openvino.sh` from the Apache-2.0
+PyPI wheel; `scripts/lib/openvino.sh` is the SSOT for its version, members, and naming. Consumers
+must set `OPENVINO_LIB_PATH` to the absolute path of `libopenvino_c.so` (or `openvino_c.dll` on
+Windows) — see the two handover docs in `docs/`.
 
 ### Custom ops: `extras/`
 

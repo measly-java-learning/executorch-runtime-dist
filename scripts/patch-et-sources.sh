@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# Apply the workspace-size patches to a caller-supplied ExecuTorch checkout.
+# Apply the vendored source patches to a caller-supplied ExecuTorch checkout. Two concerns:
 #
-# These expose the XNNPACK delegate's arena size through the backend-options API so consumers can
-# account for it in host-side native memory reporting. Upstream XNNPACK has no size accessor and
-# ExecuTorch surfaces none, so this is a vendored patch set. See
-# docs/superpowers/specs/2026-08-14-xnnpack-workspace-size-design.md.
+#   1. WORKSPACE SIZE — expose the XNNPACK delegate's arena size through the backend-options API so
+#      consumers can account for it in host-side native memory reporting. Upstream XNNPACK has no
+#      size accessor and ExecuTorch surfaces none. See
+#      docs/superpowers/specs/2026-08-14-xnnpack-workspace-size-design.md.
+#   2. OPENVINO ON WINDOWS — ExecuTorch's OpenVINO backend is POSIX-only: it includes <dlfcn.h> and
+#      compiles with -frtti/-fexceptions, neither of which MSVC accepts. The patch adds a
+#      LoadLibraryEx/GetProcAddress arm and the MSVC compile-option spelling. It is a no-op on
+#      Linux by construction: every change is inside #ifdef _WIN32 or an if(MSVC) branch, verified
+#      with `unifdef -U_WIN32` reproducing the pristine files. See
+#      https://github.com/measly-java-learning/executorch-runtime-dist/issues/37.
 #
 # Idempotent by contract: build-runtime.sh re-runs against a persisted build tree and a checkout
 # that may already be patched. A patch that is already applied is success; a patch that does NOT
@@ -12,12 +18,12 @@
 # contract is quietly broken, which is the exact failure the post-build nm guard and the gate's
 # behavioural test exist to catch — but the recipe should fail first, and more legibly.
 #
-# Usage: patch-et-xnnpack-workspace.sh <et-src>
+# Usage: patch-et-sources.sh <et-src>
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-ET_SRC="${1:?usage: patch-et-xnnpack-workspace.sh <et-src>}"
-[ -d "$ET_SRC" ] || { echo "patch-et-xnnpack-workspace.sh: no such tree: $ET_SRC" >&2; exit 1; }
+ET_SRC="${1:?usage: patch-et-sources.sh <et-src>}"
+[ -d "$ET_SRC" ] || { echo "patch-et-sources.sh: no such tree: $ET_SRC" >&2; exit 1; }
 
 XNN_DIR="$ET_SRC/backends/xnnpack/third-party/XNNPACK"
 
@@ -44,6 +50,7 @@ apply_patch() {
   return 1
 }
 
-echo ">> patching ET/XNNPACK for workspace-size accounting"
-apply_patch "$XNN_DIR"  "$ROOT/patches/xnnpack-workspace-size-accessor.patch"
-apply_patch "$ET_SRC" "$ROOT/patches/et-xnnpack-workspace-size.patch"
+echo ">> patching ET sources (workspace-size accounting, OpenVINO/Windows)"
+apply_patch "$XNN_DIR" "$ROOT/patches/xnnpack-workspace-size-accessor.patch"
+apply_patch "$ET_SRC"  "$ROOT/patches/et-xnnpack-workspace-size.patch"
+apply_patch "$ET_SRC"  "$ROOT/patches/et-openvino-windows.patch"

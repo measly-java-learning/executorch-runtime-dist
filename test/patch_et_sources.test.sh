@@ -7,7 +7,7 @@
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/assert.sh"
-script="$here/../scripts/patch-et-xnnpack-workspace.sh"
+script="$here/../scripts/patch-et-sources.sh"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -26,6 +26,10 @@ mk_tree() { # <root>
   cp "$here/fixtures/etpatch/XNNPACKBackend.h"       "$r/backends/xnnpack/runtime/XNNPACKBackend.h"
   cp "$here/fixtures/etpatch/XnnpackBackendOptions.h"   "$r/backends/xnnpack/runtime/XnnpackBackendOptions.h"
   cp "$here/fixtures/etpatch/XnnpackBackendOptions.cpp" "$r/backends/xnnpack/runtime/XnnpackBackendOptions.cpp"
+  mkdir -p "$r/backends/openvino/runtime"
+  cp "$here/fixtures/etpatch/OpenvinoApi.h"          "$r/backends/openvino/runtime/OpenvinoApi.h"
+  cp "$here/fixtures/etpatch/OpenvinoBackend.cpp"    "$r/backends/openvino/runtime/OpenvinoBackend.cpp"
+  cp "$here/fixtures/etpatch/openvino-CMakeLists.txt" "$r/backends/openvino/CMakeLists.txt"
   git -C "$r" init -q
   git -C "$r" add -A
   git -C "$r" -c user.email=t@t -c user.name=t commit -qm init
@@ -52,6 +56,29 @@ assert_contains "$(cat "$tmp/et/backends/xnnpack/runtime/XNNPACKBackend.h")" \
 assert_contains "$(cat "$tmp/et/backends/xnnpack/runtime/XNNPACKBackend.h")" \
   'workspace_size_option_key[] = "workspace_size_bytes"' "option key spelling is exact"
 
+# The OpenVINO/Windows patch. Assert on the three things that make it work, not merely that
+# something changed: the Windows loader arm, the MSVC compile-option spelling, and the DLL name.
+assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoApi.h")" \
+  "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR" "windows loader flag patched in"
+# Both flags are load-bearing: SEARCH_DLL_LOAD_DIR alone switches the loader to the alternate
+# search order and drops System32, where the MSVC runtime the OpenVINO DLLs import from lives.
+# Verified empirically -- issue #37, comment 5372679998. Pin the pair so a "simplification" fails.
+assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoApi.h")" \
+  "LOAD_LIBRARY_SEARCH_DEFAULT_DIRS" "the second loader flag is present too"
+assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoBackend.cpp")" \
+  'kDefaultLibName = "openvino_c.dll"' "windows default library name patched in"
+assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoApi.h")" \
+  "FreeLibrary" "windows handle deleter patched in"
+assert_contains "$(cat "$tmp/et/backends/openvino/CMakeLists.txt")" \
+  "/EHsc /GR" "MSVC compile options patched in"
+
+# The Linux path must be untouched. The patch is a no-op there by construction, and this is the
+# assertion that keeps it that way: a future edit that drops an #ifdef would break Linux silently.
+assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoBackend.cpp")" \
+  'kDefaultLibName = "libopenvino_c.so"' "POSIX default library name survives"
+assert_contains "$(cat "$tmp/et/backends/openvino/CMakeLists.txt")" \
+  "-frtti -fexceptions" "GCC/Clang compile options survive"
+
 # Idempotency is not a nicety: build-runtime.sh re-runs against a persisted --build-dir and a
 # caller-supplied checkout that may already be patched from a previous run.
 bash "$script" "$tmp/et" >"$tmp/out2" 2>&1
@@ -73,6 +100,13 @@ mk_tree "$tmp/drift2"
 git -C "$tmp/drift2" -c user.email=t@t -c user.name=t commit -qam drift
 out="$(bash "$script" "$tmp/drift2" 2>&1)"
 assert_eq "$?" "1" "drifted ET-side anchor fails"
+
+mk_tree "$tmp/drift3"
+: > "$tmp/drift3/backends/openvino/runtime/OpenvinoBackend.cpp"
+git -C "$tmp/drift3" -c user.email=t@t -c user.name=t commit -qam drift
+out="$(bash "$script" "$tmp/drift3" 2>&1)"
+assert_eq "$?" "1" "drifted OpenVINO anchor fails"
+assert_contains "$out" "does not apply" "OpenVINO drift failure explains itself"
 
 bash "$script" >/dev/null 2>&1
 assert_eq "$?" "1" "missing argument is an error"
