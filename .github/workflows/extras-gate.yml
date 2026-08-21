@@ -324,6 +324,63 @@ jobs:
           path: prefix.tar.gz
           retention-days: 1
 
+  # Windows arm of the full gate. Deliberately mirrors release.yml's build-windows -- same two CRT
+  # platforms, same build-runtime.ps1 entrypoint, same package step -- because the whole point of
+  # `full` is that a green gate means the eventual release tag will build. Before this job, nothing
+  # on a PR ever compiled Windows: every other job here is ubuntu-latest, so an MSVC-breaking change
+  # (the vendored OpenVINO patch is exactly that shape) surfaced at the tag instead.
+  #
+  # It packages as well as builds: package.sh holds the assertion that the OpenVINO delegate archive
+  # exists before BUILDINFO records openvino_version, and that assertion is platform-dependent
+  # (openvino_backend.lib vs libopenvino_backend.a). A build-only job would let that regress.
+  full-build-windows:
+    needs: classify
+    if: needs.classify.outputs.mode == 'full'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [logging]
+        platform: [windows-x86_64, windows-x86_64-static]
+    steps:
+      - name: Configure Git for Windows checkout (long paths + symlinks)
+        # Same two Windows git defaults release.yml documents: third-party/ao -> cutlass has
+        # filenames past MAX_PATH, and Git-for-Windows defaults core.symlinks=false, which would
+        # materialize ET's symlinks as text stubs. --system so every submodule subprocess inherits.
+        shell: pwsh
+        run: |
+          git config --system core.longpaths true
+          git config --system core.symlinks true
+      - uses: actions/checkout@v7
+      - name: Checkout ExecuTorch source
+        uses: ./.github/actions/checkout-executorch
+        with:
+          ref: v${{ needs.classify.outputs.etver }}
+      - name: Build runtime (MSVC)
+        shell: pwsh
+        run: |
+          & ./build-runtime.ps1 ./build-runtime.sh --variant ${{ matrix.variant }} `
+            --prefix "$PWD/out" --et-src "$PWD/et-src/executorch" `
+            --et-tag v${{ needs.classify.outputs.etver }} --platform ${{ matrix.platform }}
+          if ($LASTEXITCODE -ne 0) { throw "build failed (exit $LASTEXITCODE)" }
+      - name: Assert the OpenVINO delegate was actually built
+        # The build succeeding is not the same as the delegate compiling: EXECUTORCH_BUILD_OPENVINO
+        # is a cache variable, and cmake only WARNS about an unused -D. Without this, an upstream
+        # rename would silently drop the delegate and the gate would stay green.
+        shell: bash
+        run: |
+          [ -f out/lib/openvino_backend.lib ] || {
+            echo "::error::out/lib/openvino_backend.lib missing — the OpenVINO delegate was not built"
+            exit 1; }
+          echo "ok: openvino_backend.lib present"
+      - name: Package
+        shell: bash
+        run: |
+          ./scripts/package.sh --prefix "$PWD/out" --etver "${{ needs.classify.outputs.etver }}" \
+            --variant "${{ matrix.variant }}" --platform ${{ matrix.platform }} \
+            --package-tag "gate-${GITHUB_SHA::7}" --outdir "$PWD/dist" \
+            --toolchain "msvc-2022"
+
   # Builds ExecuTorch's PYTHON package from the same pinned source and mints every fixture the
   # gates consume. Deliberately does NOT need the built prefix, which is what lets it run in
   # parallel with full-build. Everything it produces is a FILE, so it hands off as an artifact.
