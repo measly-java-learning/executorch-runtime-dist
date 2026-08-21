@@ -18,6 +18,11 @@ PREFIX="${1:?usage: openvino_fixture_run-windows.sh <et-prefix> <bundle-dir> <fi
 BUNDLE="${2:?usage: openvino_fixture_run-windows.sh <et-prefix> <bundle-dir> <fixture-dir>}"
 FIXTURES="${3:?usage: openvino_fixture_run-windows.sh <et-prefix> <bundle-dir> <fixture-dir>}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# cygpath is the one Git-Bash tool this script cannot do without: every path handed to a Windows
+# binary has to go through it. Fail here with a name rather than downstream with an empty string.
+command -v cygpath >/dev/null 2>&1 \
+  || { echo "FAIL: cygpath not on PATH -- run me under Git-Bash via build-runtime.ps1" >&2; exit 1; }
 PREFIX="$(cd "$PREFIX" && pwd)"; BUNDLE="$(cd "$BUNDLE" && pwd)"; FIXTURES="$(cd "$FIXTURES" && pwd)"
 
 lib="$BUNDLE/lib/openvino_c.dll"
@@ -83,14 +88,23 @@ fi
 sed 's/^/  /' "$SCRATCH/neg.err" >&2 || true
 echo "ok: load fails without OPENVINO_LIB_PATH, as documented"
 
+# Convert BEFORE the stripped-PATH invocation, never inside its assignment prefix. bash applies a
+# command's prefix assignments left to right and each is visible to the expansions of the ones
+# after it, so `PATH=$minpath VAR=$(cygpath ...)` runs cygpath with PATH already stripped --
+# cygpath lives in Git-Bash's /usr/bin, so it is not found and VAR silently becomes EMPTY. That
+# reaches the backend as LoadLibrary("") -> GetLastError=87, which looks nothing like a path bug.
+# openvino_smoke-windows.sh hoists its conversions for the same reason; keep both that way.
+winlib="$(cygpath -w "$lib")"
+[ -n "$winlib" ] || { echo "FAIL: cygpath produced an empty Windows path for '$lib'" >&2; exit 1; }
+
 echo "== Stage 2: execute against the bundle, PATH stripped =="
-PATH="$minpath" OPENVINO_LIB_PATH="$(cygpath -w "$lib")" \
+PATH="$minpath" OPENVINO_LIB_PATH="$winlib" \
   "$runner" "$pte" "$inbin" "$SCRATCH/got.bin" || {
   echo "FAIL: the fixture failed to run against the bundle" >&2
   echo "  If the failure is at method init, suspect the bundle member list before the .pte:" >&2
   echo "  a bundle missing openvino_ir_frontend.dll enumerates CPU but imports no model." >&2
-  echo "  Error 126 with everything present means a MISSING DEPENDENCY -- most often the MSVC" >&2
-  echo "  redistributable, which the wheel's /MD DLLs import from System32." >&2
+  echo "  GetLastError=126 with every member present means a MISSING DEPENDENCY -- most often" >&2
+  echo "  the MSVC redistributable, which the wheel's /MD DLLs import from System32." >&2
   exit 1; }
 echo "ok: fixture executed through the OpenVINO delegate"
 
