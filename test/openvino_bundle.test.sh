@@ -16,7 +16,7 @@ trap 'rm -rf "$tmp"' EXIT
 wheelsrc="$tmp/wheelsrc"
 mkdir -p "$wheelsrc/openvino/libs" "$wheelsrc/openvino-${OV_VERSION}.dist-info/licenses/licensing"
 while read -r m; do printf 'ELF-STUB %s\n' "$m" > "$wheelsrc/openvino/libs/$m"; done <<EOF
-$(ov_lib_members)
+$(ov_lib_members linux-x86_64)
 EOF
 printf 'Apache License 2.0 stub\n' > "$wheelsrc/openvino-${OV_VERSION}.dist-info/licenses/LICENSE"
 for f in runtime-third-party-programs.txt onetbb_third-party-programs.txt onednn_third-party-programs.txt; do
@@ -37,14 +37,14 @@ while read -r m; do
   [ -f "$bundle/lib/$m" ] && printf 'ok: lib member %s\n' "$m" \
     || { printf 'FAIL: missing lib member %s\n' "$m" >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
 done <<EOF
-$(ov_lib_members)
+$(ov_lib_members linux-x86_64)
 EOF
 
 while read -r m; do
   [ -f "$bundle/licenses/$m" ] && printf 'ok: license %s\n' "$m" \
     || { printf 'FAIL: missing license %s\n' "$m" >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
 done <<EOF
-$(ov_license_members)
+$(ov_license_members linux-x86_64)
 EOF
 
 # The unversioned symlink is what makes the backend's DEFAULT dlopen name resolvable; the wheel

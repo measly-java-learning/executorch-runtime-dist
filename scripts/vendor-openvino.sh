@@ -75,7 +75,7 @@ while read -r m; do
   [ -f "$src/$m" ] || { echo "vendor-openvino.sh: wheel is missing expected lib '$m'" >&2; exit 1; }
   cp -a "$src/$m" "$BUNDLE/lib/$m"
 done <<EOF
-$(ov_lib_members)
+$(ov_lib_members linux-x86_64)
 EOF
 
 # Relative symlink so the bundle stays relocatable.
@@ -93,7 +93,7 @@ cp -a "$HWLOC_LICENSE" "$BUNDLE/licenses/hwloc-COPYING"
 while read -r m; do
   [ -s "$BUNDLE/licenses/$m" ] || { echo "vendor-openvino.sh: license '$m' missing/empty" >&2; exit 1; }
 done <<EOF
-$(ov_license_members)
+$(ov_license_members linux-x86_64)
 EOF
 
 cat > "$BUNDLE/BUILDINFO" <<EOF

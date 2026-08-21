@@ -15,7 +15,7 @@ assert_eq "$(ov_tarball_name linux-x86_64)" "openvino-runtime-2025.4.1-linux-x86
 assert_eq "$(ov_sha_name linux-x86_64)"     "openvino-runtime-2025.4.1-linux-x86_64.tar.gz.sha256" "sha name"
 
 # The lib member list is the contract the bundle test and vendor script share.
-libs="$(ov_lib_members)"
+libs="$(ov_lib_members linux-x86_64)"
 assert_eq "$(printf '%s\n' "$libs" | wc -l)" "7" "seven runtime libs"
 for m in "libopenvino_c.so.2541" "libopenvino.so.2541" "libopenvino_intel_cpu_plugin.so" \
          "libopenvino_ir_frontend.so.2541" \
@@ -34,7 +34,7 @@ else
   printf 'ok: unversioned symlink is not a wheel member\n'
 fi
 
-lics="$(ov_license_members)"
+lics="$(ov_license_members linux-x86_64)"
 assert_eq "$(printf '%s\n' "$lics" | wc -l)" "5" "five license files"
 for m in "LICENSE" "runtime-third-party-programs.txt" "onetbb_third-party-programs.txt" \
          "onednn_third-party-programs.txt" "hwloc-COPYING"; do
@@ -70,5 +70,47 @@ ov_enabled_for_platform "" && { printf 'FAIL: empty must be off\n' >&2; ASSERT_F
 ov_tarball_name "" >/dev/null 2>&1; assert_eq "$?" "2" "ov_tarball_name propagates empty-platform failure"
 ov_sha_name     "" >/dev/null 2>&1; assert_eq "$?" "2" "ov_sha_name propagates empty-platform failure"
 ov_tarball_name    >/dev/null 2>&1; assert_eq "$?" "2" "ov_tarball_name requires a platform"
+
+# --- platform-taking bundle surface -------------------------------------------------------
+# The Windows wheel ships the same CPU runtime set MINUS hwloc, which is folded into
+# tbbbind_2_5.dll. A member list that is right for one platform and silently reused for the other
+# is how a bundle ends up missing the IR frontend -- the failure openvino_smoke.sh stage 2 exists
+# to catch, and which enumerates CPU perfectly right up until it cannot import a model.
+assert_eq "$(ov_lib_members linux-x86_64 | wc -l)"   "7" "linux bundle has 7 libs"
+assert_eq "$(ov_lib_members windows-x86_64 | wc -l)" "6" "windows bundle has 6 libs (no hwloc)"
+assert_contains "$(ov_lib_members windows-x86_64)" "openvino_ir_frontend.dll" \
+  "windows keeps the IR frontend"
+assert_contains "$(ov_lib_members windows-x86_64)" "tbbbind_2_5.dll" \
+  "windows keeps tbbbind (verified loadable from a flat bundle)"
+case "$(ov_lib_members windows-x86_64)" in
+  *hwloc*) printf 'FAIL: windows must not list hwloc\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
+  *) printf 'ok: no hwloc on windows\n' ;;
+esac
+case "$(ov_lib_members windows-x86_64)" in
+  *.so*) printf 'FAIL: windows members must be DLLs\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
+  *) printf 'ok: windows members are DLLs\n' ;;
+esac
+
+assert_eq "$(ov_license_members linux-x86_64 | wc -l)"   "5" "linux ships 5 licence files"
+assert_eq "$(ov_license_members windows-x86_64 | wc -l)" "4" "windows ships 4 (no hwloc-COPYING)"
+
+# Both CRT platforms share one bundle: the bundle is the OpenVINO runtime, not our artifact, and
+# the wheel's DLLs are /MD regardless of how a consumer links. Verified safe -- every OpenVINO
+# allocation is freed through an OpenVINO-side function, so no CRT object crosses the boundary.
+assert_eq "$(ov_lib_members windows-x86_64-static)" "$(ov_lib_members windows-x86_64)" \
+  "both windows CRTs share one bundle"
+
+assert_eq "$(ov_wheel_platform_tag linux-x86_64)"   "manylinux2014_x86_64" "linux wheel tag"
+assert_eq "$(ov_wheel_platform_tag windows-x86_64)" "win_amd64"            "windows wheel tag"
+_ovsha="$(ov_wheel_sha256 windows-x86_64)"
+assert_eq "${#_ovsha}" "64" "windows wheel sha is 64 hex"
+ov_uses_hwloc linux-x86_64   && printf 'ok: hwloc applies on linux\n'   || { printf 'FAIL: linux uses hwloc\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
+ov_uses_hwloc windows-x86_64 && { printf 'FAIL: windows must not use hwloc\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); } || printf 'ok: no hwloc on windows\n'
+
+# An unknown platform must FAIL rather than default to one platform's member list -- the same
+# reasoning crt_for_platform documents in configure-base.sh.
+ov_lib_members bogus-platform     >/dev/null 2>&1; assert_eq "$?" "2" "unknown platform rejected (libs)"
+ov_license_members bogus-platform >/dev/null 2>&1; assert_eq "$?" "2" "unknown platform rejected (licences)"
+ov_wheel_sha256 ""                >/dev/null 2>&1; assert_eq "$?" "2" "empty platform rejected (sha)"
 
 exit "$ASSERT_FAILS"
