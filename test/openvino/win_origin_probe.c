@@ -2,13 +2,8 @@
 // central design question for Windows OpenVINO support:
 // https://github.com/measly-java-learning/executorch-runtime-dist/issues/37 (blocker 2).
 //
-// NOT WIRED INTO ANY GATE YET, deliberately: there is no published win_amd64 bundle for it to run
-// against (ov_enabled_for_platform is still linux-x86_64 only), and the ExecuTorch backend does not
-// yet compile on Windows. It is committed because it is the evidence behind the design decision and
-// is most of the eventual Windows arm of both Linux probes -- rewriting it from the issue comment
-// would be strictly worse than keeping it. When the PowerShell gate lands, it should compile and
-// run this the way openvino_smoke.sh compiles the Linux probes with a bare `gcc` call: ad-hoc, not
-// via test/openvino/CMakeLists.txt, which exists only for ov_runner's find_package linkage.
+// Wired into test/openvino_smoke-windows.sh, which compiles it with cl and runs BOTH the `plain`
+// negative control and the `dllload` acceptance cell. See that script for the gate contract.
 //
 // WHAT IT TESTS. The Linux bundle self-resolves because the wheel's libs carry RPATH=$ORIGIN, so
 // dlopen by absolute path finds openvino.so's siblings in the same directory. Windows has no
