@@ -33,10 +33,39 @@ if [ -z "$ov_in" ] || [ -z "$ov_out" ]; then
   echo "FAIL: could not read OV_IN/OV_OUT from $shapefile" >&2; cat "$shapefile" >&2; exit 1
 fi
 
+# The prefix is self-describing: package.sh records the platform it was built for in BUILDINFO,
+# so the CRT is read from the artifact under test rather than passed in and possibly disagreeing
+# with it. Parsed, not sourced -- BUILDINFO is a shipped file, and sourcing one to get a field is
+# a habit worth not forming (same reasoning as the `shape` file in the Linux sibling).
+[ -f "$PREFIX/BUILDINFO" ] || { echo "FAIL: $PREFIX/BUILDINFO missing; is this an unpacked tarball?" >&2; exit 1; }
+PLATFORM="$(sed -n 's/^platform=\(.*\)$/\1/p' "$PREFIX/BUILDINFO")"
+[ -n "$PLATFORM" ] || { echo "FAIL: no platform= line in $PREFIX/BUILDINFO" >&2; exit 1; }
+# shellcheck source=../scripts/lib/configure-base.sh
+. "$HERE/../scripts/lib/configure-base.sh"
+CRT="$(crt_for_platform "$PLATFORM")" || { echo "FAIL: no CRT for platform '$PLATFORM'" >&2; exit 2; }
+echo ">> prefix platform: $PLATFORM (CRT=$CRT)"
+
 SCRATCH="$(mktemp -d)"
 echo "== Building ov_runner against $PREFIX =="
+# Both flags are here, and they fix DIFFERENT failures -- measured, not assumed.
+#
+# MSVC stamps the CRT kind and _ITERATOR_DEBUG_LEVEL into every object and the linker rejects any
+# mismatch (LNK2038, then a fatal LNK1319). With neither flag, ov_runner compiled as
+# /MDd_DynamicDebug against a Release prefix: 476 mismatches, headlined by an LNK4098 that reads
+# like a static-vs-dynamic problem but was actually Debug-vs-Release.
+#
+# BUILD_TYPE=Release fixes THAT case -- and so, on its own, does the runtime flag, because either
+# one stops CMake defaulting to the debug runtime. Do not conclude the other is redundant:
+# against the windows-x86_64-static prefix, BUILD_TYPE=Release alone still fails with
+# `MT_StaticRelease doesn't match MD_DynamicRelease`, because CMake's default runtime is the DLL
+# one regardless of config. Only the crt_for_platform value makes this script correct for BOTH
+# tarballs. Verified against both artifacts before this comment was written.
+#
+# crt_for_platform is the SSOT the build itself uses; never hardcode /MD or /MT here.
 cmake -B "$SCRATCH/build" -S "$HERE/openvino" -G Ninja \
   -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_MSVC_RUNTIME_LIBRARY="$CRT" \
   -DCMAKE_PREFIX_PATH="$(cygpath -m "$PREFIX")"
 cmake --build "$SCRATCH/build" --target ov_runner
 runner="$SCRATCH/build/ov_runner.exe"
