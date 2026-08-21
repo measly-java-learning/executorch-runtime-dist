@@ -132,6 +132,14 @@ ov_uses_hwloc() { # <platform> -> 0 (yes) / 1 (no)
   esac
 }
 
+# Does this platform's bundle need the unversioned compatibility symlink?
+ov_needs_soname_symlink() { # <platform> -> 0 (yes) / 1 (no)
+  case "${1:-}" in
+    linux-x86_64) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # THE platform -> "is the OpenVINO delegate compiled in?" predicate. One mapping, consumed by
 # cmakeflags.sh (which sets EXECUTORCH_BUILD_OPENVINO) and package.sh (which records
 # openvino_version in BUILDINFO and asserts the archive is actually present). Encoding this in two

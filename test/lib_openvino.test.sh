@@ -107,6 +107,13 @@ assert_eq "${#_ovsha}" "64" "windows wheel sha is 64 hex"
 ov_uses_hwloc linux-x86_64   && printf 'ok: hwloc applies on linux\n'   || { printf 'FAIL: linux uses hwloc\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
 ov_uses_hwloc windows-x86_64 && { printf 'FAIL: windows must not use hwloc\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); } || printf 'ok: no hwloc on windows\n'
 
+# The SONAME symlink is a Linux-only convenience (Windows DLLs are unversioned). It is a SEPARATE
+# fact from ov_uses_hwloc even though both are linux-only today: a future platform must not
+# inherit either silently.
+ov_needs_soname_symlink linux-x86_64   && printf 'ok: soname symlink on linux\n'   || { printf 'FAIL: linux needs soname symlink\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
+ov_needs_soname_symlink windows-x86_64 && { printf 'FAIL: windows must not need soname symlink\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); } || printf 'ok: no soname symlink on windows\n'
+ov_needs_soname_symlink "" && { printf 'FAIL: empty platform must not need symlink\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); } || printf 'ok: no symlink on empty platform\n'
+
 # An unknown platform must FAIL rather than default to one platform's member list -- the same
 # reasoning crt_for_platform documents in configure-base.sh.
 ov_lib_members bogus-platform     >/dev/null 2>&1; assert_eq "$?" "2" "unknown platform rejected (libs)"
