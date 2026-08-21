@@ -18,6 +18,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/openvino.sh"
 
+# Resolve the interpreter once: stock Ubuntu ships only python3, while Git for Windows and CI
+# ship `python`; both names run `-m pip` and `-m zipfile`.
+if command -v python >/dev/null 2>&1; then PY="python"
+elif command -v python3 >/dev/null 2>&1; then PY="python3"
+else echo "vendor-openvino.sh: neither 'python' nor 'python3' on PATH (pip download + zipfile extraction need one)" >&2; exit 1; fi
+
 PLATFORM="linux-x86_64"
 OUT=""; WHEEL=""; HWLOC_LICENSE=""
 while [ $# -gt 0 ]; do
@@ -40,7 +46,7 @@ trap 'rm -rf "$WORK"' EXIT
 # ---- obtain the wheel ----
 if [ -z "$WHEEL" ]; then
   echo ">> downloading openvino==$OV_VERSION wheel" >&2
-  pip download "openvino==$OV_VERSION" --no-deps --only-binary :all: \
+  "$PY" -m pip download "openvino==$OV_VERSION" --no-deps --only-binary :all: \
     --python-version "${OV_WHEEL_PYTAG#cp}" --platform "$(ov_wheel_platform_tag "$PLATFORM")" \
     -d "$WORK/dl" >&2
   WHEEL="$(ls "$WORK"/dl/openvino-*.whl)"
@@ -76,9 +82,9 @@ fi
 
 # ---- extract ----
 # python, not unzip: Git for Windows does not ship unzip, and this script must run on the Windows
-# gate runner as well as in the manylinux container. python is already a hard dependency (pip
-# download above), so this removes a dependency rather than adding one.
-python -m zipfile -e "$WHEEL" "$WORK/x"
+# gate runner as well as in the manylinux container. python (or python3) is already a hard
+# dependency (pip download above), so this removes a dependency rather than adding one.
+"$PY" -m zipfile -e "$WHEEL" "$WORK/x"
 STEM="$(ov_asset_stem "$PLATFORM")"
 BUNDLE="$OUT/$STEM"
 # Idempotent: a re-run replaces any previous bundle rather than merging into it.

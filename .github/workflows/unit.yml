@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   unit:
-    runs-on: ubuntu-latest      # no container: bash + coreutils + git + python3 is the whole dep set
+    runs-on: ubuntu-latest      # no container: bash + coreutils + git + python or python3 is the whole dep set
     steps:
       - uses: actions/checkout@v7
       - name: Run the hermetic unit suite
