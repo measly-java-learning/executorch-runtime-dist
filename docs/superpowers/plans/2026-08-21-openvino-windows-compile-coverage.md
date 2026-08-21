@@ -116,7 +116,7 @@ index 5b7a1349b..dacbe4e9d 100644
  # Add source files for OpenVINO backend
  target_sources(
 diff --git a/backends/openvino/runtime/OpenvinoApi.h b/backends/openvino/runtime/OpenvinoApi.h
-index 90403e24b..48236ee7f 100644
+index 90403e24b..374051fa5 100644
 --- a/backends/openvino/runtime/OpenvinoApi.h
 +++ b/backends/openvino/runtime/OpenvinoApi.h
 @@ -8,7 +8,17 @@
@@ -137,7 +137,7 @@ index 90403e24b..48236ee7f 100644
  #include <cstddef>
  #include <cstdint>
  #include <memory>
-@@ -99,7 +109,11 @@ using ov_shape_free_fn = ov_status_e (*)(ov_shape_t*);
+@@ -99,12 +109,53 @@ using ov_shape_free_fn = ov_status_e (*)(ov_shape_t*);
  struct DlCloser {
    void operator()(void* handle) {
      if (handle) {
@@ -149,24 +149,12 @@ index 90403e24b..48236ee7f 100644
      }
    }
  };
-diff --git a/backends/openvino/runtime/OpenvinoBackend.cpp b/backends/openvino/runtime/OpenvinoBackend.cpp
-index 3cf87e6ab..c66b436db 100644
---- a/backends/openvino/runtime/OpenvinoBackend.cpp
-+++ b/backends/openvino/runtime/OpenvinoBackend.cpp
-@@ -23,10 +23,61 @@ namespace openvino {
+ using DlHandle = std::unique_ptr<void, DlCloser>;
  
- namespace {
- 
-+#ifdef _WIN32
-+constexpr const char* kDefaultLibName = "openvino_c.dll";
-+#else
- constexpr const char* kDefaultLibName = "libopenvino_c.so";
-+#endif
-+
 +#ifdef _WIN32
 +// LoadLibraryEx FAILS when a LOAD_LIBRARY_SEARCH_* flag is paired with a bare filename, so the
 +// absolute and bare cases below must take different branches.
-+bool is_absolute_path(const char* path) {
++inline bool is_absolute_path(const char* path) {
 +  if (!path || !path[0]) {
 +    return false;
 +  }
@@ -179,23 +167,42 @@ index 3cf87e6ab..c66b436db 100644
 +// DEFAULT_DIRS is required, not belt-and-braces: any LOAD_LIBRARY_SEARCH_* flag switches the
 +// loader to the alternate search order, which drops System32 -- where the MSVC runtime the
 +// OpenVINO DLLs import from lives. DLL_LOAD_DIR alone fails with ERROR_MOD_NOT_FOUND.
-+void* open_library(const char* path) {
++inline void* open_library(const char* path) {
 +  int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
 +  if (wlen <= 0) {
 +    return nullptr;
 +  }
-+  std::wstring wpath(static_cast<size_t>(wlen), L'\0');
-+  if (MultiByteToWideChar(CP_UTF8, 0, path, -1, &wpath[0], wlen) <= 0) {
++  // unique_ptr<wchar_t[]> rather than std::wstring: <memory> is already a dependency of this
++  // header and <string> is not, so this keeps the include set unchanged.
++  std::unique_ptr<wchar_t[]> wpath(new wchar_t[wlen]);
++  if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath.get(), wlen) <= 0) {
 +    return nullptr;
 +  }
 +  if (is_absolute_path(path)) {
 +    return LoadLibraryExW(
-+        wpath.c_str(),
++        wpath.get(),
 +        nullptr,
 +        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 +  }
-+  return LoadLibraryW(wpath.c_str());
++  return LoadLibraryW(wpath.get());
 +}
++#endif
++
+ struct OpenvinoFunctions {
+   ov_core_create_fn core_create = nullptr;
+   ov_core_free_fn core_free = nullptr;
+diff --git a/backends/openvino/runtime/OpenvinoBackend.cpp b/backends/openvino/runtime/OpenvinoBackend.cpp
+index 3cf87e6ab..4d2dc2222 100644
+--- a/backends/openvino/runtime/OpenvinoBackend.cpp
++++ b/backends/openvino/runtime/OpenvinoBackend.cpp
+@@ -23,10 +23,26 @@ namespace openvino {
+ 
+ namespace {
+ 
++#ifdef _WIN32
++constexpr const char* kDefaultLibName = "openvino_c.dll";
++#else
+ constexpr const char* kDefaultLibName = "libopenvino_c.so";
 +#endif
  
  template <typename FuncPtr>
@@ -215,7 +222,7 @@ index 3cf87e6ab..c66b436db 100644
    dlerror(); // Clear any stale error state.
    void* sym = dlsym(handle, name);
    const char* err = dlerror();
-@@ -35,6 +86,7 @@ FuncPtr load_symbol(void* handle, const char* name) {
+@@ -35,6 +51,7 @@ FuncPtr load_symbol(void* handle, const char* name) {
      return nullptr;
    }
    return reinterpret_cast<FuncPtr>(sym);
@@ -223,7 +230,7 @@ index 3cf87e6ab..c66b436db 100644
  }
  
  } // namespace
-@@ -47,6 +99,21 @@ bool OpenvinoBackend::ensure_loaded() const {
+@@ -47,6 +64,21 @@ bool OpenvinoBackend::ensure_loaded() const {
      const char* lib_path = std::getenv("OPENVINO_LIB_PATH");
      const char* effective_path = lib_path ? lib_path : kDefaultLibName;
  
@@ -245,7 +252,7 @@ index 3cf87e6ab..c66b436db 100644
      void* handle = dlopen(effective_path, RTLD_NOW | RTLD_LOCAL);
      if (!handle) {
        ET_LOG(
-@@ -58,6 +125,7 @@ bool OpenvinoBackend::ensure_loaded() const {
+@@ -58,6 +90,7 @@ bool OpenvinoBackend::ensure_loaded() const {
            dlerror());
        return;
      }
@@ -254,6 +261,15 @@ index 3cf87e6ab..c66b436db 100644
  
  #define LOAD_SYM(field, symbol_name)                                  \
 ```
+
+The Windows loader helpers (`is_absolute_path`, `open_library`) live in **`OpenvinoApi.h`**, not in
+`OpenvinoBackend.cpp`, for two reasons. That header is already the platform-API shim — it owns the
+`dlfcn.h`/`windows.h` switch and `DlCloser`/`DlHandle` — so open and close belong together rather
+than split across two files. And it is the drift-resistant place to put them: between v1.3.1 and
+v1.4.1 upstream touched `OpenvinoBackend.cpp` in 5 commits and `OpenvinoApi.h` in 1, so keeping the
+`.cpp` hunk small is what makes the next pin bump cheap. They are `inline` because they are now in a
+header, and use `unique_ptr<wchar_t[]>` rather than `std::wstring` so the header's include set is
+unchanged (`<memory>` is already there; `<string>` is not).
 
 - [ ] **Step 3: Verify the patch applies to a real v1.4.1 checkout**
 
@@ -382,12 +398,12 @@ Then add these assertions after the existing `workspace_size_option_key` spellin
 ```bash
 # The OpenVINO/Windows patch. Assert on the three things that make it work, not merely that
 # something changed: the Windows loader arm, the MSVC compile-option spelling, and the DLL name.
-assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoBackend.cpp")" \
+assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoApi.h")" \
   "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR" "windows loader flag patched in"
 # Both flags are load-bearing: SEARCH_DLL_LOAD_DIR alone switches the loader to the alternate
 # search order and drops System32, where the MSVC runtime the OpenVINO DLLs import from lives.
 # Verified empirically -- issue #37, comment 5372679998. Pin the pair so a "simplification" fails.
-assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoBackend.cpp")" \
+assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoApi.h")" \
   "LOAD_LIBRARY_SEARCH_DEFAULT_DIRS" "the second loader flag is present too"
 assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoBackend.cpp")" \
   'kDefaultLibName = "openvino_c.dll"' "windows default library name patched in"
