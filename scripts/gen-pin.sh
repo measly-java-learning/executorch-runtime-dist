@@ -5,15 +5,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/naming.sh"
 . "$HERE/lib/openvino.sh"
 
-VERSION=""; ETVER=""; BASEURL=""; ROWS=(); OVSHA=""; OVSHA_SET=0; OVPLATFORM="linux-x86_64"
+VERSION=""; ETVER=""; BASEURL=""; ROWS=(); OVROWS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --etver) ETVER="$2"; shift 2 ;;
     --base-url) BASEURL="$2"; shift 2 ;;
     --row) ROWS+=("$2 $3 $4"); shift 4 ;;
-    --openvino-sha)      OVSHA="$2"; OVSHA_SET=1; shift 2 ;;
-    --openvino-platform) OVPLATFORM="$2"; shift 2 ;;
+    --openvino-row) OVROWS+=("$2 $3"); shift 3 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -56,26 +55,66 @@ endfunction()
 
 EOF
 
-# C10: the OpenVINO CPU runtime bundle. Emitted only when a sha is supplied, so a release that
-# did not run the OpenVINO job still yields a valid (OpenVINO-free) pin rather than dangling vars.
-# Versioned by OPENVINO version, not ET version — it tracks an independent upstream and must be
-# re-rollable without an ET bump.
-if [ "$OVSHA_SET" -eq 1 ]; then
-  # Validate like discover-pin-rows.sh validates its rows: a malformed sha here would publish a pin
-  # that downstream re-verification rejects, and the failure would surface in a consumer's build
-  # rather than ours. An empty/short/non-hex value is a bug in the caller, not a reason to shrug.
-  case "$OVSHA" in
-    ""|*[!0-9a-f]*) echo "gen-pin.sh: --openvino-sha is not lowercase hex ('$OVSHA')" >&2; exit 1 ;;
-  esac
-  [ "${#OVSHA}" -eq 64 ] \
-    || { echo "gen-pin.sh: --openvino-sha must be 64 hex chars (got ${#OVSHA})" >&2; exit 1; }
-  [ -n "$OVPLATFORM" ] \
-    || { echo "gen-pin.sh: --openvino-platform must not be empty" >&2; exit 1; }
+# C10: the OpenVINO CPU runtime bundles. Emitted only for the platforms a row was supplied for, so
+# a release that did not run the OpenVINO job still yields a valid (OpenVINO-free) pin.
+# Versioned by OPENVINO version, not ET version -- it tracks an independent upstream.
+if [ "${#OVROWS[@]}" -gt 0 ]; then
   printf 'set(ET_RUNTIME_OPENVINO_VERSION "%s")\n' "$OV_VERSION"
-  # The pin is one file included by every platform's build, but the bundle is built for one
-  # platform. Recording it lets a consumer skip the bundle by comparing against its own row
-  # instead of parsing the URL.
-  printf 'set(ET_RUNTIME_OPENVINO_PLATFORM "%s")\n' "$OVPLATFORM"
-  printf 'set(ET_RUNTIME_OPENVINO_URL\n  "%s/%s")\n' "$BASEURL" "$(ov_tarball_name "$OVPLATFORM")"
-  printf 'set(ET_RUNTIME_OPENVINO_SHA256 "%s")\n\n' "$OVSHA"
+  _ov_legacy_sha=""
+  for r in "${OVROWS[@]}"; do
+    # shellcheck disable=SC2086  # split the "platform sha" pair
+    set -- $r
+    ovplatform="$1"; ovsha="$2"
+    case "$ovsha" in
+      ""|*[!0-9a-f]*) echo "gen-pin.sh: --openvino-row sha is not lowercase hex ('$ovsha')" >&2; exit 1 ;;
+    esac
+    [ "${#ovsha}" -eq 64 ] \
+      || { echo "gen-pin.sh: --openvino-row sha must be 64 hex chars (got ${#ovsha})" >&2; exit 1; }
+    printf 'set(ET_RUNTIME_OPENVINO_URL_%s\n  "%s/%s")\n' \
+      "$ovplatform" "$BASEURL" "$(ov_tarball_name "$ovplatform")"
+    printf 'set(ET_RUNTIME_OPENVINO_SHA256_%s "%s")\n\n' "$ovplatform" "$ovsha"
+    [ "$ovplatform" = "linux-x86_64" ] && _ov_legacy_sha="$ovsha"
+  done
+
+  # A platform that SHARES another's bundle still needs its own row, or a consumer building that
+  # row cannot find a runtime. Emitted as aliases rather than duplicate assets.
+  while read -r p; do
+    [ -n "$p" ] || continue
+    b="$(ov_bundle_platform "$p")" || continue
+    [ "$b" = "$p" ] && continue
+    printf 'set(ET_RUNTIME_OPENVINO_URL_%s "${ET_RUNTIME_OPENVINO_URL_%s}")\n' "$p" "$b"
+    printf 'set(ET_RUNTIME_OPENVINO_SHA256_%s "${ET_RUNTIME_OPENVINO_SHA256_%s}")\n\n' "$p" "$b"
+  done <<EOF
+$(ov_alias_platforms)
+EOF
+
+  cat <<'EOF'
+# Ask for a platform's bundle. Unlike et_runtime_dist_url this does NOT abort when there is no
+# row: a platform with no OpenVINO bundle is legitimate (linux-aarch64 has none), so the caller
+# gets empty strings and decides. Test the url, do not test DEFINED on a built-up name.
+function(et_runtime_openvino_url platform out_url out_sha)
+  if(DEFINED ET_RUNTIME_OPENVINO_URL_${platform})
+    set(${out_url} "${ET_RUNTIME_OPENVINO_URL_${platform}}" PARENT_SCOPE)
+    set(${out_sha} "${ET_RUNTIME_OPENVINO_SHA256_${platform}}" PARENT_SCOPE)
+  else()
+    set(${out_url} "" PARENT_SCOPE)
+    set(${out_sha} "" PARENT_SCOPE)
+  endif()
+endfunction()
+
+EOF
+
+  # DEPRECATED legacy trio. docs/openvino-jni-consumer.md still instructs consumers to compare
+  # ET_RUNTIME_ROW against ET_RUNTIME_OPENVINO_PLATFORM; dropping these would break them at the
+  # next release with no signal. Remove once djl-executorch-engine has migrated to the selector
+  # (tracked in https://github.com/measly-java-learning/executorch-runtime-dist/issues/48).
+  if [ -n "$_ov_legacy_sha" ]; then
+    cat <<'EOF'
+# DEPRECATED: single-bundle variables, kept for consumers written before multi-platform bundles.
+# Use et_runtime_openvino_url(<platform> url sha) instead; these describe linux-x86_64 only.
+EOF
+    printf 'set(ET_RUNTIME_OPENVINO_PLATFORM "linux-x86_64")\n'
+    printf 'set(ET_RUNTIME_OPENVINO_URL\n  "%s/%s")\n' "$BASEURL" "$(ov_tarball_name linux-x86_64)"
+    printf 'set(ET_RUNTIME_OPENVINO_SHA256 "%s")\n\n' "$_ov_legacy_sha"
+  fi
 fi
