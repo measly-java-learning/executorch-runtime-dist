@@ -64,7 +64,7 @@ hash-pinned tarballs. Pushing a version tag is the **only** CI trigger.
    - the 3 tarballs and their matching `.sha256` files
    - a ready-to-paste `EtRuntimePin.cmake`
    - the OpenVINO CPU runtime bundle `openvino-runtime-<ovver>-<platform>.tar.gz` and its
-     `.sha256` (contract C10) — a separate, hash-pinned asset versioned by the OpenVINO version,
+     `.sha256` — a separate, hash-pinned asset versioned by the OpenVINO version,
      published per platform (`linux-x86_64`, `windows-x86_64`, the latter also serving
      `windows-x86_64-static`). Its per-platform `ET_RUNTIME_OPENVINO_URL_<platform>` /
      `ET_RUNTIME_OPENVINO_SHA256_<platform>` vars and `et_runtime_openvino_url()` selector land in
