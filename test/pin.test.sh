@@ -37,17 +37,18 @@ assert_contains "$bad" "variant='devtools'" "selector error names the variant"
 assert_contains "$bad" "platform='linux-aarch64'" "selector error names the platform"
 
 . "$here/../scripts/lib/openvino.sh"
-sha1="$(printf 'a%.0s' $(seq 64))"
-ovsha="$(printf 'b%.0s' $(seq 64))"
-ovsha2="$(printf 'c%.0s' $(seq 64))"
+# Distinct 64-hex placeholders: a cross-wired variable then fails its assertion loudly.
+row_sha="$(printf 'a%.0s' $(seq 64))"   # the tarball row (--row logging linux-x86_64)
+ovsha="$(printf 'b%.0s' $(seq 64))"     # the linux bundle row
+ovsha_win="$(printf 'c%.0s' $(seq 64))" # the windows bundle row
 
 # Per-platform rows, mirroring the tarball rows' shape.
 pin_ov="$("$here/../scripts/gen-pin.sh" --version 1.2.3-1 --etver 1.2.3 --base-url "$base" \
-  --row logging linux-x86_64 "$sha1" \
-  --openvino-row linux-x86_64 "$ovsha" --openvino-row windows-x86_64 "$ovsha2")"
+  --row logging linux-x86_64 "$row_sha" \
+  --openvino-row linux-x86_64 "$ovsha" --openvino-row windows-x86_64 "$ovsha_win")"
 assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_VERSION \"$OV_VERSION\")" "pin records openvino version"
 assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_SHA256_linux-x86_64 \"$ovsha\")"   "linux row"
-assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_SHA256_windows-x86_64 \"$ovsha2\")" "windows row"
+assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_SHA256_windows-x86_64 \"$ovsha_win\")" "windows row"
 assert_contains "$pin_ov" 'set(ET_RUNTIME_OPENVINO_SHA256_windows-x86_64-static "${ET_RUNTIME_OPENVINO_SHA256_windows-x86_64}")' "static alias sha row"
 assert_contains "$pin_ov" 'set(ET_RUNTIME_OPENVINO_URL_windows-x86_64-static "${ET_RUNTIME_OPENVINO_URL_windows-x86_64}")' "static alias url row"
 assert_contains "$pin_ov" 'function(et_runtime_openvino_url platform out_url out_sha)' "selector defined"
@@ -63,7 +64,7 @@ assert_contains "$pin_ov" "DEPRECATED" "legacy vars are marked deprecated"
 
 # A release with no bundle at all still yields a valid pin.
 pin_no="$("$here/../scripts/gen-pin.sh" --version 1.2.3-1 --etver 1.2.3 --base-url "$base" \
-  --row logging linux-x86_64 "$sha1")"
+  --row logging linux-x86_64 "$row_sha")"
 if printf '%s\n' "$pin_no" | grep -q '^set(ET_RUNTIME_OPENVINO_'; then
   printf 'FAIL: pin without an openvino row must emit no ET_RUNTIME_OPENVINO_* vars\n' >&2
   ASSERT_FAILS=$((ASSERT_FAILS+1))
