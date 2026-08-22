@@ -1,6 +1,6 @@
 # Spike: `optimized_native_cpu_ops_lib` on Windows (issue #46)
 
-**Status:** procedure, not yet run. **Host:** `winbox` (VS 18 / MSVC 19.51, Ninja, cmake, Git-Bash).
+**Status:** run; stopped at Step 3 — the /MD build fails to compile, which is the finding. **Host:** `winbox` (VS 18 / MSVC 19.51, Ninja, cmake, Git-Bash).
 **Type:** throwaway. Nothing built here ships; the flag edit lives on a scratch branch that is
 deleted when the spike reports.
 
@@ -327,4 +327,62 @@ enumerated in the issue — is a separate bounded task.
 - Linux. Unchanged by the flag; the existing gates cover it.
 - `bare` / `devtools`. Windows ships `logging` only.
 - Extras. `build-runtime.sh:240` skips phase 2 on Windows.
-- The `spike/windows-msvc-spike.md` finding-3 doc corrections — issue #46 already lists them.
+## Findings
+
+**Answer to Q1a: NO — the combination does not compile under MSVC at our pin.** Stopped at Step 3
+per the procedure ("a failure at Step 3 or 6 **is** the finding — stop and report"). Steps 4–9 did
+not run; Step 6 (/MT) was not attempted because the failure is a language-standard compile error,
+independent of `CMAKE_MSVC_RUNTIME_LIBRARY` (the plan's own guidance: "if optimized kernels break
+MSVC at all, they break here").
+
+### The failure (Step 3, `windows-x86_64`, /MD)
+
+Configure passed with the spike flag set (verify: `--print-flags` → `KERNELS_OPTIMIZED=ON` present,
+`KERNELS_QUANTIZED` absent). Build reached 711/1620 targets, then:
+
+```
+kernels/optimized/blas/BlasKernel.cpp   FAILED: [code=2]
+torch\include\c10\util\StringUtil.h(169): error C7555: use of designated initializers requires at
+least '/std:c++20'
+```
+
+- The TU compiles with `-std:c++17 -MD /EHsc`; torch 2.13.0+cpu include dirs come first on the
+  command line. `BlasKernel.cpp` includes `<ATen/cpu/vec/vec.h>`, `<ATen/cpu/vec/functional.h>`,
+  `<c10/util/Unroll.h>`, `<c10/util/irange.h>` — it is a port of PyTorch's
+  `ReducedPrecisionFloatGemvFastPathKernel.cpp`.
+- The installed `torch==2.13.0+cpu` `StringUtil.h:169` reads
+  `return {.function = function, .file = file, .line = line};` — designated initializers. **Issue
+  #46's rebuttal is wrong for the pinned torch**: its claim that "in current torch [it] is
+  positional… no designated initializer left to trip on" does not hold at `torch==2.13.0+cpu`. The
+  spike measured exactly finding 3's C7555, at the current pin, against a fresh install of the
+  pinned torch (installed by `build-runtime.sh:203`, not the stale `.venv`).
+- Toolchain: MSVC 19.51.36252.0 (VS 18/2026, MSVC 14.51.36231), cmake 4.3.1-msvc1, ninja 1.13.2,
+  Python 3.12.10 (store Python), torch 2.13.0+cpu.
+- C4530 count: **37** in the partial build. Kernel TUs already compile with `/EHsc` at this pin
+  (measured on the `BlasKernel.cpp` command line), so the plan's "/EHsc scoping" question is
+  answered: the scoping precedent from the vendored OpenVINO patch is not needed for the kernel
+  targets; 37 C4530s came from other TUs before the build stopped.
+- Q1b (/MT): not run, per above.
+
+### What the follow-up task inherits
+
+- The likely mechanism behind "upstream CI is green": our configure installs torch and its include
+  dirs win over ET's portable c10 shim, so `c10/util/Unroll.h` and the ATen vector headers resolve
+  to torch's C++20-requiring copies. Upstream's kernels-only CI may not install torch at all.
+  [INFERENCE] A fix path (raise the kernel TUs to `/std:c++20`, or scope the torch include set, or
+  point c10 at ET's shim) is issue #46's bounded task, not this spike's.
+- Baseline observations that would otherwise have been Step 9 context: the published v1.4.1-1
+  Windows tarball ships **no OpenVINO delegate** (`openvino_version=n/a`, no `openvino_backend.lib`;
+  the OV Windows port landed after the release), so the fixture gate against it fails Stage 2 with
+  `Backend OpenvinoBackend is not registered` — baseline STATUS line was
+  `ov_runner kernels: portable_ops_lib` as expected. The bundle-only smoke gate passes on winbox.
+
+### Execution-model notes for the next Windows spike
+
+- `Start-Process` children die when the ssh session exits on winbox. Hold the ssh open for the
+  build's duration (workstation-side `async`) and `Tee-Object` to a log; do not detach.
+- `pwsh -File` command-line args that start with `--` clash with pwsh's own parameters; put flags
+  in staged `.ps1`/`.sh` files, invoked through `&` or `build-runtime.ps1` with one positional arg.
+- The flag edit must be verified as a full-string diff, not just "new flag present": the first
+  bundle carried a flag string that had lost a `-D` prefix (authoring error), which `cmake`
+  rejected at configure; fixed and re-bundled (tip-hash check caught the stale side).
