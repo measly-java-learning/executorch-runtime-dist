@@ -54,10 +54,10 @@ jobs:
           set -euo pipefail
           . ./scripts/lib/openvino.sh
           # JSON array from the SSOT, so the release matrix cannot drift from ov_bundle_platforms.
-          # sed+paste, not jq: no workflow in this repo uses jq today and the bundle list is a
-          # handful of bare platform strings -- not worth a new tool on the release path.
-          printf 'ovbundles=[%s]\n' \
-            "$(ov_bundle_platforms | sed 's/.*/"&"/' | paste -sd, -)" >> "$GITHUB_OUTPUT"
+          # jq is preinstalled on GitHub-hosted runners and already a dependency of this repo's
+          # tooling (classify-gate.sh), so it costs nothing here.
+          printf 'ovbundles=%s\n' \
+            "$(ov_bundle_platforms | jq -Rcn '[inputs]')" >> "$GITHUB_OUTPUT"
 
   build:
     needs: setup
