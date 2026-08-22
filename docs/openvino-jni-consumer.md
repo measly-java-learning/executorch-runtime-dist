@@ -132,7 +132,7 @@ than at build time.
 
 ## Checklist
 
-- [ ] Vendor the six libs + symlink into one flat directory in the Linux-qualified jar
+- [ ] Vendor the seven libs + symlink into one flat directory in the Linux-qualified jar
 - [ ] Extract them together, preserving the symlink, to a stable directory
 - [ ] `setenv("OPENVINO_LIB_PATH", "<dir>/libopenvino_c.so", 1)` in JNI init
 - [ ] Do this before the first inference

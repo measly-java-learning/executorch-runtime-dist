@@ -25,8 +25,10 @@ cat <<'EOF'
 # returns, so unused variants download nothing:
 #   et_runtime_dist_url("${ET_RUNTIME_VARIANT}" "${platform}" url sha)
 #
-# The ET_RUNTIME_OPENVINO_* vars are optional (contract C10): they are absent from releases
-# that published no bundle, and the bundle exists for ET_RUNTIME_OPENVINO_PLATFORM only.
+# The ET_RUNTIME_OPENVINO_* vars are optional (contract C10): rows exist per platform supplied
+# to the release (linux-x86_64, windows-x86_64, plus a windows-x86_64-static alias) and are read
+# via et_runtime_openvino_url(<platform> url sha). ET_RUNTIME_OPENVINO_PLATFORM is the DEPRECATED
+# legacy var, describing linux-x86_64 only.
 EOF
 printf 'set(ET_RUNTIME_VERSION "%s")\n' "$VERSION"
 printf 'set(ET_RUNTIME_ET_VERSION "%s")\n\n' "$ETVER"

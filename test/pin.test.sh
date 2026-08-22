@@ -48,6 +48,8 @@ pin_ov="$("$here/../scripts/gen-pin.sh" --version 1.2.3-1 --etver 1.2.3 --base-u
 assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_VERSION \"$OV_VERSION\")" "pin records openvino version"
 assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_SHA256_linux-x86_64 \"$ovsha\")"   "linux row"
 assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_SHA256_windows-x86_64 \"$ovsha2\")" "windows row"
+assert_contains "$pin_ov" 'set(ET_RUNTIME_OPENVINO_SHA256_windows-x86_64-static "${ET_RUNTIME_OPENVINO_SHA256_windows-x86_64}")' "static alias sha row"
+assert_contains "$pin_ov" 'set(ET_RUNTIME_OPENVINO_URL_windows-x86_64-static "${ET_RUNTIME_OPENVINO_URL_windows-x86_64}")' "static alias url row"
 assert_contains "$pin_ov" 'function(et_runtime_openvino_url platform out_url out_sha)' "selector defined"
 
 # The legacy trio must survive: docs/openvino-jni-consumer.md instructs consumers to test
@@ -55,6 +57,8 @@ assert_contains "$pin_ov" 'function(et_runtime_openvino_url platform out_url out
 # existing consumer at the next release with no CI signal anywhere.
 assert_contains "$pin_ov" 'set(ET_RUNTIME_OPENVINO_PLATFORM "linux-x86_64")' "legacy platform var kept"
 assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_SHA256 \"$ovsha\")" "legacy sha var kept"
+assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_URL
+  \"$base/$(ov_tarball_name linux-x86_64)\")" "legacy url names the linux bundle"
 assert_contains "$pin_ov" "DEPRECATED" "legacy vars are marked deprecated"
 
 # A release with no bundle at all still yields a valid pin.
@@ -70,10 +74,11 @@ fi
 # Run the selector through real cmake, the way selector_probe.cmake proves the tarball selector.
 # A generated function that merely LOOKS right is not the property we need.
 printf '%s\n' "$pin_ov" > "$pin_dir/pin_ov.cmake"
-for p in linux-x86_64 windows-x86_64; do
+for p in linux-x86_64 windows-x86_64 windows-x86_64-static; do
   out="$(cmake -DPIN="$pin_dir/pin_ov.cmake" -DP="$p" -P "$here/fixtures/pin/openvino_selector_probe.cmake" 2>&1)" \
     || { printf 'FAIL: openvino selector aborted for %s\n%s\n' "$p" "$out" >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); continue; }
-  assert_contains "$out" "$(ov_tarball_name "$p")" "selector resolves the $p bundle"
+  # The alias row names the bundle platform's tarball (windows-x86_64), not a -static asset.
+  assert_contains "$out" "$(ov_tarball_name "$(ov_bundle_platform "$p")")" "selector resolves the $p bundle"
 done
 # Absence must be reported as empty, NOT as a fatal error: linux-aarch64 legitimately has no
 # bundle, and a consumer building that row must be able to ask and get "no".

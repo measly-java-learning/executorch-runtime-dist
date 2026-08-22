@@ -145,8 +145,8 @@ ov_needs_soname_symlink() { # <platform> -> 0 (yes) / 1 (no)
 # openvino_version in BUILDINFO and asserts the archive is actually present). Encoding this in two
 # places is exactly the drift CLAUDE.md warns about: an enablement that updated only one would ship
 # a tarball whose BUILDINFO lies about its contents. Windows is enabled here as of the OpenVINO
-# Windows port (issue #37): the delegate compiles and ships, but the win_amd64 RUNTIME BUNDLE does
-# not exist yet, so a Windows consumer must point OPENVINO_LIB_PATH at their own openvino_c.dll.
+# Windows port (issue #37): the delegate compiles and ships, and the win_amd64 RUNTIME BUNDLE is
+# published with it, so a Windows consumer points OPENVINO_LIB_PATH at the bundle's openvino_c.dll.
 ov_enabled_for_platform() { # <platform> -> 0 (enabled) / 1 (not)
   case "${1:-}" in
     linux-x86_64|windows-x86_64|windows-x86_64-static) return 0 ;;
