@@ -116,8 +116,7 @@ rather than at install time.
 The delegate ships in the `windows-x86_64` and `windows-x86_64-static` tarballs, and each release
 now publishes a Windows OpenVINO runtime bundle — `openvino-runtime-<ovver>-windows-x86_64.tar.gz`,
 pinned in `EtRuntimePin.cmake` under the `windows-x86_64` row (aliased for
-`windows-x86_64-static`). Fetch it with the same selector you use on Linux, and point
-`OPENVINO_LIB_PATH` at the extracted `openvino_c.dll`:
+`windows-x86_64-static`). Fetch it with the same selector you use on Linux:
 
 ```cmake
 et_runtime_openvino_url("${ET_RUNTIME_ROW}" ov_url ov_sha)
@@ -126,9 +125,24 @@ if(ov_url)
     URL       "${ov_url}"
     URL_HASH  "SHA256=${ov_sha}")
   FetchContent_MakeAvailable(openvino_runtime)
-  set(OPENVINO_LIB_PATH "${openvino_runtime_SOURCE_DIR}/lib/openvino_c.dll")
 endif()
 ```
+
+Then point `OPENVINO_LIB_PATH` at the extracted `openvino_c.dll` **in the process environment**:
+the delegate reads the variable with `getenv` at load time, so a CMake `set()` never reaches it.
+Export it before the first inference, with the same `os.environ` mechanism the Option B example
+above uses:
+
+```python
+import os
+
+# MUST run before the first inference.
+os.environ["OPENVINO_LIB_PATH"] = r"C:\absolute\path\to\openvino-runtime-2025.4.1-windows-x86_64\lib\openvino_c.dll"
+```
+
+(From a cmd shell that launches the process, the equivalent is
+`set OPENVINO_LIB_PATH=C:\absolute\path\to\openvino-runtime-2025.4.1-windows-x86_64\lib\openvino_c.dll`
+— the value must reach the process environment, not a build variable.)
 
 `OPENVINO_LIB_PATH` **must be absolute on Windows.** The backend passes an absolute path to
 `LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, which is what lets a flat bundle resolve

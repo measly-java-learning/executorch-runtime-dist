@@ -85,7 +85,7 @@
 - **C10 — OpenVINO runtime asset (per platform):**
   `openvino-runtime-<ovver>-<platform>.tar.gz` + `.sha256`, versioned by **OpenVINO** version
   (independent of `<etver>`). One top-level dir containing a flat `lib/` (the CPU-only runtime set:
-  on Linux, six libraries plus the unversioned `libopenvino_c.so` symlink we add; on Windows, six
+  on Linux, seven libraries plus the unversioned `libopenvino_c.so` symlink we add; on Windows, six
   unversioned DLLs, no symlink), `licenses/` (Apache 2.0 + third-party notices + hwloc
   BSD-3-Clause on Linux; no hwloc entry on Windows — it is folded into `tbbbind_2_5.dll`), and
   `BUILDINFO`. Vendored from the Apache-2.0 PyPI wheel; every Linux library carries
