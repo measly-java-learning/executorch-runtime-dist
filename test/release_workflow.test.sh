@@ -11,7 +11,7 @@ assert_contains "$(cat "$wf")" "  openvino:" "openvino job exists"
 assert_contains "$(cat "$wf")" "vendor-openvino.sh" "openvino job runs the vendoring script"
 assert_contains "$(cat "$wf")" "test/openvino_smoke.sh" "openvino job runs the runtime smoke gate"
 assert_contains "$(cat "$wf")" "name: dist-openvino" "openvino job uploads dist-openvino"
-assert_contains "$(cat "$wf")" "--openvino-sha" "pin job passes the openvino sha"
+assert_contains "$(cat "$wf")" "--openvino-row" "pin job passes the openvino sha per platform"
 
 # pin must depend on the openvino job, else it may run before the asset exists.
 needs_line="$(grep -A1 '^  pin:' "$wf" | grep 'needs:')"

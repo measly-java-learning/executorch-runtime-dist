@@ -120,4 +120,57 @@ ov_lib_members bogus-platform     >/dev/null 2>&1; assert_eq "$?" "2" "unknown p
 ov_license_members bogus-platform >/dev/null 2>&1; assert_eq "$?" "2" "unknown platform rejected (licences)"
 ov_wheel_sha256 ""                >/dev/null 2>&1; assert_eq "$?" "2" "empty platform rejected (sha)"
 
+# --- which bundle serves which platform ---------------------------------------------------
+# Both Windows CRT platforms are served by ONE bundle: the wheel's DLLs are /MD regardless of how
+# a consumer links, and no CRT object crosses the boundary (every OpenVINO allocation is released
+# through an OpenVINO-side free function). Publishing two assets that differ only in a BUILDINFO
+# line would be pure duplication.
+assert_eq "$(ov_bundle_platform linux-x86_64)"          "linux-x86_64"   "linux serves itself"
+assert_eq "$(ov_bundle_platform windows-x86_64)"        "windows-x86_64" "windows /MD serves itself"
+assert_eq "$(ov_bundle_platform windows-x86_64-static)" "windows-x86_64" "windows /MT reuses the /MD bundle"
+
+# A platform with no bundle must FAIL rather than silently resolve to some other platform's --
+# that would publish a pin row claiming a bundle exists for linux-aarch64.
+ov_bundle_platform linux-aarch64 >/dev/null 2>&1; assert_eq "$?" "2" "aarch64 has no bundle"
+ov_bundle_platform ""            >/dev/null 2>&1; assert_eq "$?" "2" "empty platform rejected"
+
+# The set a release actually builds. Distinct, so the release matrix cannot be handed the same
+# bundle twice.
+assert_eq "$(ov_bundle_platforms | sort | tr '\n' ' ')" "linux-x86_64 windows-x86_64 " \
+  "exactly two bundles are built per release"
+assert_eq "$(ov_bundle_platforms | sort -u | wc -l)" "$(ov_bundle_platforms | wc -l)" \
+  "ov_bundle_platforms has no duplicates"
+
+# The aliases are the platforms that do NOT get their own asset. Bundles + aliases must together
+# cover every OpenVINO-enabled platform, or a release enables a delegate for a platform whose
+# runtime is neither published nor aliased -- exactly the gap this plan closes.
+assert_eq "$(ov_alias_platforms)" "windows-x86_64-static" "the static CRT platform is an alias"
+for _p in linux-x86_64 windows-x86_64 windows-x86_64-static; do
+  case "$(ov_bundle_platforms; ov_alias_platforms)" in
+    *"$_p"*) printf 'ok: %s is published or aliased\n' "$_p" ;;
+    *) printf 'FAIL: %s is enabled but neither built nor aliased\n' "$_p" >&2
+       ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
+  esac
+done
+# An alias must never also be built, or the release would publish the duplicate this avoids.
+while read -r _a; do
+  case "$(ov_bundle_platforms)" in
+    *"$_a"*) printf 'FAIL: %s is both aliased and built\n' "$_a" >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
+    *) printf 'ok: %s is aliased, not built\n' "$_a" ;;
+  esac
+done <<EOF
+$(ov_alias_platforms)
+EOF
+
+# Every OpenVINO-enabled platform must map to a buildable bundle, or a release would enable the
+# delegate for a platform whose runtime is never published -- the exact gap this plan closes.
+for _p in linux-x86_64 windows-x86_64 windows-x86_64-static; do
+  _b="$(ov_bundle_platform "$_p")" || { printf 'FAIL: no bundle for %s\n' "$_p" >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); continue; }
+  case "$(ov_bundle_platforms)" in
+    *"$_b"*) printf 'ok: %s -> %s is built\n' "$_p" "$_b" ;;
+    *) printf 'FAIL: %s maps to %s, which ov_bundle_platforms does not build\n' "$_p" "$_b" >&2
+       ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
+  esac
+done
+
 exit "$ASSERT_FAILS"

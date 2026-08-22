@@ -63,12 +63,17 @@ hash-pinned tarballs. Pushing a version tag is the **only** CI trigger.
    tarball's build provenance, and publishes a GitHub Release containing:
    - the 3 tarballs and their matching `.sha256` files
    - a ready-to-paste `EtRuntimePin.cmake`
-   - the OpenVINO CPU runtime bundle `openvino-runtime-<ovver>-linux-x86_64.tar.gz` and its
-     `.sha256` (contract C10, linux-x86_64 only) — a separate, hash-pinned asset versioned by the
-     OpenVINO version; its `ET_RUNTIME_OPENVINO_{VERSION,URL,SHA256}` vars land in
-     EtRuntimePin.cmake. Consumers set `OPENVINO_LIB_PATH` to the absolute path of
-     `lib/libopenvino_c.so`; see `docs/openvino-python-consumer.md` and
-     `docs/openvino-jni-consumer.md`.
+   - the OpenVINO CPU runtime bundle `openvino-runtime-<ovver>-<platform>.tar.gz` and its
+     `.sha256` — a separate, hash-pinned asset versioned by the OpenVINO version,
+     published per platform (`linux-x86_64`, `windows-x86_64`, the latter also serving
+     `windows-x86_64-static`). Its per-platform `ET_RUNTIME_OPENVINO_URL_<platform>` /
+     `ET_RUNTIME_OPENVINO_SHA256_<platform>` vars and `et_runtime_openvino_url()` selector land in
+     EtRuntimePin.cmake (the selector returns empty strings for a platform with no bundle). The
+     legacy singular `ET_RUNTIME_OPENVINO_{PLATFORM,URL,SHA256}` (linux-x86_64 only) is
+     **deprecated** — removal tracked in
+     https://github.com/measly-java-learning/executorch-runtime-dist/issues/48. Consumers set
+     `OPENVINO_LIB_PATH` to the absolute path of `lib/libopenvino_c.so`; see
+     `docs/openvino-python-consumer.md` and `docs/openvino-jni-consumer.md`.
 
 ## Building locally
 

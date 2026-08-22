@@ -591,20 +591,22 @@ jobs:
   # Runs against the PACKAGED tarball rather than the build tree, so a packaging fault (a lib/
   # member lost during staging) fails here rather than at a consumer.
   #
-  # Only windows-x86_64 (/MD). The static CRT is covered where it differs -- compilation and
-  # packaging, both in full-build-windows -- and the delegate's runtime behaviour cannot vary by
-  # our CRT choice: every OpenVINO allocation is freed through an OpenVINO-side function, so no
-  # CRT object crosses the DLL boundary. Running both here would double the slowest gate arm to
-  # re-prove that analysis.
+  # Both CRT platforms must be gated at RUNTIME, not just compiled and packaged. They share one
+  # bundle, so the second leg costs a runner and no new assets -- and windows-x86_64-static
+  # shipped a delegate nothing had ever executed until this matrix existed.
   full-gates-windows:
     needs: [classify, full-build-windows, full-aot]
     if: needs.classify.outputs.mode == 'full'
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-x86_64, windows-x86_64-static]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: win-tarball-windows-x86_64
+          name: win-tarball-${{ matrix.platform }}
           path: winpkg
       - uses: actions/download-artifact@v8
         with:
@@ -624,17 +626,27 @@ jobs:
           set -euo pipefail
           python -m pip install -U pip >/dev/null
           ./scripts/vendor-openvino.sh --platform windows-x86_64 --out "$PWD/ovstage-win"
+      - name: Resolve the bundle stem from the SSOT
+        # ov_asset_stem is the naming SSOT; spelling the result into the pwsh steps below would be
+        # a second copy that goes stale the day OV_VERSION moves. Bash step, exported once.
+        shell: bash
+        run: |
+          set -euo pipefail
+          . ./scripts/lib/openvino.sh
+          echo "OV_BUNDLE_STEM=$(ov_asset_stem windows-x86_64)" >> "$GITHUB_ENV"
       - name: OpenVINO bundle smoke (resolve + enumerate + blob import)
         shell: pwsh
         run: |
           pip install -r requirements/openvino-runtime.txt
-          $stem = "openvino-runtime-2025.4.1-windows-x86_64"
+          $stem = $env:OV_BUNDLE_STEM
+          if (-not $stem) { throw "OV_BUNDLE_STEM not set -- the resolve step must run first" }
           & pwsh -File build-runtime.ps1 test/openvino_smoke-windows.sh "$PWD/ovstage-win/$stem"
           if ($LASTEXITCODE -ne 0) { throw "smoke gate failed (exit $LASTEXITCODE)" }
       - name: OpenVINO end-to-end (fixture .pte through the delegate)
         shell: pwsh
         run: |
-          $stem = "openvino-runtime-2025.4.1-windows-x86_64"
+          $stem = $env:OV_BUNDLE_STEM
+          if (-not $stem) { throw "OV_BUNDLE_STEM not set -- the resolve step must run first" }
           & pwsh -File build-runtime.ps1 test/openvino_fixture_run-windows.sh `
             "$PWD/prefix" "$PWD/ovstage-win/$stem" "$PWD/fixtures-dryrun/openvino"
           if ($LASTEXITCODE -ne 0) { throw "fixture gate failed (exit $LASTEXITCODE)" }

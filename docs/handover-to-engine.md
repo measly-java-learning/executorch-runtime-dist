@@ -82,15 +82,21 @@
   reuses an existing `--prefix` install (guarded by `executorch-config.cmake`), mirroring the engine's own
   Stage A flag. The engine clones Repo A at tag `v<etver>-<pkgrev>` (C9) to invoke it.
 - **C9 — Release tag:** `v<etver>-<pkgrev>` (e.g. `v1.3.1-2`); `pkgrev` increments for re-rolls of the same ET version.
-- **C10 — OpenVINO runtime asset (`linux-x86_64` only):**
-  `openvino-runtime-<ovver>-linux-x86_64.tar.gz` + `.sha256`, versioned by **OpenVINO** version
-  (independent of `<etver>`). One top-level dir containing a flat `lib/` (six CPU-only libraries
-  plus the unversioned `libopenvino_c.so` symlink we add), `licenses/` (Apache 2.0 + third-party
-  notices + hwloc BSD-3-Clause), and `BUILDINFO`. Vendored from the Apache-2.0 PyPI wheel; every
-  library carries `RPATH=$ORIGIN` so the directory self-resolves without `LD_LIBRARY_PATH`.
-  Pinned as `ET_RUNTIME_OPENVINO_{VERSION,URL,SHA256}`. Consumers set `OPENVINO_LIB_PATH` to the
-  absolute path of `lib/libopenvino_c.so`. See `docs/openvino-python-consumer.md` and
-  `docs/openvino-jni-consumer.md`.
+- **C10 — OpenVINO runtime asset (per platform):**
+  `openvino-runtime-<ovver>-<platform>.tar.gz` + `.sha256`, versioned by **OpenVINO** version
+  (independent of `<etver>`). One top-level dir containing a flat `lib/` (the CPU-only runtime set:
+  on Linux, seven libraries plus the unversioned `libopenvino_c.so` symlink we add; on Windows, six
+  unversioned DLLs, no symlink), `licenses/` (Apache 2.0 + third-party notices + hwloc
+  BSD-3-Clause on Linux; no hwloc entry on Windows — it is folded into `tbbbind_2_5.dll`), and
+  `BUILDINFO`. Vendored from the Apache-2.0 PyPI wheel; every Linux library carries
+  `RPATH=$ORIGIN` so the directory self-resolves without `LD_LIBRARY_PATH`. Pinned per platform as
+  `ET_RUNTIME_OPENVINO_URL_<platform>` / `ET_RUNTIME_OPENVINO_SHA256_<platform>`, read through
+  `et_runtime_openvino_url(<platform> url sha)` — which returns empty strings for a platform with
+  no bundle. The legacy singular `ET_RUNTIME_OPENVINO_{PLATFORM,URL,SHA256}` (linux-x86_64 only)
+  is **deprecated** — removal tracked in
+  https://github.com/measly-java-learning/executorch-runtime-dist/issues/48. Consumers set
+  `OPENVINO_LIB_PATH` to the absolute path of `lib/libopenvino_c.so` (or `lib/openvino_c.dll` on
+  Windows). See `docs/openvino-python-consumer.md` and `docs/openvino-jni-consumer.md`.
 - **C11 — XNNPACK workspace-size backend option:** the XNNPACK delegate ships a **read-only** backend
   option — backend `XnnpackBackend`, key `workspace_size_bytes` — reporting the process-wide XNNPACK
   workspace arena size in bytes as an `int`, **saturating at `INT_MAX`** (it never wraps negative).

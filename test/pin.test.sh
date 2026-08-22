@@ -37,43 +37,62 @@ assert_contains "$bad" "variant='devtools'" "selector error names the variant"
 assert_contains "$bad" "platform='linux-aarch64'" "selector error names the platform"
 
 . "$here/../scripts/lib/openvino.sh"
-ovsha="$(printf 'b%.0s' $(seq 64))"
-pin_ov="$(bash "$here/../scripts/gen-pin.sh" --version 1.3.1-1 --etver 1.3.1 \
-  --base-url https://example.test/dl --row logging linux-x86_64 "$(printf 'a%.0s' $(seq 64))" \
-  --openvino-sha "$ovsha")"
-assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_VERSION \"$OV_VERSION\")" "pin records openvino version"
-assert_contains "$pin_ov" "https://example.test/dl/$(ov_tarball_name linux-x86_64)" "pin records openvino url"
-assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_SHA256 \"$ovsha\")" "pin records openvino sha"
-# The bundle exists for one platform only, but the pin is a single file every platform's build
-# includes. Without this var a consumer cannot tell which row the bundle is for except by parsing
-# the URL, so an aarch64 or Windows build has no honest way to skip it.
-assert_contains "$pin_ov" 'set(ET_RUNTIME_OPENVINO_PLATFORM "linux-x86_64")' "pin records openvino platform"
-pin_ov_arm="$(bash "$here/../scripts/gen-pin.sh" --version 1.3.1-1 --etver 1.3.1 \
-  --base-url https://example.test/dl --row logging linux-aarch64 "$(printf 'a%.0s' $(seq 64))" \
-  --openvino-sha "$ovsha" --openvino-platform linux-aarch64)"
-assert_contains "$pin_ov_arm" 'set(ET_RUNTIME_OPENVINO_PLATFORM "linux-aarch64")' "openvino platform follows the flag"
+# Distinct 64-hex placeholders: a cross-wired variable then fails its assertion loudly.
+row_sha="$(printf 'a%.0s' $(seq 64))"   # the tarball row (--row logging linux-x86_64)
+ovsha="$(printf 'b%.0s' $(seq 64))"     # the linux bundle row
+ovsha_win="$(printf 'c%.0s' $(seq 64))" # the windows bundle row
 
-# Omitting the flag must leave the pin exactly as before (no empty/dangling vars). Match the
-# declarations, not the bare word: the header comment documents these vars as optional, so a
-# substring check would fire on the documentation rather than on a dangling var.
-pin_no="$(bash "$here/../scripts/gen-pin.sh" --version 1.3.1-1 --etver 1.3.1 \
-  --base-url https://example.test/dl --row logging linux-x86_64 "$(printf 'a%.0s' $(seq 64))")"
+# Per-platform rows, mirroring the tarball rows' shape.
+pin_ov="$("$here/../scripts/gen-pin.sh" --version 1.2.3-1 --etver 1.2.3 --base-url "$base" \
+  --row logging linux-x86_64 "$row_sha" \
+  --openvino-row linux-x86_64 "$ovsha" --openvino-row windows-x86_64 "$ovsha_win")"
+assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_VERSION \"$OV_VERSION\")" "pin records openvino version"
+assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_SHA256_linux-x86_64 \"$ovsha\")"   "linux row"
+assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_SHA256_windows-x86_64 \"$ovsha_win\")" "windows row"
+assert_contains "$pin_ov" 'set(ET_RUNTIME_OPENVINO_SHA256_windows-x86_64-static "${ET_RUNTIME_OPENVINO_SHA256_windows-x86_64}")' "static alias sha row"
+assert_contains "$pin_ov" 'set(ET_RUNTIME_OPENVINO_URL_windows-x86_64-static "${ET_RUNTIME_OPENVINO_URL_windows-x86_64}")' "static alias url row"
+assert_contains "$pin_ov" 'function(et_runtime_openvino_url platform out_url out_sha)' "selector defined"
+
+# The legacy trio must survive: docs/openvino-jni-consumer.md instructs consumers to test
+# `ET_RUNTIME_ROW STREQUAL ET_RUNTIME_OPENVINO_PLATFORM`, and dropping it would break every
+# existing consumer at the next release with no CI signal anywhere.
+assert_contains "$pin_ov" 'set(ET_RUNTIME_OPENVINO_PLATFORM "linux-x86_64")' "legacy platform var kept"
+assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_SHA256 \"$ovsha\")" "legacy sha var kept"
+assert_contains "$pin_ov" "set(ET_RUNTIME_OPENVINO_URL
+  \"$base/$(ov_tarball_name linux-x86_64)\")" "legacy url names the linux bundle"
+assert_contains "$pin_ov" "DEPRECATED" "legacy vars are marked deprecated"
+
+# A release with no bundle at all still yields a valid pin.
+pin_no="$("$here/../scripts/gen-pin.sh" --version 1.2.3-1 --etver 1.2.3 --base-url "$base" \
+  --row logging linux-x86_64 "$row_sha")"
 if printf '%s\n' "$pin_no" | grep -q '^set(ET_RUNTIME_OPENVINO_'; then
-  printf 'FAIL: pin must omit OpenVINO vars when no sha is given\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1))
+  printf 'FAIL: pin without an openvino row must emit no ET_RUNTIME_OPENVINO_* vars\n' >&2
+  ASSERT_FAILS=$((ASSERT_FAILS+1))
 else
-  printf 'ok: pin omits OpenVINO vars when not requested\n'
+  printf 'ok: openvino-free pin is clean\n'
 fi
+
+# Run the selector through real cmake, the way selector_probe.cmake proves the tarball selector.
+# A generated function that merely LOOKS right is not the property we need.
+printf '%s\n' "$pin_ov" > "$pin_dir/pin_ov.cmake"
+for p in linux-x86_64 windows-x86_64 windows-x86_64-static; do
+  out="$(cmake -DPIN="$pin_dir/pin_ov.cmake" -DP="$p" -P "$here/fixtures/pin/openvino_selector_probe.cmake" 2>&1)" \
+    || { printf 'FAIL: openvino selector aborted for %s\n%s\n' "$p" "$out" >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); continue; }
+  # The alias row names the bundle platform's tarball (windows-x86_64), not a -static asset.
+  assert_contains "$out" "$(ov_tarball_name "$(ov_bundle_platform "$p")")" "selector resolves the $p bundle"
+done
+# Absence must be reported as empty, NOT as a fatal error: linux-aarch64 legitimately has no
+# bundle, and a consumer building that row must be able to ask and get "no".
+out="$(cmake -DPIN="$pin_dir/pin_ov.cmake" -DP=linux-aarch64 -P "$here/fixtures/pin/openvino_selector_probe.cmake" 2>&1)" \
+  || { printf 'FAIL: selector must not abort for a platform with no bundle\n%s\n' "$out" >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
+assert_contains "$out" "URL=" "selector returns an empty url for aarch64"
 
 # A malformed sha must abort rather than publish a pin that downstream re-verification rejects.
 row_ok="$(printf 'a%.0s' $(seq 64))"
 for bad in "" "abc" "$(printf 'z%.0s' $(seq 64))" "$(printf 'a%.0s' $(seq 63))"; do
   bash "$here/../scripts/gen-pin.sh" --version 1.3.1-1 --etver 1.3.1 --base-url https://ex.test/dl \
-    --row logging linux-x86_64 "$row_ok" --openvino-sha "$bad" >/dev/null 2>&1
-  assert_eq "$?" "1" "gen-pin rejects malformed --openvino-sha ('${bad:0:8}')"
+    --row logging linux-x86_64 "$row_ok" --openvino-row linux-x86_64 "$bad" >/dev/null 2>&1
+  assert_eq "$?" "1" "gen-pin rejects malformed --openvino-row sha ('${bad:0:8}')"
 done
-bash "$here/../scripts/gen-pin.sh" --version 1.3.1-1 --etver 1.3.1 --base-url https://ex.test/dl \
-  --row logging linux-x86_64 "$row_ok" --openvino-sha "$(printf 'b%.0s' $(seq 64))" \
-  --openvino-platform "" >/dev/null 2>&1
-assert_eq "$?" "1" "gen-pin rejects an empty --openvino-platform"
 
 exit "$ASSERT_FAILS"

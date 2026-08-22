@@ -15,6 +15,7 @@ JOB = "full-gates-windows"
 
 def main() -> int:
     gate = yaml.safe_load((ROOT / ".github/workflows/extras-gate.yml").read_text())
+    release = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
     fails = []
     if JOB not in gate["jobs"]:
         print(f"FAIL: extras-gate has no {JOB} job")
@@ -41,6 +42,25 @@ def main() -> int:
     ]:
         if needle not in steps:
             fails.append(f"{JOB} {why} (missing {needle})")
+
+    # The asset stem is ov_asset_stem's job. The Linux steps in this same workflow call it; the
+    # Windows steps hardcoded "openvino-runtime-<ver>-windows-x86_64", which embeds both OV_VERSION
+    # and the naming rule and goes stale on an OpenVINO bump. Same class of drift test/lib_aot.sh
+    # guards for the python devel package.
+    workflow_text = (ROOT / ".github/workflows/extras-gate.yml").read_text()
+    if "openvino-runtime-" in workflow_text:
+        fails.append(
+            "extras-gate.yml spells an OpenVINO asset stem literally; derive it from "
+            "ov_asset_stem in a `shell: bash` step and pass it via $GITHUB_ENV"
+        )
+
+    # Both CRT platforms must be gated at RUNTIME, not just compiled and packaged. They share one
+    # bundle, so the second leg costs a runner and no new assets -- and windows-x86_64-static
+    # shipped a delegate nothing had ever executed until this matrix existed.
+    gate_platforms = set((job.get("strategy") or {}).get("matrix", {}).get("platform", []))
+    rel_platforms = set(release["jobs"]["build-windows"]["strategy"]["matrix"]["platform"])
+    if gate_platforms != rel_platforms:
+        fails.append(f"runtime gate platforms {sorted(gate_platforms)} != shipped {sorted(rel_platforms)}")
 
     for f in fails:
         print(f"FAIL: {f}")

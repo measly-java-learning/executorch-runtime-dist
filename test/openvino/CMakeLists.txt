@@ -16,6 +16,7 @@ if(TARGET optimized_native_cpu_ops_lib)
 else()
   set(OV_RUNNER_KERNELS portable_ops_lib)
 endif()
+message(STATUS "ov_runner kernels: ${OV_RUNNER_KERNELS}")
 target_link_libraries(ov_runner PRIVATE
   executorch executorch_backends ${OV_RUNNER_KERNELS}
   extension_module_static extension_data_loader extension_tensor)
