@@ -128,21 +128,29 @@ if(ov_url)
 endif()
 ```
 
-Then point `OPENVINO_LIB_PATH` at the extracted `openvino_c.dll` **in the process environment**:
-the delegate reads the variable with `getenv` at load time, so a CMake `set()` never reaches it.
-Export it before the first inference, with the same `os.environ` mechanism the Option B example
-above uses:
+`OPENVINO_LIB_PATH` is read from the **process environment** (`getenv`) at load time, so a CMake
+`set()` never reaches it — the value must be in the environment of the process from launch. Set it
+in the shell that starts the application, before the process runs. The value that always works is
+the pip wheel's DLL inside your venv: pip installs the Windows wheel's DLLs at a fixed location,
+and `%VIRTUAL_ENV%` is always an absolute path:
 
-```python
-import os
-
-# MUST run before the first inference.
-os.environ["OPENVINO_LIB_PATH"] = r"C:\absolute\path\to\openvino-runtime-2025.4.1-windows-x86_64\lib\openvino_c.dll"
+```
+py -3.12 -m pip install openvino==2025.4.1
+set OPENVINO_LIB_PATH=%VIRTUAL_ENV%\Lib\site-packages\openvino\libs\openvino_c.dll
 ```
 
-(From a cmd shell that launches the process, the equivalent is
-`set OPENVINO_LIB_PATH=C:\absolute\path\to\openvino-runtime-2025.4.1-windows-x86_64\lib\openvino_c.dll`
-— the value must reach the process environment, not a build variable.)
+(PowerShell: `$env:OPENVINO_LIB_PATH = "$env:VIRTUAL_ENV\Lib\site-packages\openvino\libs\openvino_c.dll"`)
+
+If you use the published bundle instead, point the variable at the extracted DLL's absolute path
+the same way, from the same shell:
+
+```
+set OPENVINO_LIB_PATH=C:\path\to\openvino-runtime-2025.4.1-windows-x86_64\lib\openvino_c.dll
+```
+
+If your launcher cannot set a process variable, assigning `os.environ["OPENVINO_LIB_PATH"]` in
+Python before the first inference also works — but set it in the launching shell wherever you can;
+setting it inside the application is the fallback, not the pattern.
 
 `OPENVINO_LIB_PATH` **must be absolute on Windows.** The backend passes an absolute path to
 `LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, which is what lets a flat bundle resolve
