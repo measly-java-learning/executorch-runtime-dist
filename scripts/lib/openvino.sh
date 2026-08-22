@@ -154,6 +154,38 @@ ov_enabled_for_platform() { # <platform> -> 0 (enabled) / 1 (not)
   esac
 }
 
+# Platform -> the platform whose BUNDLE serves it. Usually identity, but both Windows CRT
+# platforms share one bundle: the wheel's DLLs are /MD regardless of how a consumer links, and no
+# CRT object crosses the boundary, so a second asset differing only in BUILDINFO would be waste.
+# Exit 2 rather than defaulting: an OpenVINO-enabled platform with no bundle must fail here, not
+# publish a pin row pointing at another platform's runtime.
+ov_bundle_platform() { # <platform>
+  case "${1:-}" in
+    linux-x86_64)                          printf 'linux-x86_64' ;;
+    windows-x86_64|windows-x86_64-static)  printf 'windows-x86_64' ;;
+    *) echo "ov_bundle_platform: no OpenVINO bundle serves platform '${1:-}'" >&2; return 2 ;;
+  esac
+}
+
+# The distinct bundles a release builds. Derived from nothing -- it is the authoritative list, and
+# ov_bundle_platform's targets must all appear here (asserted in test/lib_openvino.test.sh).
+ov_bundle_platforms() {
+  cat <<'EOF'
+linux-x86_64
+windows-x86_64
+EOF
+}
+
+# Platforms served by ANOTHER platform's bundle. gen-pin.sh emits an alias row for each so a
+# consumer building that row resolves a runtime without knowing about the sharing. Kept distinct
+# from ov_bundle_platforms: their union must cover every OpenVINO-enabled platform, and the two
+# lists must not overlap (both asserted in test/lib_openvino.test.sh).
+ov_alias_platforms() {
+  cat <<'EOF'
+windows-x86_64-static
+EOF
+}
+
 # Platform -> the delegate archive the build produces. MSVC does not use the lib*.a convention, so
 # package.sh's existence assertion cannot hardcode one spelling. Kept beside the predicate above
 # deliberately: the two are read together, and a platform added to one without the other produces a
