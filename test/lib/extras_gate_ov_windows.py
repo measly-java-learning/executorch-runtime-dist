@@ -42,6 +42,17 @@ def main() -> int:
         if needle not in steps:
             fails.append(f"{JOB} {why} (missing {needle})")
 
+    # The asset stem is ov_asset_stem's job. The Linux steps in this same workflow call it; the
+    # Windows steps hardcoded "openvino-runtime-<ver>-windows-x86_64", which embeds both OV_VERSION
+    # and the naming rule and goes stale on an OpenVINO bump. Same class of drift test/lib_aot.sh
+    # guards for the python devel package.
+    workflow_text = (ROOT / ".github/workflows/extras-gate.yml").read_text()
+    if "openvino-runtime-" in workflow_text:
+        fails.append(
+            "extras-gate.yml spells an OpenVINO asset stem literally; derive it from "
+            "ov_asset_stem in a `shell: bash` step and pass it via $GITHUB_ENV"
+        )
+
     for f in fails:
         print(f"FAIL: {f}")
     if fails:
