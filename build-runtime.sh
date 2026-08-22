@@ -13,6 +13,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/scripts/lib/openvino.sh"   # ov_enabled_for_platform, used by common_cmake_flags
 . "$HERE/scripts/lib/cmakeflags.sh"
 . "$HERE/scripts/lib/configure-base.sh"
+. "$HERE/scripts/lib/licenses.sh"
 
 # As we run as root inside a container, set this flag to avoid log spam
 export PIP_ROOT_USER_ACTION=ignore
@@ -150,6 +151,11 @@ install_highway_license() {
 # branch's custom ops on top of it. No ET compile, no --et-src, no ET-license/reloc steps —
 # but DO run install_highway_license, because build_extras installs libhwy.a and a
 # distributed local build must carry Highway's license too (parity with the full build).
+# Deliberately does NOT run assert_shipped_archive_notices: this path's prefix is a downloaded
+# published release, not a fresh sweep of $ET_SRC, and the guard has no way to fix a notice gap
+# in an already-published tarball — it can only hard-fail the gate on every PR until a corrected
+# release exists. The guard belongs on the real build below, where the sweep that could actually
+# satisfy it just ran.
 if [ "${EXTRAS_ONLY:-0}" -eq 1 ]; then
   test -f "$CONFIG" \
     || { echo "--extras-only but $CONFIG is missing; provide a built/extracted ET prefix" >&2; exit 1; }
@@ -311,18 +317,14 @@ fi
 
 echo ">> license passthrough"
 install -m 0644 "$ET_SRC/LICENSE" "$PREFIX/LICENSE"
-mkdir -p "$PREFIX/THIRD-PARTY-NOTICES"
-# guard each dir (a future ET tag may drop/rename one) so a bare `find | while` can't abort the
-# recipe under set -e/pipefail with its stderr masked; `|| true` covers any residual find failure.
-for d in "$ET_SRC/third-party" "$ET_SRC/backends"; do
-  [ -d "$d" ] || continue
-  find "$d" -iname 'LICENSE*' -type f | while read -r lf; do
-    rel="${lf#"$ET_SRC"/}"
-    cp "$lf" "$PREFIX/THIRD-PARTY-NOTICES/${rel//\//_}"
-  done || true
-done
+install_third_party_notices "$ET_SRC" "$PREFIX"
 
 if [ "$IS_WINDOWS" -eq 0 ]; then install_highway_license; fi
+
+# Every installed archive with a notice obligation must have its notice in the tree. Not gated on
+# IS_WINDOWS: the guard keys off what got installed, so it follows the optimized kernels wherever
+# they are enabled.
+assert_shipped_archive_notices "$PREFIX"
 
 # safe.directory='*': the checkout may be owned by a different uid than the container user (mounted
 # tree / CI), which otherwise trips git's "dubious ownership" guard and blocks rev-parse.
