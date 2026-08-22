@@ -15,6 +15,7 @@ JOB = "full-gates-windows"
 
 def main() -> int:
     gate = yaml.safe_load((ROOT / ".github/workflows/extras-gate.yml").read_text())
+    release = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
     fails = []
     if JOB not in gate["jobs"]:
         print(f"FAIL: extras-gate has no {JOB} job")
@@ -52,6 +53,14 @@ def main() -> int:
             "extras-gate.yml spells an OpenVINO asset stem literally; derive it from "
             "ov_asset_stem in a `shell: bash` step and pass it via $GITHUB_ENV"
         )
+
+    # Both CRT platforms must be gated at RUNTIME, not just compiled and packaged. They share one
+    # bundle, so the second leg costs a runner and no new assets -- and windows-x86_64-static
+    # shipped a delegate nothing had ever executed until this matrix existed.
+    gate_platforms = set((job.get("strategy") or {}).get("matrix", {}).get("platform", []))
+    rel_platforms = set(release["jobs"]["build-windows"]["strategy"]["matrix"]["platform"])
+    if gate_platforms != rel_platforms:
+        fails.append(f"runtime gate platforms {sorted(gate_platforms)} != shipped {sorted(rel_platforms)}")
 
     for f in fails:
         print(f"FAIL: {f}")

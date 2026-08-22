@@ -591,20 +591,22 @@ jobs:
   # Runs against the PACKAGED tarball rather than the build tree, so a packaging fault (a lib/
   # member lost during staging) fails here rather than at a consumer.
   #
-  # Only windows-x86_64 (/MD). The static CRT is covered where it differs -- compilation and
-  # packaging, both in full-build-windows -- and the delegate's runtime behaviour cannot vary by
-  # our CRT choice: every OpenVINO allocation is freed through an OpenVINO-side function, so no
-  # CRT object crosses the DLL boundary. Running both here would double the slowest gate arm to
-  # re-prove that analysis.
+  # Both CRT platforms must be gated at RUNTIME, not just compiled and packaged. They share one
+  # bundle, so the second leg costs a runner and no new assets -- and windows-x86_64-static
+  # shipped a delegate nothing had ever executed until this matrix existed.
   full-gates-windows:
     needs: [classify, full-build-windows, full-aot]
     if: needs.classify.outputs.mode == 'full'
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-x86_64, windows-x86_64-static]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: win-tarball-windows-x86_64
+          name: win-tarball-${{ matrix.platform }}
           path: winpkg
       - uses: actions/download-artifact@v8
         with:
