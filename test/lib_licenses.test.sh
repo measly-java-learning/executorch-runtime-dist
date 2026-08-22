@@ -15,6 +15,8 @@ mkdir -p "$src/third-party/xnnpack" "$src/third-party/gflags" \
          "$src/backends/xnnpack/third-party/FP16" \
          "$src/kernels/optimized/third-party/eigen" \
          "$src/kernels/optimized/third-party/eigen/bench/btl"
+mkdir -p "$src/extension/llm/tokenizers/third-party/re2" \
+         "$src/extension/llm/tokenizers/build/temp.linux-x86_64-cpython-312/_deps/pybind11-src"
 : > "$src/third-party/xnnpack/LICENSE"
 : > "$src/third-party/gflags/COPYING.txt"
 : > "$src/backends/xnnpack/third-party/FP16/LICENSE"
@@ -22,6 +24,8 @@ mkdir -p "$src/third-party/xnnpack" "$src/third-party/gflags" \
 : > "$src/kernels/optimized/third-party/eigen/COPYING.MPL2"
 : > "$src/kernels/optimized/third-party/eigen/COPYING.README"
 : > "$src/kernels/optimized/third-party/eigen/bench/btl/COPYING"
+: > "$src/extension/llm/tokenizers/third-party/re2/LICENSE"
+: > "$src/extension/llm/tokenizers/build/temp.linux-x86_64-cpython-312/_deps/pybind11-src/LICENSE"
 
 install_third_party_notices "$src" "$pfx"
 n="$pfx/THIRD-PARTY-NOTICES"
@@ -42,9 +46,17 @@ assert_eq "$(has "$n/third-party_gflags_COPYING.txt")" "yes" "COPYING glob appli
 # not land as if it covered shipped code.
 assert_eq "$(has "$n/kernels_optimized_third-party_eigen_bench_btl_COPYING")" "no" "bench dirs are pruned from the sweep"
 
-# Names are path-derived, so two deps' LICENSE files cannot overwrite each other. Still 6: the
+# The tokenizers dependency stack is vendored under extension/, outside the roots the sweep
+# covered for third-party and backends.
+assert_eq "$(has "$n/extension_llm_tokenizers_third-party_re2_LICENSE")" "yes" "extension root swept"
+# A tokenizers build tree is untracked output: present in a checkout that has been built in,
+# absent in a clean CI checkout. Sweeping it would make the notice set depend on that.
+assert_eq "$(has "$n/extension_llm_tokenizers_build_temp.linux-x86_64-cpython-312__deps_pybind11-src_LICENSE")" \
+  "no" "build residue is pruned"
+
+# Names are path-derived, so two deps' LICENSE files cannot overwrite each other. Still 7: the
 # pruned bench/btl notice above must not be among them.
-assert_eq "$(ls "$n" | wc -l)" "6" "every notice landed under a distinct name, bench excluded"
+assert_eq "$(ls "$n" | wc -l)" "7" "every notice landed under a distinct name, bench excluded"
 
 # A root a future ET tag drops is skipped, not fatal.
 src2="$(mktemp -d)"; pfx2="$(mktemp -d)"
@@ -91,4 +103,26 @@ msg="$(assert_shipped_archive_notices "$p_bad" 2>&1 >/dev/null || true)"
 assert_contains "$msg" "libeigen_blas.a" "diagnostic names the offending archive"
 
 rm -rf "$p_bad" "$p_ok" "$p_moved" "$p_none" "$p_win"
+
+# --- tokenizer stack ---
+# One representative archive per dependency: if the dep is built at all, this archive is present.
+for pair in "libabsl_base.a:extension_llm_tokenizers_third-party_abseil-cpp_LICENSE" \
+            "libsentencepiece.a:extension_llm_tokenizers_third-party_sentencepiece_LICENSE" \
+            "libre2.a:extension_llm_tokenizers_third-party_re2_LICENSE" \
+            "libpcre2-8.a:extension_llm_tokenizers_third-party_pcre2_COPYING" \
+            "libtokenizers.a:extension_llm_tokenizers_LICENSE"; do
+  arch="${pair%%:*}"; note="${pair##*:}"
+  p_no="$(mkprefix "$arch" '')"
+  assert_eq "$(guard "$p_no")" "fail" "$arch with no notice is refused"
+  p_yes="$(mkprefix "$arch" "$note")"
+  assert_eq "$(guard "$p_yes")" "pass" "$arch with its notice is accepted"
+  rm -rf "$p_no" "$p_yes"
+done
+
+# pcre2's notice must not satisfy re2's obligation. Both dep names end in "re2", so a needle of
+# "re2" alone passes a prefix that ships libre2.a with only the pcre2 notice.
+p_collide="$(mkprefix libre2.a extension_llm_tokenizers_third-party_pcre2_COPYING)"
+assert_eq "$(guard "$p_collide")" "fail" "the pcre2 notice does not satisfy libre2.a"
+rm -rf "$p_collide"
+
 exit "$ASSERT_FAILS"

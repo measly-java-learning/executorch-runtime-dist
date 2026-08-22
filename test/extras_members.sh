@@ -24,6 +24,18 @@ if [ -f "$PREFIX/lib/libeigen_blas.a" ] && \
    [ -z "$(find "$PREFIX/THIRD-PARTY-NOTICES" -maxdepth 1 -type f -iname '*eigen*' 2>/dev/null | head -n1)" ]; then
   echo "MISSING: THIRD-PARTY-NOTICES entry for libeigen_blas.a (Eigen, MPL-2.0)"; fail=1
 fi
+# The extension/llm/tokenizers stack ships ~96 archives on Linux. One representative archive per
+# dependency: if the dep is built at all, this archive is present. Matched by dependency rather
+# than by the path-derived notice filename, which a future ExecuTorch tag can move. Presence-driven,
+# so a prefix built without these (every Windows tarball) stays silent.
+for pair in "libabsl_base.a:abseil" "libsentencepiece.a:sentencepiece" \
+            "libre2.a:_re2_LICENSE" "libpcre2-8.a:pcre2" "libtokenizers.a:tokenizers_LICENSE"; do
+  arch="${pair%%:*}"; note="${pair##*:}"
+  if [ -f "$PREFIX/lib/$arch" ] && \
+     [ -z "$(find "$PREFIX/THIRD-PARTY-NOTICES" -maxdepth 1 -type f -iname "*$note*" 2>/dev/null | head -n1)" ]; then
+    echo "MISSING: THIRD-PARTY-NOTICES entry for $arch"; fail=1
+  fi
+done
 # op name baked into the header matches the frozen contract
 grep -q 'etnp::lstm.out' "$PREFIX/include/etnp/lstm.h" || { echo "op-name constant missing"; fail=1; }
 # relocatable: no absolute prefix path in the shipped config

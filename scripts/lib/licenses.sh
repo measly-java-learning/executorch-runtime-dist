@@ -4,17 +4,20 @@
 # sweep is reachable by the hermetic unit suite without a 15-minute ExecuTorch compile.
 # Source me.
 
-# ExecuTorch source dirs swept for notice files. `kernels` is here because Eigen is vendored at
-# kernels/optimized/third-party/eigen and libeigen_blas.a ships in every Linux tarball; the whole
-# kernels subtree is swept rather than that one path so a dep vendored elsewhere under it is caught
-# too.
-ET_NOTICE_ROOTS='third-party backends kernels'
+# ExecuTorch source dirs swept for notice files, i.e. every vendoring root. `kernels` is here
+# because Eigen is vendored at kernels/optimized/third-party/eigen and libeigen_blas.a ships in
+# every Linux tarball; `extension` is here because the tokenizers dependency stack is vendored at
+# extension/llm/tokenizers/third-party/. Each root is swept wholesale rather than pinned to one
+# path, so a dep vendored elsewhere under it is caught too.
+ET_NOTICE_ROOTS='third-party backends kernels extension'
 
 # Directory names pruned from the sweep. Each entry here is justified by a concrete notice file
 # that would otherwise claim a license obligation the artifact does not carry: `bench` prunes
-# kernels/optimized/third-party/eigen/bench/btl/COPYING, GPLv2 for Eigen's benchmark harness, which
-# nothing in eigen_blas references.
-ET_NOTICE_PRUNE_DIRS='bench'
+# kernels/optimized/third-party/eigen/bench/btl/COPYING, the GPLv2 notice of Eigen's benchmark
+# harness, which is not compiled into the shipped lib/; `build` prunes a vendored dep's build tree,
+# untracked output that exists only in a checkout that was built in, so sweeping it would make the
+# notice set depend on whether the checkout was built in.
+ET_NOTICE_PRUNE_DIRS='bench build'
 
 # Copy every LICENSE*/COPYING* under ET_NOTICE_ROOTS into <prefix>/THIRD-PARTY-NOTICES/, named by
 # its path relative to the source tree with slashes turned into underscores, so two deps' LICENSE
@@ -45,7 +48,17 @@ install_third_party_notices() { # <et_src> <prefix>
 # configure-base.sh omits KERNELS_OPTIMIZED, and the day it does not, this covers it unchanged.
 # libeigen_blas.a is MPL-2.0 Eigen, reached through optimized_kernels -> cpublas -> eigen_blas, which
 # is the chain behind optimized_native_cpu_ops_lib — the ops lib consumers are told to whole-archive.
-_ET_LICENSED_ARCHIVES='libeigen_blas.a|eigen eigen_blas.lib|eigen'
+# Tokenizer-stack archives. Each needle is a <dep>_<noticefile> tail rather than a full path, so it
+# survives a vendoring-path move: the notice lands in THIRD-PARTY-NOTICES/ under a path-derived name,
+# and the needle matches whatever path upstream vendors the dep under. libre2.a uses _re2_LICENSE
+# specifically because a bare `re2` also matches the pcre2 notice (pcre2's name ends in "re2"), which
+# would let a missing re2 notice pass whenever pcre2's is present.
+_ET_LICENSED_ARCHIVES='libeigen_blas.a|eigen eigen_blas.lib|eigen
+libabsl_base.a|abseil-cpp_LICENSE
+libsentencepiece.a|sentencepiece_LICENSE
+libre2.a|_re2_LICENSE
+libpcre2-8.a|pcre2_COPYING
+libtokenizers.a|tokenizers_LICENSE'
 
 # Fail when an archive above is installed and the sweep landed no matching notice. The whole point
 # is that a `find` matching nothing is loud: without this, a moved upstream vendoring path silently
