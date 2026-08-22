@@ -103,4 +103,26 @@ msg="$(assert_shipped_archive_notices "$p_bad" 2>&1 >/dev/null || true)"
 assert_contains "$msg" "libeigen_blas.a" "diagnostic names the offending archive"
 
 rm -rf "$p_bad" "$p_ok" "$p_moved" "$p_none" "$p_win"
+
+# --- tokenizer stack ---
+# One representative archive per dependency: if the dep is built at all, this archive is present.
+for pair in "libabsl_base.a:extension_llm_tokenizers_third-party_abseil-cpp_LICENSE" \
+            "libsentencepiece.a:extension_llm_tokenizers_third-party_sentencepiece_LICENSE" \
+            "libre2.a:extension_llm_tokenizers_third-party_re2_LICENSE" \
+            "libpcre2-8.a:extension_llm_tokenizers_third-party_pcre2_COPYING" \
+            "libtokenizers.a:extension_llm_tokenizers_LICENSE"; do
+  arch="${pair%%:*}"; note="${pair##*:}"
+  p_no="$(mkprefix "$arch" '')"
+  assert_eq "$(guard "$p_no")" "fail" "$arch with no notice is refused"
+  p_yes="$(mkprefix "$arch" "$note")"
+  assert_eq "$(guard "$p_yes")" "pass" "$arch with its notice is accepted"
+  rm -rf "$p_no" "$p_yes"
+done
+
+# pcre2's notice must not satisfy re2's obligation. Both dep names end in "re2", so a needle of
+# "re2" alone passes a prefix that ships libre2.a with only the pcre2 notice.
+p_collide="$(mkprefix libre2.a extension_llm_tokenizers_third-party_pcre2_COPYING)"
+assert_eq "$(guard "$p_collide")" "fail" "the pcre2 notice does not satisfy libre2.a"
+rm -rf "$p_collide"
+
 exit "$ASSERT_FAILS"

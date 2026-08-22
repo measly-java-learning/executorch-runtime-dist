@@ -48,7 +48,17 @@ install_third_party_notices() { # <et_src> <prefix>
 # configure-base.sh omits KERNELS_OPTIMIZED, and the day it does not, this covers it unchanged.
 # libeigen_blas.a is MPL-2.0 Eigen, reached through optimized_kernels -> cpublas -> eigen_blas, which
 # is the chain behind optimized_native_cpu_ops_lib — the ops lib consumers are told to whole-archive.
-_ET_LICENSED_ARCHIVES='libeigen_blas.a|eigen eigen_blas.lib|eigen'
+# Tokenizer-stack archives. Each needle is a <dep>_<noticefile> tail rather than a full path, so it
+# survives a vendoring-path move: the notice lands in THIRD-PARTY-NOTICES/ under a path-derived name,
+# and the needle matches whatever path upstream vendors the dep under. libre2.a uses _re2_LICENSE
+# specifically because a bare `re2` also matches the pcre2 notice (pcre2's name ends in "re2"), which
+# would let a missing re2 notice pass whenever pcre2's is present.
+_ET_LICENSED_ARCHIVES='libeigen_blas.a|eigen eigen_blas.lib|eigen
+libabsl_base.a|abseil-cpp_LICENSE
+libsentencepiece.a|sentencepiece_LICENSE
+libre2.a|_re2_LICENSE
+libpcre2-8.a|pcre2_COPYING
+libtokenizers.a|tokenizers_LICENSE'
 
 # Fail when an archive above is installed and the sweep landed no matching notice. The whole point
 # is that a `find` matching nothing is loud: without this, a moved upstream vendoring path silently
