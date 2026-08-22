@@ -15,6 +15,8 @@ mkdir -p "$src/third-party/xnnpack" "$src/third-party/gflags" \
          "$src/backends/xnnpack/third-party/FP16" \
          "$src/kernels/optimized/third-party/eigen" \
          "$src/kernels/optimized/third-party/eigen/bench/btl"
+mkdir -p "$src/extension/llm/tokenizers/third-party/re2" \
+         "$src/extension/llm/tokenizers/build/temp.linux-x86_64-cpython-312/_deps/pybind11-src"
 : > "$src/third-party/xnnpack/LICENSE"
 : > "$src/third-party/gflags/COPYING.txt"
 : > "$src/backends/xnnpack/third-party/FP16/LICENSE"
@@ -22,6 +24,8 @@ mkdir -p "$src/third-party/xnnpack" "$src/third-party/gflags" \
 : > "$src/kernels/optimized/third-party/eigen/COPYING.MPL2"
 : > "$src/kernels/optimized/third-party/eigen/COPYING.README"
 : > "$src/kernels/optimized/third-party/eigen/bench/btl/COPYING"
+: > "$src/extension/llm/tokenizers/third-party/re2/LICENSE"
+: > "$src/extension/llm/tokenizers/build/temp.linux-x86_64-cpython-312/_deps/pybind11-src/LICENSE"
 
 install_third_party_notices "$src" "$pfx"
 n="$pfx/THIRD-PARTY-NOTICES"
@@ -42,9 +46,17 @@ assert_eq "$(has "$n/third-party_gflags_COPYING.txt")" "yes" "COPYING glob appli
 # not land as if it covered shipped code.
 assert_eq "$(has "$n/kernels_optimized_third-party_eigen_bench_btl_COPYING")" "no" "bench dirs are pruned from the sweep"
 
-# Names are path-derived, so two deps' LICENSE files cannot overwrite each other. Still 6: the
+# The tokenizers dependency stack is vendored under extension/, outside the roots the sweep
+# covered for third-party and backends.
+assert_eq "$(has "$n/extension_llm_tokenizers_third-party_re2_LICENSE")" "yes" "extension root swept"
+# A tokenizers build tree is untracked output: present in a checkout that has been built in,
+# absent in a clean CI checkout. Sweeping it would make the notice set depend on that.
+assert_eq "$(has "$n/extension_llm_tokenizers_build_temp.linux-x86_64-cpython-312__deps_pybind11-src_LICENSE")" \
+  "no" "build residue is pruned"
+
+# Names are path-derived, so two deps' LICENSE files cannot overwrite each other. Still 7: the
 # pruned bench/btl notice above must not be among them.
-assert_eq "$(ls "$n" | wc -l)" "6" "every notice landed under a distinct name, bench excluded"
+assert_eq "$(ls "$n" | wc -l)" "7" "every notice landed under a distinct name, bench excluded"
 
 # A root a future ET tag drops is skipped, not fatal.
 src2="$(mktemp -d)"; pfx2="$(mktemp -d)"

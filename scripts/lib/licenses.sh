@@ -4,17 +4,20 @@
 # sweep is reachable by the hermetic unit suite without a 15-minute ExecuTorch compile.
 # Source me.
 
-# ExecuTorch source dirs swept for notice files. `kernels` is here because Eigen is vendored at
-# kernels/optimized/third-party/eigen and libeigen_blas.a ships in every Linux tarball; the whole
-# kernels subtree is swept rather than that one path so a dep vendored elsewhere under it is caught
-# too.
-ET_NOTICE_ROOTS='third-party backends kernels'
+# ExecuTorch source dirs swept for notice files, i.e. every vendoring root. `kernels` is here
+# because Eigen is vendored at kernels/optimized/third-party/eigen and libeigen_blas.a ships in
+# every Linux tarball; `extension` is here because the tokenizers dependency stack is vendored at
+# extension/llm/tokenizers/third-party/. Each root is swept wholesale rather than pinned to one
+# path, so a dep vendored elsewhere under it is caught too.
+ET_NOTICE_ROOTS='third-party backends kernels extension'
 
 # Directory names pruned from the sweep. Each entry here is justified by a concrete notice file
 # that would otherwise claim a license obligation the artifact does not carry: `bench` prunes
-# kernels/optimized/third-party/eigen/bench/btl/COPYING, GPLv2 for Eigen's benchmark harness, which
-# nothing in eigen_blas references.
-ET_NOTICE_PRUNE_DIRS='bench'
+# kernels/optimized/third-party/eigen/bench/btl/COPYING, the GPLv2 notice of Eigen's benchmark
+# harness, which is not compiled into the shipped lib/; `build` prunes a vendored dep's build tree,
+# untracked output that exists only in a checkout that was built in, so sweeping it would make the
+# notice set depend on whether the checkout was built in.
+ET_NOTICE_PRUNE_DIRS='bench build'
 
 # Copy every LICENSE*/COPYING* under ET_NOTICE_ROOTS into <prefix>/THIRD-PARTY-NOTICES/, named by
 # its path relative to the source tree with slashes turned into underscores, so two deps' LICENSE
