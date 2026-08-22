@@ -17,6 +17,13 @@ for m in lib/libetnp_ops_lstm.a lib/libhwy.a include/etnp/lstm.h lib/cmake/ETNPE
          THIRD-PARTY-NOTICES/highway_LICENSE; do
   if [ ! -e "$PREFIX/$m" ]; then echo "MISSING: $m"; fail=1; fi
 done
+# libeigen_blas.a is MPL-2.0 Eigen and ships in every Linux tarball that builds the optimized
+# kernels. Its notice is named after the upstream vendoring path, so match the dep rather than a
+# path a future ET tag can move. Presence-driven, so a prefix without the archive is silent.
+if [ -f "$PREFIX/lib/libeigen_blas.a" ] && \
+   [ -z "$(find "$PREFIX/THIRD-PARTY-NOTICES" -maxdepth 1 -type f -iname '*eigen*' 2>/dev/null | head -n1)" ]; then
+  echo "MISSING: THIRD-PARTY-NOTICES entry for libeigen_blas.a (Eigen, MPL-2.0)"; fail=1
+fi
 # op name baked into the header matches the frozen contract
 grep -q 'etnp::lstm.out' "$PREFIX/include/etnp/lstm.h" || { echo "op-name constant missing"; fail=1; }
 # relocatable: no absolute prefix path in the shipped config

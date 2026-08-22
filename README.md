@@ -23,6 +23,10 @@ THIRD-PARTY-NOTICES/
 BUILDINFO
 ```
 
+`THIRD-PARTY-NOTICES/` carries the license files of everything statically linked into `lib/`,
+including **Eigen (MPL-2.0)** behind `libeigen_blas.a`. The build refuses to finish if an archive
+with a notice obligation has no matching notice.
+
 ## Bundled first-party op & dependencies
 
 This runtime ships the custom `etnp::lstm.out` operator in every variant (see
