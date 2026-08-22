@@ -40,23 +40,29 @@ model at load with `failed to import model for device 'CPU' (status=-1)`.
 
 The release pins it in `EtRuntimePin.cmake`, so fetch it the same hash-verified way you fetch the
 runtime tarball. Two things make this conditional rather than unconditional: a release that did not
-run the OpenVINO job publishes no bundle and therefore defines none of these vars, and the bundle is
-built for one platform while the pin is a single file every platform's build includes. Guard on both
-by comparing `ET_RUNTIME_OPENVINO_PLATFORM` against the row you are building:
+run the OpenVINO job publishes no bundle and therefore defines none of these vars, and the pin is a
+single file every platform's build includes. Ask the pin whether a bundle exists for the row you are
+building:
 
 ```cmake
 include(cmake/EtRuntimePin.cmake)
 
-if(DEFINED ET_RUNTIME_OPENVINO_URL AND ET_RUNTIME_ROW STREQUAL ET_RUNTIME_OPENVINO_PLATFORM)
-  include(FetchContent)
+# Ask the pin whether a bundle exists for the row you are building. Returns empty when there is
+# none (linux-aarch64), so this is a test on the value rather than on a built-up variable name.
+et_runtime_openvino_url("${ET_RUNTIME_ROW}" ov_url ov_sha)
+if(ov_url)
   FetchContent_Declare(openvino_runtime
-    URL       "${ET_RUNTIME_OPENVINO_URL}"
-    URL_HASH  "SHA256=${ET_RUNTIME_OPENVINO_SHA256}")
+    URL       "${ov_url}"
+    URL_HASH  "SHA256=${ov_sha}")
   FetchContent_MakeAvailable(openvino_runtime)
-  # This is the path to hand to setenv() below -- the file, not the directory.
-  set(OPENVINO_C_LIB "${openvino_runtime_SOURCE_DIR}/lib/libopenvino_c.so")
 endif()
 ```
+
+`et_runtime_openvino_url()` returns the row's own pinned bundle, or empty strings when that
+platform has none. The old form — `if(DEFINED ET_RUNTIME_OPENVINO_URL AND ET_RUNTIME_ROW STREQUAL
+ET_RUNTIME_OPENVINO_PLATFORM)` — compared against the one platform a bundle existed for, so any row
+that was not exactly that platform silently declined to fetch a bundle even after the release
+published one for it.
 
 Vendor that `lib/` directory into your jar as described above, and resolve the extracted
 `libopenvino_c.so` at runtime — the build-time path does not survive into the shipped jar.

@@ -16,11 +16,13 @@ upstream `executorch` Python package and needs torch. This repo ships runtime ar
 
 ## Getting the OpenVINO runtime
 
-**Option A — our published asset (preferred).** Each release publishes
-`openvino-runtime-<ovver>-linux-x86_64.tar.gz` with a SHA-256 and a build attestation, pinned in
-`EtRuntimePin.cmake` as `ET_RUNTIME_OPENVINO_URL` / `ET_RUNTIME_OPENVINO_SHA256` /
-`ET_RUNTIME_OPENVINO_VERSION` / `ET_RUNTIME_OPENVINO_PLATFORM` (the one platform the bundle is
-built for; the vars are absent entirely from a release that published no bundle). It is a flat directory that self-resolves, and the hash pin means
+**Option A — our published asset (preferred).** Each release publishes an
+`openvino-runtime-<ovver>-<platform>.tar.gz` per platform (currently `linux-x86_64` and
+`windows-x86_64`, the latter also serving `windows-x86_64-static`) with a SHA-256 and a build
+attestation, pinned in `EtRuntimePin.cmake` as per-platform `ET_RUNTIME_OPENVINO_URL_<platform>` /
+`ET_RUNTIME_OPENVINO_SHA256_<platform>` vars, read through `et_runtime_openvino_url(<platform> url
+sha)` — which returns empty strings for a platform with no bundle (the vars are absent entirely
+from a release that published no bundle). It is a flat directory that self-resolves, and the hash pin means
 you get identical bytes on every build.
 
 **Option B — pip.** `pip install "openvino>=2025.1.0,<2026.0.0"`.
@@ -111,15 +113,21 @@ rather than at install time.
 
 ## Windows
 
-The delegate ships in the `windows-x86_64` and `windows-x86_64-static` tarballs, but **no Windows
-OpenVINO runtime bundle is published yet** — `EtRuntimePin.cmake` carries bundle rows for
-`linux-x86_64` only. On Windows, point `OPENVINO_LIB_PATH` at the absolute path of an
-`openvino_c.dll` you supply yourself, most easily from the same PyPI wheel this project vendors on
-Linux:
+The delegate ships in the `windows-x86_64` and `windows-x86_64-static` tarballs, and each release
+now publishes a Windows OpenVINO runtime bundle — `openvino-runtime-<ovver>-windows-x86_64.tar.gz`,
+pinned in `EtRuntimePin.cmake` under the `windows-x86_64` row (aliased for
+`windows-x86_64-static`). Fetch it with the same selector you use on Linux, and point
+`OPENVINO_LIB_PATH` at the extracted `openvino_c.dll`:
 
-```
-py -3.12 -m pip install openvino==2025.4.1
-set OPENVINO_LIB_PATH=%VIRTUAL_ENV%\Lib\site-packages\openvino\libs\openvino_c.dll
+```cmake
+et_runtime_openvino_url("${ET_RUNTIME_ROW}" ov_url ov_sha)
+if(ov_url)
+  FetchContent_Declare(openvino_runtime
+    URL       "${ov_url}"
+    URL_HASH  "SHA256=${ov_sha}")
+  FetchContent_MakeAvailable(openvino_runtime)
+  set(OPENVINO_LIB_PATH "${openvino_runtime_SOURCE_DIR}/lib/openvino_c.dll")
+endif()
 ```
 
 `OPENVINO_LIB_PATH` **must be absolute on Windows.** The backend passes an absolute path to
@@ -129,6 +137,7 @@ its own siblings — Windows has no `$ORIGIN`. A bare filename falls back to the
 
 The OpenVINO DLLs are built against the dynamic CRT and import `MSVCP140.dll` / `VCRUNTIME140.dll`
 from System32, so the **Microsoft Visual C++ redistributable must be installed**. Without it the
-load fails with error 126 (`ERROR_MOD_NOT_FOUND`), which names nothing useful. A `/MT` static
-consumer against these `/MD` DLLs is safe: every OpenVINO allocation is released through an
-OpenVINO-side free function, so no CRT object crosses the boundary.
+load fails with error 126 (`ERROR_MOD_NOT_FOUND`) — which can mean a *dependency* was not found,
+not just the DLL itself. A `/MT` static consumer against these `/MD` DLLs is safe: every OpenVINO
+allocation is released through an OpenVINO-side free function, so no CRT object crosses the
+boundary.
