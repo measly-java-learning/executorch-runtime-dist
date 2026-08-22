@@ -24,8 +24,8 @@ BUILDINFO
 ```
 
 `THIRD-PARTY-NOTICES/` carries the license files of everything statically linked into `lib/`,
-including **Eigen (MPL-2.0)** behind `libeigen_blas.a`. The build refuses to finish if an archive
-with a notice obligation has no matching notice.
+including **Eigen (MPL-2.0)** behind `libeigen_blas.a`. The build refuses to finish if it installs
+`libeigen_blas.a` (or its Windows spelling) with no matching Eigen notice alongside it.
 
 ## Bundled first-party op & dependencies
 

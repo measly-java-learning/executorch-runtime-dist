@@ -10,11 +10,11 @@
 # too.
 ET_NOTICE_ROOTS='third-party backends kernels'
 
-# Directory names pruned from the sweep. These trees are not compiled into the shipped lib/, so a
-# notice copied out of one would claim a license obligation the artifact does not carry — e.g.
-# kernels/optimized/third-party/eigen/bench/btl/COPYING is GPLv2 for Eigen's benchmark harness,
-# which nothing in eigen_blas references.
-ET_NOTICE_PRUNE_DIRS='bench demos'
+# Directory names pruned from the sweep. Each entry here is justified by a concrete notice file
+# that would otherwise claim a license obligation the artifact does not carry: `bench` prunes
+# kernels/optimized/third-party/eigen/bench/btl/COPYING, GPLv2 for Eigen's benchmark harness, which
+# nothing in eigen_blas references.
+ET_NOTICE_PRUNE_DIRS='bench'
 
 # Copy every LICENSE*/COPYING* under ET_NOTICE_ROOTS into <prefix>/THIRD-PARTY-NOTICES/, named by
 # its path relative to the source tree with slashes turned into underscores, so two deps' LICENSE
@@ -22,7 +22,7 @@ ET_NOTICE_PRUNE_DIRS='bench demos'
 # COPYING.APACHE/BSD/MINPACK/MPL2/README, and COPYING.README is the file that says which portions
 # are under which license.
 install_third_party_notices() { # <et_src> <prefix>
-  local et_src="$1" prefix="$2" d prune_expr=() name
+  local et_src="$1" prefix="$2" d prune_expr=() name rel
   for name in $ET_NOTICE_PRUNE_DIRS; do
     [ ${#prune_expr[@]} -eq 0 ] || prune_expr+=(-o)
     prune_expr+=(-name "$name")

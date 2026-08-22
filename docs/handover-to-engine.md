@@ -224,8 +224,9 @@ gh attestation verify executorch-runtime-1.3.1-logging-linux-x86_64.tar.gz \
 - **Whole-archiving `optimized_native_cpu_ops_lib` redistributes Eigen.** It reaches
   `libeigen_blas.a` through `optimized_kernels -> cpublas -> eigen_blas`, so the resulting
   `.so` contains MPL-2.0 code. MPL-2.0 §3.2/§3.3 make that a notice obligation on *your*
-  distribution, not just on this tarball: pass `THIRD-PARTY-NOTICES/kernels_optimized_third-party_eigen_*`
-  through to whatever you ship.
+  distribution, not just on this tarball: pass the Eigen notices under `THIRD-PARTY-NOTICES/`
+  (match on `*eigen*` — the exact filename is path-derived and can shift with the vendoring
+  path upstream) through to whatever you ship.
 - **glibc ≥ 2.28 floor** — comes from the `torch==2.12.0+cpu` wheel used to build. Consumers must be on
   glibc ≥ 2.28 (RHEL8 / AlmaLinux 8 / Ubuntu 20.04+).
 - **BUILDINFO `cmake_flags`** records the exact effective build flags (including `-DCMAKE_BUILD_TYPE=Release`)

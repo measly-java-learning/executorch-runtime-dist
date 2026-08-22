@@ -151,6 +151,11 @@ install_highway_license() {
 # branch's custom ops on top of it. No ET compile, no --et-src, no ET-license/reloc steps —
 # but DO run install_highway_license, because build_extras installs libhwy.a and a
 # distributed local build must carry Highway's license too (parity with the full build).
+# Deliberately does NOT run assert_shipped_archive_notices: this path's prefix is a downloaded
+# published release, not a fresh sweep of $ET_SRC, and the guard has no way to fix a notice gap
+# in an already-published tarball — it can only hard-fail the gate on every PR until a corrected
+# release exists. The guard belongs on the real build below, where the sweep that could actually
+# satisfy it just ran.
 if [ "${EXTRAS_ONLY:-0}" -eq 1 ]; then
   test -f "$CONFIG" \
     || { echo "--extras-only but $CONFIG is missing; provide a built/extracted ET prefix" >&2; exit 1; }
