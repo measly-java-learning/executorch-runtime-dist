@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Emit EtRuntimePin.cmake (contract C6) to stdout.
+# Emit EtRuntimePin.cmake to stdout.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/naming.sh"
@@ -25,7 +25,7 @@ cat <<'EOF'
 # returns, so unused variants download nothing:
 #   et_runtime_dist_url("${ET_RUNTIME_VARIANT}" "${platform}" url sha)
 #
-# The ET_RUNTIME_OPENVINO_* vars are optional (contract C10): rows exist per platform supplied
+# The ET_RUNTIME_OPENVINO_* vars are optional: rows exist per platform supplied
 # to the release (linux-x86_64, windows-x86_64, plus a windows-x86_64-static alias) and are read
 # via et_runtime_openvino_url(<platform> url sha). ET_RUNTIME_OPENVINO_PLATFORM is the DEPRECATED
 # legacy var, describing linux-x86_64 only.
@@ -57,7 +57,7 @@ endfunction()
 
 EOF
 
-# C10: the OpenVINO CPU runtime bundles. Emitted only for the platforms a row was supplied for, so
+# The OpenVINO CPU runtime bundles. Emitted only for the platforms a row was supplied for, so
 # a release that did not run the OpenVINO job still yields a valid (OpenVINO-free) pin.
 # Versioned by OPENVINO version, not ET version -- it tracks an independent upstream.
 if [ "${#OVROWS[@]}" -gt 0 ]; then
@@ -90,7 +90,7 @@ if [ "${#OVROWS[@]}" -gt 0 ]; then
 $(ov_alias_platforms)
 EOF
 
-  cat <<'EOF'
+cat <<'EOF'
 # Ask for a platform's bundle. Unlike et_runtime_dist_url this does NOT abort when there is no
 # row: a platform with no OpenVINO bundle is legitimate (linux-aarch64 has none), so the caller
 # gets empty strings and decides. Test the url, do not test DEFINED on a built-up name.
@@ -111,7 +111,7 @@ EOF
   # next release with no signal. Remove once djl-executorch-engine has migrated to the selector
   # (tracked in https://github.com/measly-java-learning/executorch-runtime-dist/issues/48).
   if [ -n "$_ov_legacy_sha" ]; then
-    cat <<'EOF'
+cat <<'EOF'
 # DEPRECATED: single-bundle variables, kept for consumers written before multi-platform bundles.
 # Use et_runtime_openvino_url(<platform> url sha) instead; these describe linux-x86_64 only.
 EOF
