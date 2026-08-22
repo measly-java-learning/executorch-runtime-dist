@@ -45,4 +45,41 @@ assert_eq "$rc" "0" "absent roots are skipped, not an error"
 assert_eq "$(has "$pfx2/THIRD-PARTY-NOTICES/third-party_only_here_LICENSE")" "yes" "sweep continued past the absent roots"
 
 rm -rf "$src" "$pfx" "$src2" "$pfx2"
+
+# --- shipped-archive notice guard ---
+# A silent `find` that matches nothing is exactly how the Eigen gap survived 36 notices and several
+# releases, so the sweep landing nothing must fail the build rather than pass quietly.
+mkprefix() { # <archive-or-empty> <notice-or-empty>  -> echoes the prefix path
+  local p; p="$(mktemp -d)"; mkdir -p "$p/lib" "$p/THIRD-PARTY-NOTICES"
+  [ -n "$1" ] && : > "$p/lib/$1"
+  [ -n "$2" ] && : > "$p/THIRD-PARTY-NOTICES/$2"
+  printf '%s' "$p"
+}
+guard() { assert_shipped_archive_notices "$1" >/dev/null 2>&1 && printf 'pass' || printf 'fail'; }
+
+p_bad="$(mkprefix libeigen_blas.a '')"
+assert_eq "$(guard "$p_bad")" "fail" "eigen archive with no notice is refused"
+
+p_ok="$(mkprefix libeigen_blas.a kernels_optimized_third-party_eigen_COPYING.MPL2)"
+assert_eq "$(guard "$p_ok")" "pass" "eigen archive with its notice is accepted"
+
+# The notice name is path-derived, so the guard matches the dep, not a path a future tag can move.
+p_moved="$(mkprefix libeigen_blas.a some_other_vendoring_path_eigen_LICENSE)"
+assert_eq "$(guard "$p_moved")" "pass" "guard matches the dep, not one hard-coded notice path"
+
+# No archive installed -> no obligation. This is what keeps the guard silent on Windows today
+# without a platform test in it.
+p_none="$(mkprefix '' '')"
+assert_eq "$(guard "$p_none")" "pass" "no archive, no obligation"
+
+# The Windows spelling of the same archive carries the same obligation, so enabling the optimized
+# kernels on Windows cannot reintroduce the gap.
+p_win="$(mkprefix eigen_blas.lib '')"
+assert_eq "$(guard "$p_win")" "fail" "windows eigen_blas.lib with no notice is refused"
+
+# The diagnostic has to name the archive; "refusing to ship" with no subject is not actionable.
+msg="$(assert_shipped_archive_notices "$p_bad" 2>&1 >/dev/null || true)"
+assert_contains "$msg" "libeigen_blas.a" "diagnostic names the offending archive"
+
+rm -rf "$p_bad" "$p_ok" "$p_moved" "$p_none" "$p_win"
 exit "$ASSERT_FAILS"

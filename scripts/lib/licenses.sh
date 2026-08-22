@@ -28,3 +28,30 @@ install_third_party_notices() { # <et_src> <prefix>
     done || true
   done
 }
+
+# Archives that carry a notice obligation, as <archive-basename>|<notice-substring>. Keyed off what
+# is installed, never off the platform: Windows ships no eigen_blas.lib today only because
+# configure-base.sh omits KERNELS_OPTIMIZED, and the day it does not, this covers it unchanged.
+# libeigen_blas.a is MPL-2.0 Eigen, reached through optimized_kernels -> cpublas -> eigen_blas, which
+# is the chain behind optimized_native_cpu_ops_lib — the ops lib consumers are told to whole-archive.
+_ET_LICENSED_ARCHIVES='libeigen_blas.a|eigen eigen_blas.lib|eigen'
+
+# Fail when an archive above is installed and the sweep landed no matching notice. The whole point
+# is that a `find` matching nothing is loud: without this, a moved upstream vendoring path silently
+# produces an unlicensed tarball, which is what issue #45 was.
+assert_shipped_archive_notices() { # <prefix>
+  local prefix="$1" entry archive needle fail=0
+  for entry in $_ET_LICENSED_ARCHIVES; do
+    archive="${entry%%|*}"; needle="${entry##*|}"
+    [ -f "$prefix/lib/$archive" ] || continue
+    if [ -z "$(find "$prefix/THIRD-PARTY-NOTICES" -maxdepth 1 -type f -iname "*$needle*" 2>/dev/null | head -n1)" ]; then
+      echo ">> ERROR: lib/$archive is installed but no *$needle* notice landed in" >&2
+      echo "   $prefix/THIRD-PARTY-NOTICES/ — refusing to ship it without its license." >&2
+      echo "   The upstream vendoring path likely moved. Locate it with:" >&2
+      echo "     find \$ET_SRC -ipath '*$needle*' \\( -iname 'LICENSE*' -o -iname 'COPYING*' \\)" >&2
+      echo "   then add its root to ET_NOTICE_ROOTS in scripts/lib/licenses.sh." >&2
+      fail=1
+    fi
+  done
+  [ "$fail" -eq 0 ]
+}
