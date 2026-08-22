@@ -241,7 +241,7 @@ jobs:
         # mean the threshold NEVER fires on a real PR: a vacuous guard. `actions/cache/restore`
         # additionally exposes `cache-matched-key`, which is what makes the enforcement condition
         # below expressible.
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.ccache
           # <sha> suffix is REQUIRED: a cache key is write-once, so without it the cache would be
@@ -281,7 +281,7 @@ jobs:
         # failed build still banks the objects it did compile - they are valid regardless of why
         # the job failed, and re-compiling them next run is pure waste.
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.ccache
           key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
@@ -299,6 +299,9 @@ jobs:
           CCACHE_MATCHED_KEY: ${{ steps.ccache-restore.outputs.cache-matched-key }}
         run: |
           set -euo pipefail
+          # cache-primary-key is the literal key we passed to restore - empty means the
+          # action dropped its outputs, so fail loudly rather than silently (issue #47).
+          [ -n "$CCACHE_PRIMARY_KEY" ] || { echo "::error::actions/cache/restore: cache-primary-key output is empty (restore outputs missing or renamed)" >&2; exit 1; }
           # Strip the trailing -<sha> to get the inputs-identifying prefix.
           prefix="${CCACHE_PRIMARY_KEY%-*}-"
           if [ -n "$CCACHE_MATCHED_KEY" ] && [ "${CCACHE_MATCHED_KEY#"$prefix"}" != "$CCACHE_MATCHED_KEY" ]; then
@@ -422,7 +425,7 @@ jobs:
         # mean the threshold NEVER fires on a real PR: a vacuous guard. `actions/cache/restore`
         # additionally exposes `cache-matched-key`, which is what makes the enforcement condition
         # below expressible.
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.ccache
           # <sha> suffix is REQUIRED: a cache key is write-once, so without it the cache would be
@@ -463,7 +466,7 @@ jobs:
         # failed build still banks the objects it did compile - they are valid regardless of why
         # the job failed, and re-compiling them next run is pure waste.
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.ccache
           key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
@@ -481,6 +484,9 @@ jobs:
           CCACHE_MATCHED_KEY: ${{ steps.ccache-restore.outputs.cache-matched-key }}
         run: |
           set -euo pipefail
+          # cache-primary-key is the literal key we passed to restore - empty means the
+          # action dropped its outputs, so fail loudly rather than silently (issue #47).
+          [ -n "$CCACHE_PRIMARY_KEY" ] || { echo "::error::actions/cache/restore: cache-primary-key output is empty (restore outputs missing or renamed)" >&2; exit 1; }
           # Strip the trailing -<sha> to get the inputs-identifying prefix.
           prefix="${CCACHE_PRIMARY_KEY%-*}-"
           if [ -n "$CCACHE_MATCHED_KEY" ] && [ "${CCACHE_MATCHED_KEY#"$prefix"}" != "$CCACHE_MATCHED_KEY" ]; then
