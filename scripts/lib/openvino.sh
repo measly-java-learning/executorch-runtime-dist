@@ -17,6 +17,9 @@ OV_VERSION="2025.4.1"
 OV_ABI="2541"
 OV_WHEEL_PYTAG="cp312"
 OV_WHEEL_SHA256="88f074286d420c1a1a95e7f2ba11109a899f2f3b3fd818cfe1e47ead22cc7e45"
+# The win_amd64 wheel of the SAME OV_VERSION and OV_WHEEL_PYTAG, so the two platforms can never
+# skew. 41,791,284 bytes; verified against PyPI.
+OV_WHEEL_SHA256_WIN="c50293d1463698012eaa526dcc83f841b85a3f4952eea4c9445c83e0346f8e80"
 
 # AOT-only, and deliberately here rather than in a requirements file: NNCF is part of the OpenVINO
 # family and its wheel must be resolvable alongside the OV_VERSION above. requirements/openvino-*.txt
@@ -45,8 +48,15 @@ OV_HWLOC_LICENSE_URL="https://raw.githubusercontent.com/open-mpi/hwloc/hwloc-${O
 # libtbbbind/libhwloc are included because libtbb dlopens tbbbind BY NAME (it is not a NEEDED
 # entry), which pulls hwloc via its own NEEDED + $ORIGIN — verified under LD_DEBUG=libs. Omitting
 # them is safe (TBB degrades gracefully) but loses NUMA-aware binding.
-ov_lib_members() {
-  cat <<EOF
+# Windows ships the same CPU runtime set MINUS hwloc: there is no separate hwloc DLL because it is
+# folded into tbbbind_2_5.dll. The DLLs are unversioned, so OV_ABI does not appear here.
+# tbbbind_2_5.dll IS kept: the prediction was that TBB's bare-name load would miss it in a flat
+# bundle and silently lose NUMA binding, but it resolves -- verified by module enumeration in
+# issue #37, comment 5372679998.
+ov_lib_members() { # <platform>
+  case "${1:-}" in
+    linux-x86_64)
+      cat <<EOF
 libopenvino_c.so.${OV_ABI}
 libopenvino.so.${OV_ABI}
 libopenvino_intel_cpu_plugin.so
@@ -55,18 +65,79 @@ libtbb.so.12
 libtbbbind_2_5.so.3
 libhwloc.so.15
 EOF
+      ;;
+    windows-x86_64|windows-x86_64-static)
+      cat <<'EOF'
+openvino_c.dll
+openvino.dll
+openvino_intel_cpu_plugin.dll
+openvino_ir_frontend.dll
+tbb12.dll
+tbbbind_2_5.dll
+EOF
+      ;;
+    *) echo "ov_lib_members: no member list for platform '${1:-}'" >&2; return 2 ;;
+  esac
 }
 
-# hwloc-COPYING is fetched separately (see above); the other four are declared License-Files in
-# the wheel and are copied straight out of its dist-info.
-ov_license_members() {
-  cat <<'EOF'
+ov_license_members() { # <platform>
+  case "${1:-}" in
+    linux-x86_64)
+      cat <<'EOF'
 LICENSE
 runtime-third-party-programs.txt
 onetbb_third-party-programs.txt
 onednn_third-party-programs.txt
 hwloc-COPYING
 EOF
+      ;;
+    windows-x86_64|windows-x86_64-static)
+      cat <<'EOF'
+LICENSE
+runtime-third-party-programs.txt
+onetbb_third-party-programs.txt
+onednn_third-party-programs.txt
+EOF
+      ;;
+    *) echo "ov_license_members: no licence list for platform '${1:-}'" >&2; return 2 ;;
+  esac
+}
+
+# The wheel pin and its pip platform tag, per platform. Kept beside the member lists: the three
+# are read together, and a platform added to one but not the others fails at vendoring rather
+# than shipping a mismatched bundle.
+ov_wheel_sha256() { # <platform>
+  case "${1:-}" in
+    linux-x86_64) printf '%s' "$OV_WHEEL_SHA256" ;;
+    windows-x86_64|windows-x86_64-static) printf '%s' "$OV_WHEEL_SHA256_WIN" ;;
+    *) echo "ov_wheel_sha256: no wheel pinned for platform '${1:-}'" >&2; return 2 ;;
+  esac
+}
+
+ov_wheel_platform_tag() { # <platform>
+  case "${1:-}" in
+    linux-x86_64) printf 'manylinux2014_x86_64' ;;
+    windows-x86_64|windows-x86_64-static) printf 'win_amd64' ;;
+    *) echo "ov_wheel_platform_tag: no wheel tag for platform '${1:-}'" >&2; return 2 ;;
+  esac
+}
+
+# THE predicate for "does this platform's bundle carry hwloc, and therefore need its notice
+# fetched out of band?" One mapping, so vendor-openvino.sh's licence gate cannot disagree with
+# ov_license_members about whether hwloc-COPYING is expected.
+ov_uses_hwloc() { # <platform> -> 0 (yes) / 1 (no)
+  case "${1:-}" in
+    linux-x86_64) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Does this platform's bundle need the unversioned compatibility symlink?
+ov_needs_soname_symlink() { # <platform> -> 0 (yes) / 1 (no)
+  case "${1:-}" in
+    linux-x86_64) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # THE platform -> "is the OpenVINO delegate compiled in?" predicate. One mapping, consumed by

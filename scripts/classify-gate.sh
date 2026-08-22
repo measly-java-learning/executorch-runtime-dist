@@ -49,7 +49,7 @@ fi
 # to tier1, so the `full` jobs skipped — a PR could restructure them into something broken and
 # merge green. Found exactly that way: the PR that split `full` into parallel jobs went green
 # without running any of them.
-if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh|patch-et-sources\.sh|emit-xnnpack-fixtures\.py)|patches/.*|test/xnnpack_workspace(_run\.sh|/.*)|test/openvino(_smoke\.sh|_fixture_run\.sh|/.*)|\.github/workflows/extras-gate\.yml|\.build-image|scripts/(lib/ccache\.sh|install-ccache\.sh|ccache-stats\.sh)' "$CHANGED"; then
+if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh|patch-et-sources\.sh|emit-xnnpack-fixtures\.py)|patches/.*|test/xnnpack_workspace(_run\.sh|/.*)|test/openvino(_smoke(-windows)?\.sh|_fixture_run(-windows)?\.sh|/.*)|\.github/workflows/extras-gate\.yml|\.build-image|scripts/(lib/ccache\.sh|install-ccache\.sh|ccache-stats\.sh)' "$CHANGED"; then
   emit full ""; exit 0
 fi
 

@@ -1,8 +1,10 @@
 # build-runtime.ps1 — Windows environment shim for this repo's bash recipes.
 #
 # Peer to build-runtime.sh: on Windows every bash recipe (build-runtime.sh,
-# test/relocatability-windows.sh, scripts/check-windows-crt.sh) must run under
-# the Visual Studio dev shell via Git-Bash. This script is that setup, once:
+# test/relocatability-windows.sh, test/openvino_smoke-windows.sh,
+# test/openvino_fixture_run-windows.sh, scripts/check-windows-crt.sh) must run
+# under the Visual Studio dev shell via Git-Bash.
+# This script is that setup, once:
 # vswhere -> Launch-VsDevShell (cl/cmake/ninja/dumpbin/INCLUDE/LIB) -> explicit
 # Git-Bash -> exec the target with args verbatim.
 #
