@@ -163,11 +163,11 @@ bash -c '. scripts/lib/licenses.sh
          P=/tmp/tok-sweep; rm -rf $P; mkdir -p $P
          install_third_party_notices "$HOME/workspace/executorch" $P
          echo "count=$(ls $P/THIRD-PARTY-NOTICES | wc -l)"
-         ls $P/THIRD-PARTY-NOTICES | grep -c pybind11 || echo "pybind11: absent (correct)"
+         ls $P/THIRD-PARTY-NOTICES | grep -c extension_llm_tokenizers_build || echo "build-residue pybind11: absent (correct)"
          ls $P/THIRD-PARTY-NOTICES | grep -E "abseil|sentencepiece|_re2_|pcre2|tokenizers_LICENSE|FFHT"'
 ```
 
-Expected: `count=56`; pybind11 absent; the abseil, sentencepiece (and its four vendored notices), re2, pcre2 (and `sljit`, `COPYING-CMAKE-SCRIPTS`), tokenizers, json, and FFHT entries all listed.
+Expected: `count=56`; no `extension_llm_tokenizers_build_*` (build-residue) entries — the vendored `third-party/pybind11/LICENSE` legitimately remains among the swept notices; the abseil, sentencepiece (and its four vendored notices), re2, pcre2 (and `sljit`, `COPYING-CMAKE-SCRIPTS`), tokenizers, json, and FFHT entries all listed.
 
 If the count is 57, the `build` prune did not take effect. If it is 42, the root did not.
 
