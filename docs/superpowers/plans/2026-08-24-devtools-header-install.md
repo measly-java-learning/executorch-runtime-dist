@@ -547,6 +547,7 @@ Set permissions to match the sibling fixtures: `chmod 664
 test/fixtures/etpatch/etdump-CMakeLists.txt`.
 
 - [ ] **Step 2: Create the patch**
+> **Deviation note (controller ruling B, commit f7f6ae2):** the patch text below is superseded — the shipped patch installs the whole vendored flatcc include tree (`install(DIRECTORY ${PROJECT_SOURCE_DIR}/third-party/flatcc/include/ ...)`) because `flatcc_builder.h` alone cannot be #included, and two of the Step-3 test needles were replaced with non-vacuous ones. See docs/devtools-header-install-handover.md.
 
 Create `patches/et-devtools-headers.patch` with exactly this content (already verified: applies
 clean via `git apply --check` against the pristine file above, and `git apply --reverse

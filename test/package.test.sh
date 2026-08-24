@@ -107,6 +107,11 @@ tblog2="$(bash "$here/../scripts/package.sh" --prefix "$p" --etver 1.3.1 --varia
   --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$outlog2")"
 bilog2="$(tar -xzOf "$tblog2" executorch-runtime-1.3.1-logging-linux-x86_64/BUILDINFO)"
 assert_contains "$bilog2" "event_tracer=off" "logging BUILDINFO records event_tracer=off"
+case "$bilog2" in
+  *ENABLE_EVENT_TRACER*) printf 'FAIL: logging cmake_flags must not carry the event tracer flag\n' >&2
+                         ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
+  *) printf 'ok: logging cmake_flags agree with event_tracer=off\n' ;;
+esac
 
 # A devtools prefix WITH the installed header packages cleanly and records event_tracer=on.
 pdt="$(mktemp -d)/pfxdt"
@@ -128,6 +133,7 @@ tbdt="$(bash "$here/../scripts/package.sh" --prefix "$pdt" --etver 1.3.1 --varia
   --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$outdt")"
 bidt="$(tar -xzOf "$tbdt" executorch-runtime-1.3.1-devtools-linux-x86_64/BUILDINFO)"
 assert_contains "$bidt" "event_tracer=on" "devtools BUILDINFO records event_tracer=on"
+assert_contains "$bidt" "-DEXECUTORCH_ENABLE_EVENT_TRACER=ON" "devtools BUILDINFO cmake_flags agree with event_tracer=on"
 membersdt="$(tar -tzf "$tbdt")"
 assert_contains "$membersdt" "etdump_flatcc.h" "devtools tarball ships the etdump header"
 

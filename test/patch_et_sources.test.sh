@@ -88,6 +88,9 @@ assert_contains "$(cat "$tmp/et/devtools/etdump/CMakeLists.txt")" \
 assert_contains "$(cat "$tmp/et/devtools/etdump/CMakeLists.txt")" \
   'DIRECTORY ${PROJECT_SOURCE_DIR}/third-party/flatcc/include/' \
   "flatcc include tree install patched in"
+assert_contains "$(cat "$tmp/et/devtools/etdump/CMakeLists.txt")" \
+  "FILES \${CMAKE_CURRENT_SOURCE_DIR}/data_sinks/buffer_data_sink.h" \
+  "buffer_data_sink.h install FILES entry patched in"
 
 # The Linux path must be untouched. The patch is a no-op there by construction, and this is the
 # assertion that keeps it that way: a future edit that drops an #ifdef would break Linux silently.
@@ -105,6 +108,10 @@ assert_eq "$(grep -c 'xnn_get_workspace_size' "$tmp/et/backends/xnnpack/third-pa
   "1" "accessor declared exactly once (not applied twice)"
 assert_eq "$(grep -c 'if(EXECUTORCH_BUILD_DEVTOOLS)' "$tmp/et/devtools/etdump/CMakeLists.txt")" \
   "1" "devtools header install guard present exactly once (not applied twice)"
+# All three header install( blocks must live INSIDE the guard. An install moved outside
+# would break bare/logging scope while passing the per-install assertions above.
+region="$(awk '/^if\(EXECUTORCH_BUILD_DEVTOOLS\)/,/^endif\(\)/' "$tmp/et/devtools/etdump/CMakeLists.txt")"
+assert_eq "$(printf '%s\n' "$region" | grep -c '^  install(')" "3" "all three devtools header installs are inside the guard"
 
 # The anchor is gone — an ET bump moved the code. This MUST fail.
 mk_tree "$tmp/drift"
