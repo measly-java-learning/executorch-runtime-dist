@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apply the vendored source patches to a caller-supplied ExecuTorch checkout. Two concerns:
+# Apply the vendored source patches to a caller-supplied ExecuTorch checkout. Three concerns:
 #
 #   1. WORKSPACE SIZE — expose the XNNPACK delegate's arena size through the backend-options API so
 #      consumers can account for it in host-side native memory reporting. Upstream XNNPACK has no
@@ -11,6 +11,11 @@
 #      Linux by construction: every change is inside #ifdef _WIN32 or an if(MSVC) branch, verified
 #      with `unifdef -U_WIN32` reproducing the pristine files. See
 #      https://github.com/measly-java-learning/executorch-runtime-dist/issues/37.
+#
+#   3. DEVTOOLS HEADERS — ET installs the etdump/flatccrt link targets but not their headers, so
+#      a consumer can link ETDumpGen but not #include it. The patch adds a header install() to
+#      devtools/etdump/CMakeLists.txt, guarded on EXECUTORCH_BUILD_DEVTOOLS so bare/logging stay
+#      unaffected. See docs/devtools-header-install-handover.md.
 #
 # Idempotent by contract: build-runtime.sh re-runs against a persisted build tree and a checkout
 # that may already be patched. A patch that is already applied is success; a patch that does NOT
@@ -50,7 +55,8 @@ apply_patch() {
   return 1
 }
 
-echo ">> patching ET sources (workspace-size accounting, OpenVINO/Windows)"
+echo ">> patching ET sources (workspace-size accounting, OpenVINO/Windows, devtools headers)"
 apply_patch "$XNN_DIR" "$ROOT/patches/xnnpack-workspace-size-accessor.patch"
 apply_patch "$ET_SRC"  "$ROOT/patches/et-xnnpack-workspace-size.patch"
 apply_patch "$ET_SRC"  "$ROOT/patches/et-openvino-windows.patch"
+apply_patch "$ET_SRC"  "$ROOT/patches/et-devtools-headers.patch"

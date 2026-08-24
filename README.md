@@ -44,6 +44,14 @@ On Linux, every variant also emits **USDT tracepoints** for the op's XNNPACK FC 
 hit/miss/eviction behavior at runtime. See `docs/lstm-xnn-cache-usdt.md`. `BUILDINFO`
 records whether a build carries them (`usdt=on|off`).
 
+The `devtools` variant additionally installs the ExecuTorch devtools headers
+(`include/executorch/devtools/etdump/etdump_flatcc.h` and its `data_sinks/` dependents, plus
+`include/flatcc/flatcc_builder.h`), so a consumer can `#include` `ETDumpGen` and construct an
+event tracer, not merely link it. `BUILDINFO` records the capability as
+`event_tracer=on|off`, sourced from the same variant definition as the
+`-DEXECUTORCH_ENABLE_EVENT_TRACER` cmake flag — `on` for `devtools`, `off` for `bare` and
+`logging`.
+
 ## Cutting a release
 
 Releases are built once per ExecuTorch version and published as attested,

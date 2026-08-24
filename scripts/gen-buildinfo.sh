@@ -3,7 +3,7 @@
 set -euo pipefail
 : "${ET_VERSION:?}"; : "${ET_COMMIT:?}"; : "${TORCH_VERSION:?}"; : "${VARIANT:?}"
 : "${PLATFORM:?}"; : "${CMAKE_FLAGS:?}"; : "${TOOLCHAIN:?}"; : "${PACKAGE_TAG:?}"
-: "${USDT:?}"; : "${OPENVINO_VERSION:?}"
+: "${USDT:?}"; : "${OPENVINO_VERSION:?}"; : "${EVENT_TRACER:?}"
 cat <<EOF
 et_version=$ET_VERSION
 et_commit=$ET_COMMIT
@@ -11,6 +11,7 @@ torch_version=$TORCH_VERSION
 variant=$VARIANT
 platform=$PLATFORM
 usdt=$USDT
+event_tracer=$EVENT_TRACER
 openvino_version=$OPENVINO_VERSION
 cmake_flags=$CMAKE_FLAGS
 toolchain=$TOOLCHAIN
