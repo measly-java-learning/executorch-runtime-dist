@@ -11,3 +11,14 @@ variant_flags() { # <bare|logging|devtools>
     *) echo "unknown variant: $1" >&2; return 2 ;;
   esac
 }
+# Capability signal for BUILDINFO's event_tracer key. Derived from variant_flags's own output
+# — never a second copy of the variant list — so this cannot drift from the cmake flag that
+# actually controls EXECUTORCH_ENABLE_EVENT_TRACER.
+event_tracer_for_variant() { # <bare|logging|devtools>
+  local _et_flags
+  _et_flags="$(variant_flags "$1")" || return $?
+  case "$_et_flags" in
+    *-DEXECUTORCH_ENABLE_EVENT_TRACER=ON*) printf 'on' ;;
+    *) printf 'off' ;;
+  esac
+}

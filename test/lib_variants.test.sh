@@ -16,5 +16,10 @@ case "$(variant_flags devtools)" in
                                      ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
   *) printf 'ok: devtools does not disable logging\n' ;;
 esac
+assert_eq "$(event_tracer_for_variant bare)"     "off" "bare event_tracer off"
+assert_eq "$(event_tracer_for_variant logging)"  "off" "logging event_tracer off"
+assert_eq "$(event_tracer_for_variant devtools)" "on"  "devtools event_tracer on"
+event_tracer_for_variant bogus >/dev/null 2>&1
+assert_eq "$?" "2" "event_tracer_for_variant: unknown variant returns 2"
 variant_flags bogus >/dev/null 2>&1; assert_eq "$?" "2" "unknown variant returns 2"
 exit "$ASSERT_FAILS"
