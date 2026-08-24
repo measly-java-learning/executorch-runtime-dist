@@ -1,7 +1,9 @@
 # Spike: does the `devtools` variant compile under MSVC? (Windows devtools rows)
 
-**Status:** not yet run — this session cannot reach `winbox` (no route to `192.168.6.252` from the
-sandboxed environment). Procedure below is ready to execute; findings will be appended once run.
+**Status:** run — **green, after two upstream-file fixes.** `devtools` compiles under MSVC
+(`windows-x86_64`/MD) once `third-party/CMakeLists.txt`'s `flatcc_ep` `ExternalProject_Add` is
+patched. Connectivity to `winbox` was transient in the first attempt (timed out once, worked on
+retry) — not a real network blocker.
 **Host:** `winbox` (VS 18 / MSVC 19.51, Ninja, cmake, Git-Bash) — same host as
 `spike/2026-08-22-windows-optimized-ops-spike.md`.
 **Type:** throwaway. Nothing built here ships.
@@ -137,13 +139,98 @@ Expect `event_tracer=on`.
 
 ## Findings
 
-_(append after the run)_
+Ran Steps 0-4 (single CRT flavor, `windows-x86_64`/MD only — /MT not attempted; see *Scope*
+above for why one flavor answers the compile-feasibility question). `$Dist` was at `91fca18`
+(post-#57), `$EtSrc` at pristine `v1.4.1` plus the repo's existing idempotent patches.
+
+**First attempt failed at configure→build with two distinct, previously-unexercised MSVC defects
+in ET's `third-party/CMakeLists.txt`'s `flatcc_ep` `ExternalProject_Add` — nothing in either fix
+touches this repo's own `devtools/etdump/CMakeLists.txt` header-install patch
+(`patches/et-devtools-headers.patch`), which applied and installed cleanly on the first try.**
+Neither defect is the C++20-vs-MSVC-C++17/c10 class the optimized-kernels spike found —
+`etdump`/`bundled_program` do not depend on torch's c10, and no such error occurred anywhere in
+this run.
+
+1. **Missing `.exe` on `flatcc_ep`'s `BUILD_BYPRODUCTS`** (`third-party/CMakeLists.txt:128`,
+   `BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatcc`). This repo's `build-runtime.sh` already sed-patches
+   the *sibling* `flatbuffers_ep`'s byproduct (`BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc` →
+   `flatc.exe`, added for the Windows relocatability work) with an anchored regex
+   (`s#\(BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc\)$#\1.exe#`). That anchor does **not** match
+   `.../bin/flatcc` (the `$` anchors immediately after `flatc`, and `flatcc` has one more
+   character before end-of-line), so the second declaration was never touched. Nothing exercised
+   `flatcc_ep` on Windows before this spike — it is only reached when `devtools` is enabled — so the
+   gap was invisible. First symptom: `ninja: error: 'third-party/flatcc_ep/bin/flatcc.exe', needed
+   by '...etdump_schema_flatcc_builder.h', missing and no known rule to make it`.
+
+   **Fix (verified live):** broaden the existing sed's pattern to make the trailing `c` optional —
+   `s#\(BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc\)c\?$#\1c.exe#` is wrong (loses idempotency
+   framing); the concrete edit applied on winbox was a second, parallel `-replace` targeting
+   `BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatcc$` → `...flatcc.exe`. **The plan should express this as
+   one generalized sed** (`bin/flatc` optionally followed by a second `c`, i.e. matching both
+   `flatc` and `flatcc`) rather than two near-duplicate `sed -i` lines, to keep
+   `build-runtime.sh`'s comment ("upstream flatc byproduct bug") accurate for both targets.
+
+2. **`flatcc_ep` never passes `-DCMAKE_BUILD_TYPE=Release`, so its single-config Ninja sub-build
+   defaults to a debug-postfixed binary** (`flatcc_d.exe`), which does not match the
+   `IMPORTED_LOCATION` (`${INSTALL_DIR}/bin/flatcc.exe`) ET's `add_executable(flatcc_cli IMPORTED
+   GLOBAL)` declares — even after fix 1 makes the *byproduct declaration* say `.exe`, the actual
+   built file is still named `flatcc_d.exe`. This is asymmetric with the neighboring
+   `flatbuffers_ep`: ET's own comment there says "flatbuffers does not use CMAKE_BUILD_TYPE.
+   Internally, the build forces Release config" — `flatcc` has no such internal forcing.
+   Symptom (only visible after fix 1 stopped ninja from refusing to run the rule at all): `'...\\
+   third-party\\flatcc_ep\\bin\\flatcc.exe' is not recognized as an internal or external command`,
+   because that file never gets built — only `flatcc_d.exe` does.
+
+   **Fix (verified live):** add `-DCMAKE_BUILD_TYPE=Release` to `flatcc_ep`'s `CMAKE_ARGS` block in
+   `third-party/CMakeLists.txt` (inserted after `-DFLATCC_INSTALL=ON`). After this plus fix 1, a
+   clean reconfigure of just the `flatcc_ep` external-project subtree (deleting its stamp/build
+   dirs under `$BUILD_DIR/third-party/flatcc_ep`) produces `flatcc.exe` and the build proceeds.
+
+**End-to-end result after both fixes, from a from-scratch reconfigure of just the `flatcc_ep`
+subtree** (the rest of the build tree was reused incrementally): `build-runtime.sh --variant
+devtools --platform windows-x86_64` completed with exit 0. Verified on the installed prefix
+(`out-devtools-md`):
+
+| Check | Result |
+|---|---|
+| `lib/etdump.lib`, `lib/flatccrt.lib` | present |
+| `include/executorch/devtools/etdump/etdump_flatcc.h` | present |
+| `include/executorch/devtools/etdump/data_sinks/{buffer_data_sink,data_sink_base}.h` | present |
+| `include/flatcc/flatcc_builder.h` | present |
+| `lib/cmake/ExecuTorch/ExecuTorchTargets.cmake` declares `add_library(etdump STATIC IMPORTED)` | yes |
+| `scripts/package.sh --variant devtools --platform windows-x86_64 --toolchain msvc-2022` | succeeds — the devtools-header packaging guard does not fire (header present) |
+| packaged `BUILDINFO` | `event_tracer=on`, `variant=devtools`, `platform=windows-x86_64`, `openvino_version=2025.4.1`, `usdt=n/a` — all as expected for a Windows devtools tarball |
+
+Not measured this run (left for the implementation plan / real CI, since none of it bears on
+feasibility): C4530 exception-boundary warning count (the optimized-kernels spike's metric for
+whether `/EHsc` scoping is worth revisiting — devtools' codegen'd flatcc code plus
+`etdump_flatcc.cpp`'s use of `ETDUMP_VERSION`/status codes is a plausible new source of these,
+unconfirmed), the `windows-x86_64-static` (/MT) flavor (flatcc_ep is a host-tool external project
+with its own isolated CMAKE_ARGS that do not inherit `CMAKE_MSVC_RUNTIME_LIBRARY` from the parent
+configure, so CRT should not affect whether it builds — but this is inference, not measurement),
+and Windows extras (`build-runtime.sh` skips phase 2 on Windows unconditionally, `devtools`
+included — unrelated to and unaffected by this spike).
+
+**Bottom line: `devtools` on Windows is buildable, gated on exactly two small, well-understood
+upstream-file fixes to `third-party/CMakeLists.txt`'s `flatcc_ep` block** (same file this repo
+already patches with an inline `sed` in `build-runtime.sh`, not a `patches/*.patch` — precedent
+favors extending that sed over a new git patch, since both fixes target the same
+`ExternalProject_Add` this repo already reaches into). No devtools-specific MSVC/C++20
+incompatibility was found. This unblocks designing the release-matrix change with the two fixes
+as a known, scoped prerequisite rather than an open risk.
 
 ## Afterwards
 
-**Green run:** no branch to delete (none was created). Remove `$Dist/out-devtools-md`,
-`$Dist/et-build-devtools-md`, `$Dist/dist/*devtools*windows*` once the follow-up design has what it
-needs from Step 3/4's output.
+**Green run:** no branch to delete (none was created). `$Dist/out-devtools-md`,
+`$Dist/et-build-devtools-md`, `$Dist/dist/*devtools*windows*`, and the scratch drivers
+(`spike-step-package.sh`, `spike-debug.sh`, `spike-devtools-md.log`) are **still on winbox as of
+this writing** — deliberately not cleaned up yet, since the implementation plan's flatcc_ep sed
+fix should be verified by reconstructing this exact result before the host is reset. `$EtSrc`
+still carries the two live edits to `third-party/CMakeLists.txt` (the `.exe` byproduct fix and the
+`-DCMAKE_BUILD_TYPE=Release` addition) alongside the repo's other pre-existing idempotent patches
+— these are NOT committed anywhere; they exist only in winbox's `$EtSrc` working tree and must be
+re-expressed as a `build-runtime.sh` sed change before they take effect for anyone else. Whoever
+picks up the implementation plan should not assume a clean host.
 
 **Failing run:** keep `$Dist/et-build-devtools-md` (CMakeCache, compile_commands.json, .ninja_log),
 `$Dist/spike-devtools-md.log`, and `$Dist/out-devtools-md` (even partial) exactly as the prior
