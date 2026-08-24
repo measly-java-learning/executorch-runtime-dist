@@ -65,11 +65,26 @@ else
   OPENVINO_VERSION="n/a"
 fi
 
+# devtools header guard: a devtools tarball that links etdump but ships no header to include
+# it is a broken consumer contract (spec §5/§7.1-2). Check the built PREFIX directly — proving
+# the header install survived the build, not merely that the patch file exists.
+if [ "$VARIANT" = "devtools" ]; then
+  [ -f "$PREFIX/include/executorch/devtools/etdump/etdump_flatcc.h" ] || {
+    echo "package.sh: variant 'devtools' requires" >&2
+    echo "  include/executorch/devtools/etdump/etdump_flatcc.h in $PREFIX but it is missing." >&2
+    echo "  The devtools header-install patch (patches/et-devtools-headers.patch) did not" >&2
+    echo "  apply, or the prefix was not built with EXECUTORCH_BUILD_DEVTOOLS=ON. Refusing to" >&2
+    echo "  ship a devtools tarball whose #include ETDumpGen contract is broken." >&2
+    exit 1; }
+fi
+
 CMAKE_FLAGS="$(effective_cmake_flags "$PLATFORM" "$VARIANT")"
+EVENT_TRACER="$(event_tracer_for_variant "$VARIANT")"
 ET_VERSION="$ETVER" ET_COMMIT="$ET_COMMIT" TORCH_VERSION="2.13.0+cpu" \
   VARIANT="$VARIANT" PLATFORM="$PLATFORM" CMAKE_FLAGS="$CMAKE_FLAGS" \
   TOOLCHAIN="$TOOLCHAIN" PACKAGE_TAG="$PACKAGE_TAG" \
   USDT="$USDT_STATE" \
+  EVENT_TRACER="$EVENT_TRACER" \
   OPENVINO_VERSION="$OPENVINO_VERSION" \
   "$HERE/gen-buildinfo.sh" > "$STAGE/BUILDINFO"
 

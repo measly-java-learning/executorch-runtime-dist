@@ -99,4 +99,59 @@ bash "$here/../scripts/package.sh" --prefix "$pnov" --etver 1.3.1 --variant logg
   --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$(mktemp -d)" >/dev/null 2>&1
 assert_eq "$?" "1" "linux-x86_64 prefix without libopenvino_backend.a is refused"
 
+# --- event_tracer provenance + devtools header guard ---
+
+# logging (existing fixture $p) must record event_tracer=off.
+outlog2="$(mktemp -d)"
+tblog2="$(bash "$here/../scripts/package.sh" --prefix "$p" --etver 1.3.1 --variant logging \
+  --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$outlog2")"
+bilog2="$(tar -xzOf "$tblog2" executorch-runtime-1.3.1-logging-linux-x86_64/BUILDINFO)"
+assert_contains "$bilog2" "event_tracer=off" "logging BUILDINFO records event_tracer=off"
+
+# A devtools prefix WITH the installed header packages cleanly and records event_tracer=on.
+pdt="$(mktemp -d)/pfxdt"
+mkdir -p "$pdt/lib/cmake/ExecuTorch" \
+         "$pdt/include/executorch/devtools/etdump/data_sinks" \
+         "$pdt/THIRD-PARTY-NOTICES"
+: > "$pdt/lib/cmake/ExecuTorch/executorch-config.cmake"
+: > "$pdt/lib/libopenvino_backend.a"
+: > "$pdt/lib/libetdump.a"
+: > "$pdt/include/et.h"
+: > "$pdt/include/executorch/devtools/etdump/etdump_flatcc.h"
+: > "$pdt/include/executorch/devtools/etdump/data_sinks/buffer_data_sink.h"
+: > "$pdt/THIRD-PARTY-NOTICES/xnnpack_LICENSE"
+: > "$pdt/LICENSE"
+echo "deadbeef" > "$pdt/.et_commit"
+echo "on" > "$pdt/.etnp_usdt"
+outdt="$(mktemp -d)"
+tbdt="$(bash "$here/../scripts/package.sh" --prefix "$pdt" --etver 1.3.1 --variant devtools \
+  --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$outdt")"
+bidt="$(tar -xzOf "$tbdt" executorch-runtime-1.3.1-devtools-linux-x86_64/BUILDINFO)"
+assert_contains "$bidt" "event_tracer=on" "devtools BUILDINFO records event_tracer=on"
+membersdt="$(tar -tzf "$tbdt")"
+assert_contains "$membersdt" "etdump_flatcc.h" "devtools tarball ships the etdump header"
+
+# A devtools prefix WITHOUT the header must be refused outright — proves the change survived
+# the build rather than merely that a file was edited somewhere (spec §5).
+pdtmiss="$(mktemp -d)/pfxdtmiss"
+mkdir -p "$pdtmiss/lib/cmake/ExecuTorch" "$pdtmiss/include" "$pdtmiss/THIRD-PARTY-NOTICES"
+: > "$pdtmiss/lib/cmake/ExecuTorch/executorch-config.cmake"
+: > "$pdtmiss/lib/libopenvino_backend.a"
+: > "$pdtmiss/lib/libetdump.a"
+: > "$pdtmiss/include/et.h"
+: > "$pdtmiss/THIRD-PARTY-NOTICES/xnnpack_LICENSE"
+: > "$pdtmiss/LICENSE"
+echo "deadbeef" > "$pdtmiss/.et_commit"
+echo "on" > "$pdtmiss/.etnp_usdt"
+bash "$here/../scripts/package.sh" --prefix "$pdtmiss" --etver 1.3.1 --variant devtools \
+  --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$(mktemp -d)" >/dev/null 2>&1
+assert_eq "$?" "1" "devtools prefix without etdump_flatcc.h is refused"
+
+# The guard must be devtools-specific: a logging prefix missing the header packages fine
+# (bare/logging never had it and never will).
+outlogok="$(mktemp -d)"
+bash "$here/../scripts/package.sh" --prefix "$p" --etver 1.3.1 --variant logging \
+  --platform linux-x86_64 --package-tag v1.3.1-1 --outdir "$outlogok" >/dev/null
+assert_eq "$?" "0" "logging prefix without devtools header still packages"
+
 exit "$ASSERT_FAILS"
