@@ -30,6 +30,8 @@ mk_tree() { # <root>
   cp "$here/fixtures/etpatch/OpenvinoApi.h"          "$r/backends/openvino/runtime/OpenvinoApi.h"
   cp "$here/fixtures/etpatch/OpenvinoBackend.cpp"    "$r/backends/openvino/runtime/OpenvinoBackend.cpp"
   cp "$here/fixtures/etpatch/openvino-CMakeLists.txt" "$r/backends/openvino/CMakeLists.txt"
+  mkdir -p "$r/devtools/etdump/data_sinks"
+  cp "$here/fixtures/etpatch/etdump-CMakeLists.txt" "$r/devtools/etdump/CMakeLists.txt"
   git -C "$r" init -q
   git -C "$r" add -A
   git -C "$r" -c user.email=t@t -c user.name=t commit -qm init
@@ -71,6 +73,21 @@ assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoApi.h")" \
   "FreeLibrary" "windows handle deleter patched in"
 assert_contains "$(cat "$tmp/et/backends/openvino/CMakeLists.txt")" \
   "/EHsc /GR" "MSVC compile options patched in"
+# The devtools header-install patch. Assert on the install() rule content, not the surrounding
+# comment prose — a reworded comment must not fail this test.
+assert_contains "$(cat "$tmp/et/devtools/etdump/CMakeLists.txt")" \
+  "if(EXECUTORCH_BUILD_DEVTOOLS)" "devtools header install is guarded on EXECUTORCH_BUILD_DEVTOOLS"
+assert_contains "$(cat "$tmp/et/devtools/etdump/CMakeLists.txt")" \
+  'DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/executorch/devtools/etdump' \
+  "etdump_flatcc.h install destination patched in"
+assert_contains "$(cat "$tmp/et/devtools/etdump/CMakeLists.txt")" \
+  '${CMAKE_INSTALL_INCLUDEDIR}/executorch/devtools/etdump/data_sinks' \
+  "data_sinks install destination patched in"
+assert_contains "$(cat "$tmp/et/devtools/etdump/CMakeLists.txt")" \
+  "data_sinks/data_sink_base.h" "data_sink_base.h install patched in"
+assert_contains "$(cat "$tmp/et/devtools/etdump/CMakeLists.txt")" \
+  'DIRECTORY ${PROJECT_SOURCE_DIR}/third-party/flatcc/include/' \
+  "flatcc include tree install patched in"
 
 # The Linux path must be untouched. The patch is a no-op there by construction, and this is the
 # assertion that keeps it that way: a future edit that drops an #ifdef would break Linux silently.
@@ -86,6 +103,8 @@ assert_eq "$?" "0" "second apply succeeds (idempotent)"
 assert_contains "$(cat "$tmp/out2")" "already patched" "second apply reports already-patched"
 assert_eq "$(grep -c 'xnn_get_workspace_size' "$tmp/et/backends/xnnpack/third-party/XNNPACK/include/xnnpack.h")" \
   "1" "accessor declared exactly once (not applied twice)"
+assert_eq "$(grep -c 'if(EXECUTORCH_BUILD_DEVTOOLS)' "$tmp/et/devtools/etdump/CMakeLists.txt")" \
+  "1" "devtools header install guard present exactly once (not applied twice)"
 
 # The anchor is gone — an ET bump moved the code. This MUST fail.
 mk_tree "$tmp/drift"
@@ -107,6 +126,12 @@ git -C "$tmp/drift3" -c user.email=t@t -c user.name=t commit -qam drift
 out="$(bash "$script" "$tmp/drift3" 2>&1)"
 assert_eq "$?" "1" "drifted OpenVINO anchor fails"
 assert_contains "$out" "does not apply" "OpenVINO drift failure explains itself"
+mk_tree "$tmp/drift4"
+: > "$tmp/drift4/devtools/etdump/CMakeLists.txt"
+git -C "$tmp/drift4" -c user.email=t@t -c user.name=t commit -qam drift
+out="$(bash "$script" "$tmp/drift4" 2>&1)"
+assert_eq "$?" "1" "drifted devtools/etdump anchor fails"
+assert_contains "$out" "does not apply" "devtools/etdump drift failure explains itself"
 
 bash "$script" >/dev/null 2>&1
 assert_eq "$?" "1" "missing argument is an error"

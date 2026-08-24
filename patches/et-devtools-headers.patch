@@ -1,0 +1,37 @@
+diff --git a/devtools/etdump/CMakeLists.txt b/devtools/etdump/CMakeLists.txt
+index 9ef3c8c..f53f082 100644
+--- a/devtools/etdump/CMakeLists.txt
++++ b/devtools/etdump/CMakeLists.txt
+@@ -67,3 +67,32 @@ install(
+   INCLUDES
+   DESTINATION ${_common_include_directories}
+ )
++
++# Install the public devtools headers so a downstream consumer can #include
++# ETDumpGen, not merely link against it. devtools/CMakeLists.txt adds this
++# subdirectory from two call sites (see CMakeLists.txt around
++# EXECUTORCH_BUILD_DEVTOOLS and EXECUTORCH_BUILD_PYBIND); guard explicitly
++# here rather than relying on which branch reached us, since both do.
++if(EXECUTORCH_BUILD_DEVTOOLS)
++  install(
++    FILES ${CMAKE_CURRENT_SOURCE_DIR}/etdump_flatcc.h
++    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/executorch/devtools/etdump
++  )
++  install(
++    FILES ${CMAKE_CURRENT_SOURCE_DIR}/data_sinks/buffer_data_sink.h
++          ${CMAKE_CURRENT_SOURCE_DIR}/data_sinks/data_sink_base.h
++    DESTINATION
++      ${CMAKE_INSTALL_INCLUDEDIR}/executorch/devtools/etdump/data_sinks
++  )
++  # flatcc_builder.h: declares flatcc_builder_aligned_free, the portable
++  # release for buffers ETDumpGen::get_etdump_data() hands back (flatcc
++  # allocates with _aligned_malloc under MSVC; plain free() is UB there).
++  # Install the whole vendored flatcc include tree: flatcc_builder.h pulls in
++  # flatcc_flatbuffers.h/flatcc_emitter.h/flatcc_refmap.h and flatcc/portable/*,
++  # so a lone header cannot be #included; the directory matches what linking
++  # libflatccrt.a implies. flatcc's license already ships (THIRD-PARTY-NOTICES).
++  install(
++    DIRECTORY ${PROJECT_SOURCE_DIR}/third-party/flatcc/include/
++    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
++  )
++endif()
