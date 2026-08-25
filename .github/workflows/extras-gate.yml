@@ -348,7 +348,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [logging]
+        # Mirrors release.yml's build-windows matrix exactly (test/lib/extras_gate_windows.py
+        # asserts this) -- a green `full` gate means the eventual release tag will build.
+        variant: [logging, devtools]
         platform: [windows-x86_64, windows-x86_64-static]
     steps:
       - name: Configure Git for Windows checkout (long paths + symlinks)
@@ -390,7 +392,9 @@ jobs:
             --toolchain "msvc-2022"
       - uses: actions/upload-artifact@v7
         with:
-          name: win-tarball-${{ matrix.platform }}
+          # Includes matrix.variant: two variants building the same platform would otherwise
+          # upload under the identical name and collide (artifact names must be unique per run).
+          name: win-tarball-${{ matrix.variant }}-${{ matrix.platform }}
           path: dist/*.tar.gz
           retention-days: 1
 
@@ -615,7 +619,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: win-tarball-${{ matrix.platform }}
+          # Pinned to logging: this job gates OpenVINO delegate BEHAVIOUR at runtime, which
+          # doesn't vary by devtools/logging (same reasoning release.yml's LSTM round-trip gate
+          # uses to run only `if matrix.variant == 'logging'` only). devtools's own correctness on
+          # Windows is covered by full-build-windows's per-leg relocatability-smoke and CRT-scan
+          # steps instead of a second, redundant runtime-fixture leg here.
+          name: win-tarball-logging-${{ matrix.platform }}
           path: winpkg
       - uses: actions/download-artifact@v8
         with:
