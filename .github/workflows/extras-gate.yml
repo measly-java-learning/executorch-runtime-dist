@@ -29,6 +29,9 @@ on:
       # Workspace-size surface, same reasoning: these run only in `full`, so without a trigger an
       # edit to one would ship with no run at all.
       - 'scripts/patch-et-sources.sh'
+      # Windows-only flatc(c)_ep byproduct-naming fix (see build-runtime.sh's IS_WINDOWS block).
+      # Same reasoning: only exercised by full-build-windows, which only runs in `full`.
+      - 'scripts/patch-et-windows-byproducts.sh'
       - 'scripts/emit-xnnpack-fixtures.py'
       - 'patches/**'
       - 'test/xnnpack_workspace_run.sh'
