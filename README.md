@@ -13,6 +13,9 @@ Each release builds three variants of the runtime for `linux-x86_64`:
 - `logging` — logging on. **Ship default.**
 - `devtools` — devtools + event tracer (profiling/debug).
 
+Windows (`windows-x86_64` /MD, `windows-x86_64-static` /MT) ships `logging` and `devtools`;
+`bare` stays Linux-only.
+
 Each tarball unpacks to a single top-level directory containing:
 
 ```
