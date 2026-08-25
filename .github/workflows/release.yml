@@ -142,14 +142,17 @@ jobs:
           path: dist/*
 
   #
-  # Windows amd64 support is implemented via `build-windows` below (MSVC, logging variant
-  # only, GitHub-hosted windows-2022 runner, no container). It builds TWO platforms that differ
-  # only in the C runtime — windows-x86_64 (/MD, for CPython extensions) and
-  # windows-x86_64-static (/MT, for self-contained JNI DLLs) — because MSVC bakes the CRT into
-  # every object and a consumer must link the flavor matching its own. NOTE: these platforms are
-  # NOT in env.PLATFORMS; that list drives the linux container matrix only. macOS remains future
-  # work and would follow this job's pattern, uploading via the same `dist-variant-platform`
-  # naming and added to `pin`'s `needs`.
+  # Windows amd64 support is implemented via `build-windows` below (MSVC, GitHub-hosted
+  # windows-2022 runner, no container). It builds `logging` and `devtools` (bare stays
+  # Linux-only — never requested for Windows) across TWO platforms that differ only in the C
+  # runtime — windows-x86_64 (/MD, for CPython extensions) and windows-x86_64-static (/MT, for
+  # self-contained JNI DLLs) — because MSVC bakes the CRT into every object and a consumer must
+  # link the flavor matching its own. devtools needs two upstream-file fixes to ET's
+  # third-party/CMakeLists.txt flatcc_ep block to compile under MSVC at all; see
+  # scripts/patch-et-windows-byproducts.sh and spike/2026-08-24-windows-devtools-variant-spike.md.
+  # NOTE: these platforms are NOT in env.PLATFORMS; that list drives the linux container matrix
+  # only. macOS remains future work and would follow this job's pattern, uploading via the same
+  # `dist-variant-platform` naming and added to `pin`'s `needs`.
 
   build-windows:
     needs: setup
@@ -161,7 +164,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [logging]
+        variant: [logging, devtools]
         # Two CRT flavors. MSVC bakes the CRT into every object, so a consumer must link the one
         # matching its own: /MD for CPython extensions, /MT for self-contained JNI DLLs.
         platform: [windows-x86_64, windows-x86_64-static]
