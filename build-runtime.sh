@@ -186,9 +186,7 @@ ET_BUILD="${BUILD_DIR:-$(dirname "$PREFIX")/et-build-$VARIANT}"
 mkdir -p "$ET_BUILD"
 
 if [ "$IS_WINDOWS" -eq 1 ]; then
-  echo ">> patching flatc_ep BUILD_BYPRODUCTS for WIN32 (.exe) — upstream flatc byproduct bug"
-  sed -i 's#\(BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc\)$#\1.exe#' \
-    "$ET_SRC/third-party/CMakeLists.txt" || true
+  "$HERE/scripts/patch-et-windows-byproducts.sh" "$ET_SRC"
 fi
 
 # Workspace-size accessor patches (see scripts/patch-et-sources.sh). Applied here, with

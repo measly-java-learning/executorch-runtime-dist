@@ -27,11 +27,17 @@ def main() -> int:
     if not str(job.get("runs-on", "")).startswith("windows"):
         fails.append(f"{JOB} must run on a windows runner, got {job.get('runs-on')!r}")
 
-    # Same platform axis as the release job, or the gate proves less than it claims.
+    # Same platform AND variant axes as the release job, or the gate proves less than it claims —
+    # this is the property that makes "green full gate" mean "the eventual release tag builds."
     gate_platforms = set(job["strategy"]["matrix"]["platform"])
     rel_platforms = set(release["jobs"]["build-windows"]["strategy"]["matrix"]["platform"])
     if gate_platforms != rel_platforms:
         fails.append(f"platform matrix {sorted(gate_platforms)} != release {sorted(rel_platforms)}")
+
+    gate_variants = set(job["strategy"]["matrix"]["variant"])
+    rel_variants = set(release["jobs"]["build-windows"]["strategy"]["matrix"]["variant"])
+    if gate_variants != rel_variants:
+        fails.append(f"variant matrix {sorted(gate_variants)} != release {sorted(rel_variants)}")
 
     if job.get("needs") != "classify" and "classify" not in (job.get("needs") or []):
         fails.append(f"{JOB} must depend on classify")

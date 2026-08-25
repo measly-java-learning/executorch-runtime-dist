@@ -4,9 +4,10 @@
 **Target repo:** `executorch-runtime-dist`
 **Requested by:** `djl-executorch-engine`, for
 `docs/superpowers/specs/2026-08-24-executorch-devtools-profiling-design.md` §2 (Phase 0)
-**Status:** items 1-3 implemented — see
-`docs/superpowers/plans/2026-08-24-devtools-header-install.md`. Not yet released (no
-`v1.4.1-3` tag pushed). §8 (Windows devtools rows) remains a separate, unstarted workstream.
+**Status:** items 1-3 and §8 implemented — see
+`docs/superpowers/plans/2026-08-24-devtools-header-install.md` and
+`docs/superpowers/plans/2026-08-24-windows-devtools-variant.md`. Not yet released (no new tag
+pushed as of this writing).
 
 Everything below is written to be pasted into a fresh agent session rooted in
 `executorch-runtime-dist`. It assumes no knowledge of the engine repo. Every factual claim carries
@@ -180,13 +181,12 @@ Assert behaviour, not diff shape — no greps for current wording:
    call instead of a hand-written `extern "C"` against a vendored third-party symbol. No licensing
    work: `THIRD-PARTY-NOTICES/third-party_flatcc_LICENSE` already ships.
 
-## 8. Optional separate workstream — Windows devtools rows
+## 8. Windows devtools rows — implemented
 
-Independent of the above and not a blocker. The pin currently publishes `devtools` for
-`linux-x86_64` and `linux-aarch64` only; Windows has `logging` and `logging…-static`. If Windows
-devtools is published, the engine needs **both** CRT rows — `windows-x86_64` and
-`windows-x86_64-static` — because it links the `/MT` static row so its DLL needs no VC++
-redistributable. A single `/MD` devtools row is not usable by that consumer.
+`devtools` now ships for both Windows CRT rows (`windows-x86_64`, `windows-x86_64-static`) — see
+`docs/superpowers/plans/2026-08-24-windows-devtools-variant.md` and
+`spike/2026-08-24-windows-devtools-variant-spike.md`. Not yet released (no new tag pushed as of
+this writing).
 
 If this lands in the same release, criterion 5 above stops being second priority and becomes
 required: the engine's Windows arm needs `flatcc_builder_aligned_free`.
