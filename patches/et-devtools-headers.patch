@@ -1,11 +1,11 @@
 diff --git a/devtools/etdump/CMakeLists.txt b/devtools/etdump/CMakeLists.txt
-index 9ef3c8c..f53f082 100644
+index 85d731434..5eed4f5a2 100644
 --- a/devtools/etdump/CMakeLists.txt
 +++ b/devtools/etdump/CMakeLists.txt
-@@ -67,3 +67,32 @@ install(
-   INCLUDES
-   DESTINATION ${_common_include_directories}
- )
+@@ -96,3 +96,32 @@ install(
+ if(BUILD_TESTING)
+   add_subdirectory(tests)
+ endif()
 +
 +# Install the public devtools headers so a downstream consumer can #include
 +# ETDumpGen, not merely link against it. devtools/CMakeLists.txt adds this

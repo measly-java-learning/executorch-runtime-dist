@@ -1,8 +1,8 @@
 diff --git a/backends/openvino/CMakeLists.txt b/backends/openvino/CMakeLists.txt
-index 5b7a1349b..dacbe4e9d 100644
+index 0f3a04e97..c623ade34 100644
 --- a/backends/openvino/CMakeLists.txt
 +++ b/backends/openvino/CMakeLists.txt
-@@ -28,14 +28,19 @@ set(COMMON_INCLUDE_DIRS ${EXECUTORCH_ROOT}/..)
+@@ -28,8 +28,8 @@ set(COMMON_INCLUDE_DIRS ${EXECUTORCH_ROOT}/..)
  # Include utility CMake scripts from ExecuteTorch
  include(${EXECUTORCH_ROOT}/tools/cmake/Utils.cmake)
  
@@ -11,8 +11,11 @@ index 5b7a1349b..dacbe4e9d 100644
 +# The backend resolves OpenVINO C API symbols at runtime (dlopen or LoadLibraryEx), so there
 +# is no build-time dependency on the OpenVINO SDK.
  
- # Define OpenVINO backend as a static library
- add_library(openvino_backend STATIC)
+ # Shared when the wheel build asks for it, static otherwise.
+ if(EXECUTORCH_BUILD_SHARED)
+@@ -39,8 +39,13 @@ else()
+ endif()
+ add_library(openvino_backend ${_openvino_backend_library_type})
  
 -# Enable exceptions and RTTI for OpenVINO backend
 -target_compile_options(openvino_backend PRIVATE -frtti -fexceptions)

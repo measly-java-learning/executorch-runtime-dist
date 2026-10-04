@@ -4,8 +4,12 @@
 # Linux uses the ET `linux` preset. Windows uses a flat flag list because the ET `windows` preset
 # pins toolset ClangCL + the VS generator, incompatible with our Ninja/MSVC single-config build
 # (spike finding 1). The Windows list is the windows-preset feature set MINUS
-# KERNELS_OPTIMIZED/QUANTIZED — those pull torch c10 headers that break MSVC, and Linux ships neither
-# (spike finding 3). `common_cmake_flags` + `variant_flags` still layer on top of this base.
+# KERNELS_OPTIMIZED/QUANTIZED, which do not compile under MSVC at our pin (spike finding 3). OPTIMIZED
+# pulls in real torch headers that use C++20-only syntax (pytorch/pytorch#193590): MSVC rejects it at
+# C++17, while GCC accepts it as an extension with a warning. ET's own llm preset already disables
+# QUANTIZED under MSVC. Linux ships BOTH: the `linux` preset includes ET's llm preset, which turns
+# them on. So this is a real Linux/Windows feature gap, not parity.
+# `common_cmake_flags` + `variant_flags` still layer on top of this base.
 #
 # The Windows base pins CMAKE_C/CXX_COMPILER=cl because cmake's own MSVC discovery defaults to the
 # Hostx86/x86 (32-bit) toolchain when `cmake` is the VS-bundled copy — a silent 32-bit build that no
