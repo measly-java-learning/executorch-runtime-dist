@@ -103,7 +103,7 @@ build-runtime.sh --variant <bare|logging|devtools> --prefix <install-dir> \
 - `--et-src` must point at a checkout of `pytorch/executorch` at the target tag,
   **with submodules** — CI supplies this via a second `actions/checkout`; locally
   you provide it yourself (e.g. a mounted directory).
-- `--et-tag` is just the version label recorded alongside the build (default `v1.4.1`).
+- `--et-tag` is just the version label recorded alongside the build (default `v1.5.1`).
 - `--build-dir` is the CMake build tree; it defaults to
   `<dirname of --prefix>/et-build-<variant>`, and is left in place (not deleted)
   so it can be inspected or reused for an incremental rebuild.
