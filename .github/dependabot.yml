@@ -1,0 +1,16 @@
+version: 2
+updates:
+
+  # Check for updates to GitHub Actions. `directories`, not `directory: "/"`: the latter scans only
+  # .github/workflows, and the composite actions under .github/actions/ pin actions of their own
+  # (checkout-executorch uses actions/checkout), which would otherwise drift from the workflows.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
