@@ -566,7 +566,7 @@ the follow-up, in preference order: report upstream and pin around it; or raise 
 target to `/std:c++20`, accepting a C++20-compiled archive inside an artifact whose consumer
 contract is C++17.
 
-### Upstream: pytorch/pytorch#193590 (already open)
+### Upstream: pytorch/pytorch#193590 (open at time of spike; closed 2026-10-05, see update below)
 
 Filed 2026-08-14 by an unrelated reporter, OPEN, `module: build` / `module: cpp-extensions` /
 triaged, **no maintainer comment yet**. Same root cause, same torch 2.13.0, same two headers. Our
@@ -602,4 +602,37 @@ header fix, a torch pin that predates the regression (2.12 is positional — ver
 raising the affected targets to `/std:c++20` against a C++17 consumer contract. Note that a
 `StringUtil.h`-only upstream fix would **not** unblock us on its own if our build also reaches
 `AutogradState.h`; that TU was not on the failing compile line, so whether we reach it is untested.
+
+### Update 2026-10-06: upstream chose "C++20 required", not a C++17 fallback
+
+pytorch/pytorch#193590 was closed on 2026-10-05 by pytorch/pytorch#197417 (merged 2026-10-02 as
+`73053a9`). The issue offered two fixes: a C++17-compatible fallback in the c10 headers, or a clear
+failure. Upstream took the second. The PR changes only the `#error` guard at the top of
+`ATen/ATen.h` and `torch/csrc/api/include/torch/all.h`, from
+`!defined(_MSC_VER) && __cplusplus < 202002L` (never fired under MSVC) to an `_MSVC_LANG`-first
+check. **No c10 header changed**: `StringUtil.h` and `AutogradState.h` keep their C++20 syntax.
+
+**It does not change our failure, not even the diagnostic.** The guard lives only in those two
+umbrella headers, and our build never includes them. Traced with `g++ -std=c++17 -H` over the full
+torch include set that ET's optimized kernels use (`ATen/cpu/vec/{vec,functional}.h`,
+`c10/util/{irange,Half,Unroll}.h`, `ATen/native/cpu/{Gelu,Elu,LogSoftmaxKernelImpl}.h`): the chain
+reaches `c10/util/StringUtil.h` and never reaches `ATen/ATen.h` or `torch/all.h`. The PR description
+says as much: a bare c10 include "still fails without a clear message," because putting the guard in
+`c10/macros/Macros.h` would break `torch/headeronly` consumers at C++17. So we would still see
+`C7555` at `StringUtil.h(169)`. [Caveat: the trace used locally available torch 2.12.1 headers, not
+the current 2.14.0 pin; the include graph of these headers is unlikely to have moved.]
+
+**What it means for us, revised.** The "upstream header fix" option above is gone; upstream's
+answer is that C++20 is required. That leaves:
+
+1. **Build the optimized-kernel targets at `/std:c++20`.** This now matches upstream's direction.
+   Open question: what that means for a C++20-compiled archive inside an artifact whose consumer
+   contract is C++17.
+2. **Pin a torch whose headers still use C++17 syntax** (2.12 is positional). This is a dead end:
+   it drifts further from ET's torch pin with every bump.
+3. **Patch the torch headers locally.** Fragile, and it fights upstream.
+
+No public timeline is known for PyTorch or ExecuTorch formally moving their consumer contract to
+C++20. Watch both projects' releases: an ET release that requires C++20 itself would make option 1
+the default instead of a deviation.
 

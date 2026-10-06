@@ -5,10 +5,13 @@
 # pins toolset ClangCL + the VS generator, incompatible with our Ninja/MSVC single-config build
 # (spike finding 1). The Windows list is the windows-preset feature set MINUS
 # KERNELS_OPTIMIZED/QUANTIZED, which do not compile under MSVC at our pin (spike finding 3). OPTIMIZED
-# pulls in real torch headers that use C++20-only syntax (pytorch/pytorch#193590): MSVC rejects it at
-# C++17, while GCC accepts it as an extension with a warning. ET's own llm preset already disables
-# QUANTIZED under MSVC. Linux ships BOTH: the `linux` preset includes ET's llm preset, which turns
-# them on. So this is a real Linux/Windows feature gap, not parity.
+# pulls in real torch c10 headers that use C++20-only syntax: MSVC rejects it at C++17, while GCC
+# accepts it as an extension with a warning. Upstream closed pytorch/pytorch#193590 by declaring
+# C++20 required (pytorch/pytorch#197417 only adds a clearer #error, in headers our build never
+# includes). No C++17 fallback is coming: re-enabling OPTIMIZED on Windows means building those
+# targets at /std:c++20 (no known public PyTorch/ET timeline for the C++20 move). ET's own llm
+# preset already disables QUANTIZED under MSVC. Linux ships BOTH: the `linux` preset includes ET's
+# llm preset, which turns them on. So this is a real Linux/Windows feature gap, not parity.
 # `common_cmake_flags` + `variant_flags` still layer on top of this base.
 #
 # The Windows base pins CMAKE_C/CXX_COMPILER=cl because cmake's own MSVC discovery defaults to the
