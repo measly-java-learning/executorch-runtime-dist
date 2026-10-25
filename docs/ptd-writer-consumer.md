@@ -50,7 +50,9 @@ executorch::extension::Module merged(pte_path, {ptd_a, ptd_b});        // vector
 
 Both constructors are lazy: `forward()` (or `load()`) returns the first error. A `.ptd` that is
 missing a key the `.pte` references makes load fail — it is never silently replaced with garbage.
-The multi-file form goes through `MergedDataMap`; later files win on duplicate keys.
+The multi-file form goes through `MergedDataMap`; a duplicate key across files is an
+`InvalidArgument` error, not a precedence rule, so split a checkpoint across files only into
+disjoint key sets.
 
 ## Enumerating a `.ptd`
 
