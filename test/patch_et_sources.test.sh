@@ -37,6 +37,7 @@ mk_tree() { # <root>
      "$r/extension/flat_tensor/serialize/CMakeLists.txt"
   cp "$here/fixtures/etpatch/named_data_map-CMakeLists.txt" \
      "$r/extension/named_data_map/CMakeLists.txt"
+  cp "$here/fixtures/etpatch/serialize.cpp" "$r/extension/flat_tensor/serialize/serialize.cpp"
   git -C "$r" init -q
   git -C "$r" add -A
   git -C "$r" -c user.email=t@t -c user.name=t commit -qm init
@@ -109,6 +110,11 @@ assert_contains "$f" "flat_tensor_header.h" "flat_tensor_header.h installed"
 assert_contains "$f" "flat_tensor_data_map.h" "flat_tensor_data_map.h installed"
 assert_contains "$(cat "$tmp/et/extension/named_data_map/CMakeLists.txt")" "merged_data_map.h" "merged_data_map.h installed"
 
+# The binary-mode fix. MSVC text mode rewrites every 0x0A, producing a .ptd the runtime rejects.
+s="$(cat "$tmp/et/extension/flat_tensor/serialize/serialize.cpp")"
+assert_contains "$s" "file.open(path, std::ios::binary);" "save_ptd(path) opens in binary mode"
+assert_eq "$(grep -c 'file.open(path);' "$tmp/et/extension/flat_tensor/serialize/serialize.cpp")" "0" "text-mode open is gone"
+
 # The Linux path must be untouched. The patch is a no-op there by construction, and this is the
 # assertion that keeps it that way: a future edit that drops an #ifdef would break Linux silently.
 assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoBackend.cpp")" \
@@ -165,6 +171,12 @@ git -C "$tmp/drift5" -c user.email=t@t -c user.name=t commit -qam drift
 out="$(bash "$script" "$tmp/drift5" 2>&1)"
 assert_eq "$?" "1" "drifted flat_tensor/serialize CMakeLists anchor fails"
 assert_contains "$out" "does not apply" "flat_tensor/serialize drift failure explains itself"
+mk_tree "$tmp/drift6"
+: > "$tmp/drift6/extension/flat_tensor/serialize/serialize.cpp"
+git -C "$tmp/drift6" -c user.email=t@t -c user.name=t commit -qam drift
+out="$(bash "$script" "$tmp/drift6" 2>&1)"
+assert_eq "$?" "1" "drifted serialize.cpp anchor fails"
+assert_contains "$out" "does not apply" "serialize.cpp drift failure explains itself"
 
 bash "$script" >/dev/null 2>&1
 assert_eq "$?" "1" "missing argument is an error"

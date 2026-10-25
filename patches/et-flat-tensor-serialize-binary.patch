@@ -1,0 +1,25 @@
+# .ptd WRITER — write the file in binary mode on every platform.
+#
+# save_ptd(const std::string&, ...) calls std::ofstream::open(path) with no std::ios::binary. Under
+# MSVC's default text mode every 0x0A byte is written as 0x0D 0x0A, so a .ptd that is valid on
+# POSIX (376 bytes in the spike) becomes 385 bytes and the runtime rejects it ("schema version
+# 1048576 is newer..." or "named_data is nullptr, malformed PTD"), depending on the CRT.
+# std::ios::binary is a no-op on POSIX, and the std::ostream& overload was already immune.
+#
+# No upstream issue or PR exists as of 2026-10-25 (checked open and closed; upstream main still has
+# the text-mode open). This is a behaviour fix, separate from the packaging patch because it has a
+# different lifetime: DROP THIS PATCH the day upstream adopts it or files one. See
+# docs/superpowers/specs/2026-10-25-ptd-writer-design.md.
+diff --git a/extension/flat_tensor/serialize/serialize.cpp b/extension/flat_tensor/serialize/serialize.cpp
+index ff9d568..5487b64 100644
+--- a/extension/flat_tensor/serialize/serialize.cpp
++++ b/extension/flat_tensor/serialize/serialize.cpp
+@@ -47,7 +47,7 @@ runtime::Error save_ptd(
+     const size_t tensor_alignment) {
+   // Create File
+   std::ofstream file;
+-  file.open(path);
++  file.open(path, std::ios::binary);
+   runtime::Error e = save_ptd(file, tensor_map, tensor_alignment);
+   file.close();
+   return e;

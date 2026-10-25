@@ -24,6 +24,11 @@
 #      flat_tensor_header.h, flat_tensor_data_map.h and merged_data_map.h. See
 #      docs/superpowers/specs/2026-10-25-ptd-writer-design.md.
 #
+#   5. .ptd WRITER, WINDOWS BINARY MODE — save_ptd(path, ...) opens its ofstream in text mode, so
+#      MSVC doubles every 0x0A and writes a .ptd the runtime rejects. One-line behaviour fix, kept
+#      separate from concern 4 because it is destined for upstream and should be dropped the day
+#      upstream lands it. No upstream issue exists as of 2026-10-25.
+#
 # Idempotent by contract: build-runtime.sh re-runs against a persisted build tree and a checkout
 # that may already be patched. A patch that is already applied is success; a patch that does NOT
 # apply is a HARD ERROR, never a skip. A silently unapplied patch ships a runtime whose consumer
@@ -68,3 +73,4 @@ apply_patch "$ET_SRC"  "$ROOT/patches/et-xnnpack-workspace-size.patch"
 apply_patch "$ET_SRC"  "$ROOT/patches/et-openvino-windows.patch"
 apply_patch "$ET_SRC"  "$ROOT/patches/et-devtools-headers.patch"
 apply_patch "$ET_SRC"  "$ROOT/patches/et-flat-tensor-serialize.patch"
+apply_patch "$ET_SRC"  "$ROOT/patches/et-flat-tensor-serialize-binary.patch"
