@@ -73,15 +73,19 @@ for key in float double half bfloat16 char byte int long bool scalar_0d empty; d
 done
 assert_contains "$sweep" "save_ptd(path, tensors, 128)" "dtype sweep saves at alignment 128"
 
-# The consumer links the exported target by name and must not double-register kernels through
-# portable_ops_lib (the spike showed that aborts at startup).
+# The consumer links the exported target by name and must include an installed prefix.
 assert_contains "$cmake_src" "extension_flat_tensor_serialize" "consumer links the exported writer target"
 assert_contains "$cmake_src" "find_package(ExecuTorch REQUIRED CONFIG)" "consumer uses an installed prefix"
-if printf '%s\n' "$cmake_src" | grep -v '^[[:space:]]*#' | grep -q 'portable_ops_lib'; then
-  printf 'FAIL: consumer must not link portable_ops_lib (double kernel registration)\n' >&2
+# The consumer must link the portable-op REGISTRATION archive normally (without it the fixture's
+# aten::addmm.out is "not found" at load), but must not whole-archive it -- the spike aborted with
+# duplicate kernel registration when portable_ops_lib was whole-archived on top of executorch.
+assert_contains "$cmake_src" "portable_ops_lib" "consumer links the portable ops registration archive"
+if printf '%s\n' "$cmake_src" | grep -v '^[[:space:]]*#' \
+    | grep -qE 'whole-archive|WHOLEARCHIVE|-force_load|WHOLE_ARCHIVE'; then
+  printf 'FAIL: consumer must not whole-archive portable_ops_lib (duplicate registration)\n' >&2
   ASSERT_FAILS=$((ASSERT_FAILS+1))
 else
-  printf 'ok: consumer does not link portable_ops_lib\n'
+  printf 'ok: consumer does not whole-archive the ops registration archive\n'
 fi
 
 # The Windows sibling must read the CRT from BUILDINFO rather than hardcoding /MD or /MT.

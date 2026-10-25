@@ -10,8 +10,10 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(ExecuTorch REQUIRED CONFIG)
 
-# `executorch` already carries the portable kernels; adding portable_ops_lib on top would register
-# them a second time and abort at startup (observed in the spike).
+# `executorch` is the runtime only; the exported model calls aten::addmm/permute_copy, whose
+# registration lives in portable_ops_lib. Link it NORMALLY. Do not whole-archive it on top of
+# executorch -- the spike aborted at startup with duplicate kernel registration when it did. A
+# plain link (as here) pulls only the registration objects the program needs.
 set(PTD_WRITER_LIBS
     extension_flat_tensor_serialize
     extension_module_static
@@ -20,6 +22,7 @@ set(PTD_WRITER_LIBS
     extension_flat_tensor
     extension_named_data_map
     executorch
+    portable_ops_lib
     portable_kernels)
 
 add_executable(ptd_roundtrip ptd_roundtrip.cpp)

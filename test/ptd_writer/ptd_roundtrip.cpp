@@ -363,12 +363,11 @@ int main(int argc, char** argv) {
     Error saved = save_ptd(path, doubled_tensors, 128);
     const bool exists = fs::exists(path, ec);
     if (saved == Error::Ok && !exists) {
-      check(true, "unopenable_path", "save_ptd returned Ok and wrote no file (documented)");
+      std::printf("ok: unopenable_path -- save_ptd returned Ok and wrote no file (documented)\n");
     } else if (saved != Error::Ok && !exists) {
-      check(
-          true,
-          "unopenable_path",
-          "save_ptd returned " + std::to_string(static_cast<int>(saved)) + " and wrote no file");
+      std::printf(
+          "ok: unopenable_path -- save_ptd returned %d and wrote no file\n",
+          static_cast<int>(saved));
     } else {
       check(false, "unopenable_path", "returned Ok and created the file, or error with a file");
     }
