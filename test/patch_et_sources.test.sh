@@ -32,6 +32,11 @@ mk_tree() { # <root>
   cp "$here/fixtures/etpatch/openvino-CMakeLists.txt" "$r/backends/openvino/CMakeLists.txt"
   mkdir -p "$r/devtools/etdump/data_sinks"
   cp "$here/fixtures/etpatch/etdump-CMakeLists.txt" "$r/devtools/etdump/CMakeLists.txt"
+  mkdir -p "$r/extension/flat_tensor/serialize" "$r/extension/named_data_map"
+  cp "$here/fixtures/etpatch/flat_tensor-serialize-CMakeLists.txt" \
+     "$r/extension/flat_tensor/serialize/CMakeLists.txt"
+  cp "$here/fixtures/etpatch/named_data_map-CMakeLists.txt" \
+     "$r/extension/named_data_map/CMakeLists.txt"
   git -C "$r" init -q
   git -C "$r" add -A
   git -C "$r" -c user.email=t@t -c user.name=t commit -qm init
@@ -92,6 +97,18 @@ assert_contains "$(cat "$tmp/et/devtools/etdump/CMakeLists.txt")" \
   "FILES \${CMAKE_CURRENT_SOURCE_DIR}/data_sinks/buffer_data_sink.h" \
   "buffer_data_sink.h install FILES entry patched in"
 
+# The .ptd writer packaging patch. Assert on rule content, not comment prose: a reworded comment
+# must not fail this test, but a dropped target or header install must.
+f="$(cat "$tmp/et/extension/flat_tensor/serialize/CMakeLists.txt")"
+assert_contains "$f" "add_library(extension_flat_tensor_serialize" "serialize target defined"
+assert_contains "$f" 'serialize.cpp' "serialize target compiles serialize.cpp"
+assert_contains "$f" '$<BUILD_INTERFACE:flat_tensor_schema>' "schema linked build-interface only"
+assert_contains "$f" "EXPORT ExecuTorchTargets" "serialize target exported"
+assert_contains "$f" "serialize.h" "serialize.h installed"
+assert_contains "$f" "flat_tensor_header.h" "flat_tensor_header.h installed"
+assert_contains "$f" "flat_tensor_data_map.h" "flat_tensor_data_map.h installed"
+assert_contains "$(cat "$tmp/et/extension/named_data_map/CMakeLists.txt")" "merged_data_map.h" "merged_data_map.h installed"
+
 # The Linux path must be untouched. The patch is a no-op there by construction, and this is the
 # assertion that keeps it that way: a future edit that drops an #ifdef would break Linux silently.
 assert_contains "$(cat "$tmp/et/backends/openvino/runtime/OpenvinoBackend.cpp")" \
@@ -108,6 +125,9 @@ assert_eq "$(grep -c 'xnn_get_workspace_size' "$tmp/et/backends/xnnpack/third-pa
   "1" "accessor declared exactly once (not applied twice)"
 assert_eq "$(grep -c 'if(EXECUTORCH_BUILD_DEVTOOLS)' "$tmp/et/devtools/etdump/CMakeLists.txt")" \
   "1" "devtools header install guard present exactly once (not applied twice)"
+assert_eq "$(grep -c 'add_library(extension_flat_tensor_serialize' \
+  "$tmp/et/extension/flat_tensor/serialize/CMakeLists.txt")" \
+  "1" "serialize target defined exactly once (not applied twice)"
 # All three header install( blocks must live INSIDE the guard. An install moved outside
 # would break bare/logging scope while passing the per-install assertions above.
 region="$(awk '/^if\(EXECUTORCH_BUILD_DEVTOOLS\)/,/^endif\(\)/' "$tmp/et/devtools/etdump/CMakeLists.txt")"
@@ -139,6 +159,12 @@ git -C "$tmp/drift4" -c user.email=t@t -c user.name=t commit -qam drift
 out="$(bash "$script" "$tmp/drift4" 2>&1)"
 assert_eq "$?" "1" "drifted devtools/etdump anchor fails"
 assert_contains "$out" "does not apply" "devtools/etdump drift failure explains itself"
+mk_tree "$tmp/drift5"
+: > "$tmp/drift5/extension/flat_tensor/serialize/CMakeLists.txt"
+git -C "$tmp/drift5" -c user.email=t@t -c user.name=t commit -qam drift
+out="$(bash "$script" "$tmp/drift5" 2>&1)"
+assert_eq "$?" "1" "drifted flat_tensor/serialize CMakeLists anchor fails"
+assert_contains "$out" "does not apply" "flat_tensor/serialize drift failure explains itself"
 
 bash "$script" >/dev/null 2>&1
 assert_eq "$?" "1" "missing argument is an error"
