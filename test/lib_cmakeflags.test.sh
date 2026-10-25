@@ -43,4 +43,14 @@ for p in linux-x86_64 linux-aarch64 windows-x86_64 windows-x86_64-static; do
 done
 assert_contains "$(effective_cmake_flags linux-x86_64 logging)" \
   "-DEXECUTORCH_XNNPACK_SHARED_WORKSPACE=ON" "effective flags carry the workspace pin"
+
+# The .ptd reader/writer depend on these. The Linux preset happens to turn them on; pin them so
+# --print-flags and BUILDINFO say so, and so a preset change cannot silently drop the writer.
+for p in linux-x86_64 linux-aarch64 windows-x86_64 windows-x86_64-static; do
+  assert_contains "$(common_cmake_flags "$p")" "-DEXECUTORCH_BUILD_EXTENSION_FLAT_TENSOR=ON" "flat tensor pinned on $p"
+  assert_contains "$(common_cmake_flags "$p")" "-DEXECUTORCH_BUILD_EXTENSION_NAMED_DATA_MAP=ON" "named data map pinned on $p"
+done
+# Windows already passes both in _ET_WINDOWS_COMMON; dedup must leave exactly one of each.
+assert_eq "$(printf '%s\n' $(effective_cmake_flags windows-x86_64 logging) | grep -c -- '-DEXECUTORCH_BUILD_EXTENSION_FLAT_TENSOR=ON')" \
+  "1" "flat tensor flag appears once on windows after dedup"
 exit "$ASSERT_FAILS"
