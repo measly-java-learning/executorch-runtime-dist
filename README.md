@@ -199,3 +199,10 @@ FetchContent_Declare(et_runtime
 # ...and compile your own JNI target to match:
 set_property(TARGET my_jni_lib PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
 ```
+
+### Writing `.ptd` checkpoints
+
+Every tarball exports the ExecuTorch target `extension_flat_tensor_serialize`, so a consumer can
+link `save_ptd` by name and include the installed flat-tensor reader headers. See
+`docs/ptd-writer-consumer.md` for the two `Module(pte, ptd)` constructors, enumerating a `.ptd` with
+`FlatTensorDataMap`, alignment, and the `ET_EXPERIMENTAL` deprecation warning.

@@ -171,14 +171,17 @@ Also add a short entry to README's consumption section and to CLAUDE.md's patch-
 
 ### 6. Round trip is the gate; its fixture is CI-minted (decided 2026-10-25)
 
-- **Fixture is minted, not committed.** A new emit script (`scripts/emit-ptd-fixtures.py`) runs in
-  a new lightweight `release.yml` job that needs only the pinned AOT venv, with no ET build. It
-  uploads the `.pte`/`.ptd` as a workflow artifact. Both `build` (all Linux legs) and
-  `build-windows` gain a dependency on that job and download the artifact. The two long builds
-  must **not** end up depending on each other. The full-mode extras gate mints it the same way
-  (its dry-run already emits fixtures in the AOT venv). Whether the fixture is also published as
-  a release asset is the builder's call; nothing downstream needs it today. The golden output is
-  computed by the emit script and travels with the fixture. No hand-recorded constants.
+- **Fixture is minted, not committed.** `scripts/emit-ptd-fixtures.py` runs in the existing
+  `linux-x86_64` / `logging` `build` leg of `release.yml`, which already installs torch and the
+  pinned executorch package for the LSTM round trip. It uploads the `.pte`/`.ptd` as the
+  `ptd-fixtures` workflow artifact. New `ptd-gate` (Linux: every variant × every `setup` platform)
+  and `ptd-gate-windows` (both CRTs) jobs download that artifact plus the matching `dist-*`
+  tarball, and `pin` needs both jobs, so a failing gate blocks the release. *(Corrected
+  2026-10-25: this document originally put minting in a separate job that every build would wait
+  on, which serialized both long build matrices behind the ~15-minute Python build for no gain.)*
+  The full-mode extras gate mints the fixture the same way in `full-aot`. It is **not** a release
+  asset; nothing downstream needs it. The golden output is computed by the emit script and travels
+  with the fixture. No hand-recorded constants.
 - **The round trip gates every shipped prefix**, Linux and Windows, before release. It compiles
   against the installed prefix only, including every Goal 3 header and linking the exported
   target, so it fails if the target or those headers are missing. That is why the structural
