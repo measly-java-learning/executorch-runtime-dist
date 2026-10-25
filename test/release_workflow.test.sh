@@ -25,4 +25,16 @@ print('ok: release.yml parses as YAML')
 
 assert_contains "$(cat "$wf")" "emit-openvino-fixtures.py" "release emits the OpenVINO fixture"
 assert_contains "$(cat "$wf")" "package-openvino-fixtures.sh" "release packages the OpenVINO fixture"
+
+# .ptd writer: the fixture is minted in the linux-x86_64/logging build leg, and every shipped
+# prefix is gated by a job `pin` waits on -- otherwise a release could publish a tarball whose
+# writer does not build or whose output the runtime cannot read.
+assert_contains "$(cat "$wf")" "emit-ptd-fixtures.py" "release emits the .ptd fixture"
+assert_contains "$(cat "$wf")" "name: ptd-fixtures" "release uploads the .ptd fixture artifact"
+assert_contains "$(cat "$wf")" "  ptd-gate:" "linux .ptd gate job exists"
+assert_contains "$(cat "$wf")" "  ptd-gate-windows:" "windows .ptd gate job exists"
+assert_contains "$(cat "$wf")" "test/ptd_writer_run.sh" "linux gate runs the gate script"
+assert_contains "$(cat "$wf")" "test/ptd_writer_run-windows.sh" "windows gate runs the gate script"
+assert_contains "$needs_line" "ptd-gate" "pin depends on the linux .ptd gate"
+assert_contains "$needs_line" "ptd-gate-windows" "pin depends on the windows .ptd gate"
 exit "$ASSERT_FAILS"

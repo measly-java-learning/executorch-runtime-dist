@@ -114,6 +114,20 @@ jobs:
           python scripts/emit-openvino-fixtures.py "$PWD/ovfixtures"
           ./scripts/package-openvino-fixtures.sh --dir "$PWD/ovfixtures" \
             --etver "${{ steps.ver.outputs.etver }}" --outdir "$PWD/dist"
+      - name: Emit .ptd writer fixtures (arch-independent; x86_64 logging only)
+        # Same job and same venv as the LSTM/OpenVINO fixtures: torch + the pinned executorch are
+        # already installed by the round-trip action, and minting here means no build leg waits on
+        # another build. The gate jobs download this artifact; it is NOT a release asset.
+        if: matrix.variant == 'logging' && matrix.combo.platform == 'linux-x86_64'
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          python scripts/emit-ptd-fixtures.py "$PWD/ptdfixtures"
+      - uses: actions/upload-artifact@v7
+        if: matrix.variant == 'logging' && matrix.combo.platform == 'linux-x86_64'
+        with:
+          name: ptd-fixtures
+          path: ptdfixtures/**
+          retention-days: 1
       - name: Package
         run: |
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
@@ -293,8 +307,79 @@ jobs:
           name: dist-openvino-${{ matrix.platform }}
           path: dist/*
 
+  # The .ptd writer must work in EVERY shipped prefix, not merely compile: a consumer has to link
+  # the exported target, write through both overloads, and have the runtime read the file back.
+  # The fixture is minted once in the linux-x86_64/logging build leg above (the only place torch and
+  # the pinned executorch package are already installed) and uploaded as `ptd-fixtures`; these jobs
+  # download it. The two long build matrices therefore never depend on each other.
+  #
+  # `pin` needs these jobs, so a failing gate blocks the release even though attestation already
+  # ran in `build`.
+  ptd-gate:
+    needs: [setup, build]
+    runs-on: ${{ matrix.combo.runs_on }}
+    container:
+      image: ${{ needs.setup.outputs.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [bare, logging, devtools]
+        combo: ${{ fromJSON(needs.setup.outputs.platforms) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-${{ matrix.variant }}-${{ matrix.combo.platform }}
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: ptd-fixtures
+          path: ptd-fixtures
+      - name: Unpack the tarball
+        run: |
+          set -euo pipefail
+          mkdir -p prefix
+          tar -xzf dist/*.tar.gz -C prefix --strip-components=1
+          [ -f prefix/lib/cmake/ExecuTorch/executorch-config.cmake ] \
+            || { echo "::error::unpacked prefix is not an ET install"; exit 1; }
+      - name: .ptd writer round trip (both overloads, cross-writer, dtype sweep)
+        run: bash test/ptd_writer_run.sh "$PWD/prefix" "$PWD/ptd-fixtures"
+
+  # Windows counterpart, over the same two CRTs the build matrix produces. This is the only place
+  # the MSVC text-mode corruption can be caught (the two overloads are compared byte for byte).
+  ptd-gate-windows:
+    needs: [build-windows]
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [logging, devtools]
+        platform: [windows-x86_64, windows-x86_64-static]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-${{ matrix.variant }}-${{ matrix.platform }}
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: ptd-fixtures
+          path: ptd-fixtures
+      - name: Unpack the tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p prefix
+          tar -xzf dist/*.tar.gz -C prefix --strip-components=1
+      - name: .ptd writer round trip
+        shell: pwsh
+        run: |
+          & pwsh -File build-runtime.ps1 test/ptd_writer_run-windows.sh `
+            "$PWD/prefix" "$PWD/ptd-fixtures"
+          if ($LASTEXITCODE -ne 0) { throw "ptd writer gate failed (exit $LASTEXITCODE)" }
+
   pin:
-    needs: [build, build-windows, openvino]
+    needs: [build, build-windows, openvino, ptd-gate, ptd-gate-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: read
