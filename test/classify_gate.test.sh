@@ -70,6 +70,16 @@ for f in scripts/vendor-openvino.sh scripts/lib/openvino.sh \
   assert_contains "$out" "mode=full" "full-surface change ($f) forces a full gate"
 done
 
+# .ptd writer surface: the emitter runs in full-aot, the gate scripts and consumer project only in
+# full-gates/full-gates-windows. A tier1 classification would start a workflow that never runs any
+# of them, so each path on its own must force `full`.
+for f in scripts/emit-ptd-fixtures.py test/ptd_writer_run.sh test/ptd_writer_run-windows.sh \
+         test/ptd_writer/ptd_roundtrip.cpp; do
+  cf="$(mktemp)"; printf '%s\n' "$f" > "$cf"
+  out="$(GATE_ET_TAG=v1.3.1 GATE_RELEASE_TAG=v1.3.1-1 bash "$here/../scripts/classify-gate.sh" "$cf")"
+  assert_contains "$out" "mode=full" "full-surface change ($f) forces a full gate"
+done
+
 # Editing the gate definition must RUN the gate. This is not a stylistic rule: PR #29 restructured
 # the `full` jobs and went green without executing a single one of them, because extras-gate.yml
 # started the workflow but classified as tier1.
@@ -90,7 +100,9 @@ for p in scripts/vendor-openvino.sh scripts/lib/openvino.sh scripts/lib/cmakefla
          test/openvino_smoke.sh test/openvino_fixture_run.sh 'test/openvino/**' \
          scripts/patch-et-sources.sh scripts/patch-et-windows-byproducts.sh \
          scripts/emit-xnnpack-fixtures.py \
-         'patches/**' test/xnnpack_workspace_run.sh 'test/xnnpack_workspace/**'; do
+         'patches/**' test/xnnpack_workspace_run.sh 'test/xnnpack_workspace/**' \
+         scripts/emit-ptd-fixtures.py test/ptd_writer_run.sh test/ptd_writer_run-windows.sh \
+         'test/ptd_writer/**'; do
   assert_contains "$(cat "$wf")" "'$p'" "extras-gate workflow triggers on $p"
 done
 

@@ -41,6 +41,10 @@ fi
 # anticipates - touches nothing else, so without this it would route to tier1 and never run the
 # installer it changed.
 #
+# The .ptd writer emitter, consumer project and gate scripts are the same shape: they execute only
+# in `full` (full-aot mints the fixture, full-gates runs it), and an edit must exercise them, not
+# classify as tier1 and skip every job that uses them.
+#
 # .build-image is here because it pins the container every build runs in: a digest bump changes the
 # compiler, glibc and CPython under every job, so it must run the full gate rather than tier1.
 #
@@ -49,7 +53,7 @@ fi
 # to tier1, so the `full` jobs skipped — a PR could restructure them into something broken and
 # merge green. Found exactly that way: the PR that split `full` into parallel jobs went green
 # without running any of them.
-if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh|patch-et-sources\.sh|patch-et-windows-byproducts\.sh|emit-xnnpack-fixtures\.py)|patches/.*|test/xnnpack_workspace(_run\.sh|/.*)|test/openvino(_smoke(-windows)?\.sh|_fixture_run(-windows)?\.sh|/.*)|\.github/workflows/extras-gate\.yml|\.build-image|scripts/(lib/ccache\.sh|install-ccache\.sh|ccache-stats\.sh)' "$CHANGED"; then
+if grep -qxE 'scripts/(vendor-openvino\.sh|lib/openvino\.sh|patch-et-sources\.sh|patch-et-windows-byproducts\.sh|emit-xnnpack-fixtures\.py|emit-ptd-fixtures\.py)|patches/.*|test/xnnpack_workspace(_run\.sh|/.*)|test/ptd_writer(_run(-windows)?\.sh|/.*)|test/openvino(_smoke(-windows)?\.sh|_fixture_run(-windows)?\.sh|/.*)|\.github/workflows/extras-gate\.yml|\.build-image|scripts/(lib/ccache\.sh|install-ccache\.sh|ccache-stats\.sh)' "$CHANGED"; then
   emit full ""; exit 0
 fi
 

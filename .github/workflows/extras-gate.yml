@@ -36,6 +36,12 @@ on:
       - 'patches/**'
       - 'test/xnnpack_workspace_run.sh'
       - 'test/xnnpack_workspace/**'
+      # .ptd writer surface: the emitter mints its fixture in full-aot and the gate scripts run in
+      # full-gates / full-gates-windows, so an edit must start the workflow or it ships unrun.
+      - 'scripts/emit-ptd-fixtures.py'
+      - 'test/ptd_writer_run.sh'
+      - 'test/ptd_writer_run-windows.sh'
+      - 'test/ptd_writer/**'
       # AOT-install surface, same reasoning again: these decide how the ExecuTorch python package
       # is built, and they run ONLY in full-aot and live-roundtrip. An edit to either would
       # otherwise start no workflow at all — and the round-trip action is shared with release.yml,
@@ -528,6 +534,12 @@ jobs:
         run: |
           export PATH=/opt/python/cp312-cp312/bin:$PATH
           python scripts/emit-xnnpack-fixtures.py "$PWD/fixtures-dryrun/xnnpack"
+      - name: Emit .ptd writer fixtures for the round-trip gate
+        # The C++ gate cannot export a model or invent a golden; everything it compares against is
+        # minted here, in the same AOT venv every other fixture uses, and travels in full-fixtures.
+        run: |
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          python scripts/emit-ptd-fixtures.py "$PWD/fixtures-dryrun/ptd"
       - uses: actions/upload-artifact@v7
         with:
           name: full-fixtures
@@ -596,6 +608,11 @@ jobs:
         # The nm guard in build-runtime.sh proves the symbol exists; only this proves the value is
         # reachable through the published option and reflects a live arena.
         run: bash test/xnnpack_workspace_run.sh "$PWD/out" "$PWD/fixtures-dryrun/xnnpack"
+      - name: .ptd writer round trip (save_ptd -> Module, both overloads, dtype sweep)
+        # The exported target and the four installed headers are packaging; only this proves a
+        # consumer can link them, that the two save_ptd overloads agree byte for byte, and that the
+        # written file is what the runtime and a Python-written reference both understand.
+        run: bash test/ptd_writer_run.sh "$PWD/out" "$PWD/fixtures-dryrun/ptd"
 
   # The Windows half of full-gates, and the first thing anywhere that puts the three verified
   # pieces in one process: a win_amd64 bundle, the MSVC-built delegate, and a Linux-exported
@@ -668,3 +685,11 @@ jobs:
           & pwsh -File build-runtime.ps1 test/openvino_fixture_run-windows.sh `
             "$PWD/prefix" "$PWD/ovstage-win/$stem" "$PWD/fixtures-dryrun/openvino"
           if ($LASTEXITCODE -ne 0) { throw "fixture gate failed (exit $LASTEXITCODE)" }
+      - name: .ptd writer round trip
+        # The only check that can catch the MSVC text-mode corruption: the two overloads are
+        # compared byte for byte. Runs on both CRT legs from the packaged tarball.
+        shell: pwsh
+        run: |
+          & pwsh -File build-runtime.ps1 test/ptd_writer_run-windows.sh `
+            "$PWD/prefix" "$PWD/fixtures-dryrun/ptd"
+          if ($LASTEXITCODE -ne 0) { throw "ptd writer gate failed (exit $LASTEXITCODE)" }
