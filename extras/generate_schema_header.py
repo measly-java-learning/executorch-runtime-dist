@@ -9,6 +9,37 @@ so the name it registers cannot drift from the name the AOT/schema declares.
 import sys, pathlib, yaml
 
 
+def _camel(op: str) -> str:
+    """lstm -> Lstm, lstm_backward -> LstmBackward (C++ constant stem)."""
+    return "".join(p[:1].upper() + p[1:] for p in op.split("_") if p)
+
+
+def _schema_entry(namespace: str, op, schema, where: str) -> dict:
+    if not isinstance(op, str) or not op.isidentifier():
+        raise ValueError(f"{where}: op must be a simple identifier, got {op!r}")
+    if not isinstance(schema, dict):
+        raise ValueError(f"{where}: 'schema' must be a mapping")
+    fields = {}
+    for k in ("functional", "out"):
+        text = schema.get(k)
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"{where}: schema.{k} must be a non-empty string")
+        fields[k] = " ".join(text.split())
+    # The declared text must actually name this op; a typo here would register a
+    # kernel the AOT never emits (or vice versa), which fails only at model load.
+    if not fields["functional"].startswith(f"{op}("):
+        raise ValueError(f"{where}: functional must start with '{op}('")
+    if not fields["out"].startswith(f"{op}.out("):
+        raise ValueError(f"{where}: out must start with '{op}.out('")
+    return {
+        "op": op,
+        "qualified_name": f"{namespace}::{op}",
+        "qualified_out_name": f"{namespace}::{op}.out",
+        "functional": fields["functional"],
+        "out": fields["out"],
+    }
+
+
 def load_schema(extra_yaml) -> dict:
     d = yaml.safe_load(pathlib.Path(extra_yaml).read_text())
     ns, op = d["namespace"], d["op"]
@@ -21,33 +52,47 @@ def load_schema(extra_yaml) -> dict:
         raise ValueError(
             f"extra.yaml variants={variants!r}: per-op variant gating is not yet "
             "implemented; only [all] is supported.")
+    fwd = _schema_entry(ns, op, d["schema"], "extra.yaml")
+    extra_ops, seen = [], {op}
+    for i, entry in enumerate(d.get("extra_ops") or []):
+        if not isinstance(entry, dict):
+            raise ValueError(f"extra_ops[{i}]: each entry must be a mapping")
+        e = _schema_entry(ns, entry.get("op"), entry.get("schema"),
+                          f"extra_ops[{i}]")
+        if e["op"] in seen:
+            raise ValueError(f"extra_ops[{i}]: duplicate op name {e['op']!r}")
+        seen.add(e["op"])
+        extra_ops.append(e)
     return {
         "namespace": ns,
         "op": op,
         "variants": variants,
-        "qualified_name": f"{ns}::{op}",
-        "qualified_out_name": f"{ns}::{op}.out",
-        "functional": " ".join(d["schema"]["functional"].split()),
-        "out": " ".join(d["schema"]["out"].split()),
+        "qualified_name": fwd["qualified_name"],
+        "qualified_out_name": fwd["qualified_out_name"],
+        "functional": fwd["functional"],
+        "out": fwd["out"],
+        "extra_ops": extra_ops,
     }
 
 
 def render_header(s: dict) -> str:
     guard_ns = s["namespace"]
-    # TODO(op#2): the constant names kLstmName/kLstmOutName are lstm-specific. When a
-    # second op is added, derive them from s["op"] (e.g. kGruName) or emit fixed
-    # kOpName/kOpOutName — otherwise op #2 would get mis-named C++ constants.
+    entries = [(s["op"], s["qualified_name"], s["qualified_out_name"])]
+    entries += [(e["op"], e["qualified_name"], e["qualified_out_name"])
+                for e in s["extra_ops"]]
+    consts = "".join(
+        f'  inline constexpr char k{_camel(op)}Name[] = "{qn}";\n'
+        f'  inline constexpr char k{_camel(op)}OutName[] = "{qon}";\n'
+        for op, qn, qon in entries)
     return (
-        "// GENERATED from extras/{op}/extra.yaml — do not edit.\n"
+        f"// GENERATED from extras/{s['op']}/extra.yaml — do not edit.\n"
         "#pragma once\n"
-        "namespace {ns} {{\n"
-        "namespace schema {{\n"
-        '  inline constexpr char kLstmName[] = "{qn}";\n'
-        '  inline constexpr char kLstmOutName[] = "{qon}";\n'
-        "}}  // namespace schema\n"
-        "}}  // namespace {ns}\n"
-    ).format(op=s["op"], ns=guard_ns, qn=s["qualified_name"],
-             qon=s["qualified_out_name"])
+        f"namespace {guard_ns} {{\n"
+        "namespace schema {\n"
+        f"{consts}"
+        "}  // namespace schema\n"
+        f"}}  // namespace {guard_ns}\n"
+    )
 
 
 def main() -> int:

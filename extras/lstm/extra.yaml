@@ -1,6 +1,7 @@
-# One op = one bundle. This file is the SINGLE SOURCE OF TRUTH for the op name
-# and schema; both the C++ registrar (via a generated header) and the Python AOT
-# read from here so the two faces cannot drift.
+# One bundle, one or more ops. This file is the SINGLE SOURCE OF TRUTH for the op
+# names and schemas; both the C++ registrar (via a generated header) and the Python
+# AOT read from here so the two faces cannot drift. The top-level `op:`/`schema:`
+# pair is the bundle's original op; additional ops live under `extra_ops:`.
 namespace: etnp
 op: lstm
 # variants this op ships in. [all] => every tarball variant (bare/logging/devtools).
@@ -17,3 +18,22 @@ schema:
     lstm.out(Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh,
     Tensor? b_ih, Tensor? b_hh, *, Tensor(a!) output, Tensor(b!) hn,
     Tensor(c!) cn) -> (Tensor(a!), Tensor(b!), Tensor(c!))
+
+# Additional ops in this bundle (same namespace). The forward above keeps its
+# historical top-level spelling; everything listed here is additive. Optional
+# grad inputs (grad_hn/grad_cn, absent biases) mean "zero" to the kernel; the
+# seven outputs are always present because ET out-variants cannot return None.
+extra_ops:
+  - op: lstm_backward
+    schema:
+      functional: >-
+        lstm_backward(Tensor grad_output, Tensor? grad_hn, Tensor? grad_cn,
+        Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh,
+        Tensor? b_ih, Tensor? b_hh) -> (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)
+      out: >-
+        lstm_backward.out(Tensor grad_output, Tensor? grad_hn, Tensor? grad_cn,
+        Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh,
+        Tensor? b_ih, Tensor? b_hh, *, Tensor(a!) grad_input, Tensor(b!) grad_h0,
+        Tensor(c!) grad_c0, Tensor(d!) grad_w_ih, Tensor(e!) grad_w_hh,
+        Tensor(f!) grad_b_ih, Tensor(g!) grad_b_hh)
+        -> (Tensor(a!), Tensor(b!), Tensor(c!), Tensor(d!), Tensor(e!), Tensor(f!), Tensor(g!))
