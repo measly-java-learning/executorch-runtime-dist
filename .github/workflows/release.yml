@@ -127,7 +127,6 @@ jobs:
         with:
           name: ptd-fixtures
           path: ptdfixtures/**
-          retention-days: 1
       - name: Package
         run: |
           ./scripts/package.sh --prefix "$PWD/out" --etver "${{ steps.ver.outputs.etver }}" \
@@ -338,8 +337,15 @@ jobs:
       - name: Unpack the tarball
         run: |
           set -euo pipefail
+          # dist/ on the linux-x86_64/logging leg also holds the LSTM and OpenVINO fixture tarballs,
+          # so `dist/*.tar.gz` would hand tar three files and fail with "Not found in archive".
+          # Select the runtime asset by its SSOT name.
+          eval "$(./scripts/derive-version.sh)"
+          . ./scripts/lib/naming.sh
+          name="$(tarball_name "$etver" "${{ matrix.variant }}" "${{ matrix.combo.platform }}")"
+          [ -f "dist/$name" ] || { echo "::error::expected dist/$name"; ls -l dist; exit 1; }
           mkdir -p prefix
-          tar -xzf dist/*.tar.gz -C prefix --strip-components=1
+          tar -xzf "dist/$name" -C prefix --strip-components=1
           [ -f prefix/lib/cmake/ExecuTorch/executorch-config.cmake ] \
             || { echo "::error::unpacked prefix is not an ET install"; exit 1; }
       - name: .ptd writer round trip (both overloads, cross-writer, dtype sweep)
@@ -347,8 +353,11 @@ jobs:
 
   # Windows counterpart, over the same two CRTs the build matrix produces. This is the only place
   # the MSVC text-mode corruption can be caught (the two overloads are compared byte for byte).
+  # `needs: build` is required even though this job builds nothing: `build` is the producer of the
+  # `ptd-fixtures` artifact this job downloads, so without the edge the download can race the
+  # linux-x86_64/logging leg's upload (or find nothing when that leg failed).
   ptd-gate-windows:
-    needs: [build-windows]
+    needs: [build, build-windows]
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -369,8 +378,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Select the runtime asset by its SSOT name rather than globbing: the dist-* artifact for
+          # a leg may carry fixture tarballs too, and a multi-file glob feeds tar member names.
+          eval "$(./scripts/derive-version.sh)"
+          . ./scripts/lib/naming.sh
+          name="$(tarball_name "$etver" "${{ matrix.variant }}" "${{ matrix.platform }}")"
+          [ -f "dist/$name" ] || { echo "::error::expected dist/$name"; ls -l dist; exit 1; }
           mkdir -p prefix
-          tar -xzf dist/*.tar.gz -C prefix --strip-components=1
+          tar -xzf "dist/$name" -C prefix --strip-components=1
       - name: .ptd writer round trip
         shell: pwsh
         run: |

@@ -6,13 +6,14 @@
 //   baseline              Module(pte, exporter-written ptd) reproduces the eager golden
 //   write_both_overloads  save_ptd(path) and save_ptd(stream) agree byte for byte, into a
 //                         directory whose name contains a space (common on Windows)
+//   write_failure_reported a stream whose writes fail is an error, not a silent success
 //   reload_single         Module(pte, written-ptd) reproduces the doubled golden
 //   reload_merged         Module(pte, {written-ptd}) (MergedDataMap path) reproduces it too
 //   cross_writer_content  written file and the Python-written reference agree per key
 //   alignment_128         the header's segment base offset honours the requested alignment
 //   overwrite_truncates   a smaller checkpoint over a larger one truncates and reloads
 //   missing_key_fails     a .ptd missing a key the .pte needs is a reported error, not garbage
-//   unopenable_path       saving into a nonexistent directory is documented behaviour, not a crash
+//   unopenable_path       saving into a nonexistent directory returns AccessFailed and no file
 //
 // Usage: ptd_roundtrip <fixture-dir> <out-dir>
 #include <executorch/extension/data_loader/file_data_loader.h>
@@ -266,6 +267,22 @@ int main(int argc, char** argv) {
             std::to_string(from_path.size()) + "/" + std::to_string(from_stream.size()));
   }
 
+  // 2b. A stream whose writes fail must not be reported as a saved checkpoint.
+  {
+    struct FailingBuf : std::streambuf {
+      int overflow(int) override {
+        return traits_type::eof();
+      }
+    };
+    FailingBuf buffer;
+    std::ostream failing(&buffer);
+    Error write_error = save_ptd(failing, doubled_tensors, 128);
+    check(
+        write_error == Error::Internal,
+        "write_failure_reported",
+        "returned " + std::to_string(static_cast<int>(write_error)));
+  }
+
   // 3. Both Module constructors reload the written file to the doubled output.
   {
     Module module(pte, written_path);
@@ -355,21 +372,21 @@ int main(int argc, char** argv) {
             " forward_ok=" + std::to_string(static_cast<int>(result.ok())));
   }
 
-  // 8. Upstream's path overload never checks that the file opened. Record, rather than assume,
-  //    what that means: Ok-with-no-file is the expected quirk, an error is also acceptable, but Ok
-  //    WITH a file is not. The consumer doc states whichever this observes.
+  // 8. A path that cannot be opened is reported, not silently accepted. The vendored patch adds
+  //    the is_open() check upstream lacks.
   {
     const std::string path = out_dir + "/no/such/dir/x.ptd";
     Error saved = save_ptd(path, doubled_tensors, 128);
     const bool exists = fs::exists(path, ec);
-    if (saved == Error::Ok && !exists) {
-      std::printf("ok: unopenable_path -- save_ptd returned Ok and wrote no file (documented)\n");
-    } else if (saved != Error::Ok && !exists) {
+    if (saved == Error::AccessFailed && !exists) {
       std::printf(
-          "ok: unopenable_path -- save_ptd returned %d and wrote no file\n",
-          static_cast<int>(saved));
+          "ok: unopenable_path -- save_ptd returned Error::AccessFailed and wrote no file\n");
     } else {
-      check(false, "unopenable_path", "returned Ok and created the file, or error with a file");
+      check(
+          false,
+          "unopenable_path",
+          "returned " + std::to_string(static_cast<int>(saved)) + ", file exists=" +
+              std::to_string(static_cast<int>(exists)));
     }
   }
 

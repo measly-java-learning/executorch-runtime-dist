@@ -71,6 +71,40 @@ def main() -> int:
     if "dist-${{ matrix.variant }}-${{ matrix.platform }}" not in win_steps:
         fails.append("ptd-gate-windows does not download its matrix's dist artifact")
 
+    # Both gate jobs consume the `ptd-fixtures` artifact that the linux `build` leg uploads, so
+    # both must wait for `build` — a job that only needs `build-windows` can race the upload or
+    # find nothing when that leg failed. `ptd-gate-windows` also tests the windows artifacts.
+    for job, required in (
+        ("ptd-gate", {"build"}),
+        ("ptd-gate-windows", {"build", "build-windows"}),
+    ):
+        needs = jobs[job].get("needs") or []
+        if isinstance(needs, str):
+            needs = [needs]
+        missing = required - set(needs)
+        if missing:
+            fails.append(f"{job} needs {sorted(missing)} (ptd-fixtures comes from build)")
+
+    # The dist-* artifact for the linux-x86_64/logging leg carries the LSTM and OpenVINO fixture
+    # tarballs too, so a `dist/*.tar.gz` glob feeds tar several files and fails. Both gates must
+    # select the runtime asset by the naming SSOT's own name.
+    for job in ("ptd-gate", "ptd-gate-windows"):
+        unpack = [
+            s for s in jobs[job]["steps"] if "tar -xzf" in str(s.get("run", ""))
+        ]
+        if len(unpack) != 1:
+            fails.append(f"{job} must have exactly one unpack step, found {len(unpack)}")
+            continue
+        run = str(unpack[0]["run"])
+        # Ignore shell comments: the explanation of why the glob is wrong names it.
+        code = "\n".join(
+            line for line in run.splitlines() if not line.lstrip().startswith("#")
+        )
+        if "dist/*.tar.gz" in code:
+            fails.append(f"{job} unpacks a glob that can match several tarballs")
+        if "tarball_name" not in code:
+            fails.append(f"{job} must select the runtime tarball by the naming SSOT")
+
     # The fixture mint must sit on the leg that has torch/executorch installed, and the artifact
     # name the gates download must match what the build leg uploads.
     build_steps = jobs["build"]["steps"]
@@ -88,6 +122,10 @@ def main() -> int:
     ]
     if len(uploads) != 1:
         fails.append(f"build must upload ptd-fixtures exactly once, found {len(uploads)}")
+    elif "retention-days" in uploads[0].get("with", {}):
+        # A one-day retention breaks "Re-run failed jobs" the next day, forcing a full rebuild of
+        # the matrix just to regenerate an artifact the gate consumes.
+        fails.append("ptd-fixtures must use the default retention (no retention-days)")
 
     for f in fails:
         print(f"FAIL: {f}")

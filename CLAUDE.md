@@ -105,9 +105,9 @@ ExecuTorch.
 
 Two further patches ship upstream's `.ptd` writer: `et-flat-tensor-serialize.patch` exports
 `extension_flat_tensor_serialize` and installs the flat-tensor/named-data-map headers, and
-`et-flat-tensor-serialize-binary.patch` fixes the Windows text-mode corruption in `save_ptd`. The
-binary fix is destined for upstream — drop that patch when upstream lands one. See
-`docs/ptd-writer-consumer.md`.
+`et-flat-tensor-serialize-binary.patch` fixes the Windows text-mode corruption and the silent
+open/write failures in `save_ptd`. The binary fix is destined for upstream — drop that patch when
+upstream lands one. See `docs/ptd-writer-consumer.md`.
 
 - **Keep `patches/*.patch` and `test/fixtures/etpatch/` in lockstep when the ET pin moves.** The
   hermetic patch test patches the real anchor text, so a stale fixture makes the patch test pass

@@ -10,10 +10,13 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(ExecuTorch REQUIRED CONFIG)
 
-# `executorch` is the runtime only; the exported model calls aten::addmm/permute_copy, whose
-# registration lives in portable_ops_lib. Link it NORMALLY. Do not whole-archive it on top of
-# executorch -- the spike aborted at startup with duplicate kernel registration when it did. A
-# plain link (as here) pulls only the registration objects the program needs.
+# `executorch` is the runtime only; the exported model calls aten::addmm/permute_copy, so the
+# registered kernels must be in the link. Link portable_ops_lib by TARGET NAME: ET's exported
+# target carries `INTERFACE_LINK_OPTIONS ... --whole-archive $<TARGET_FILE:portable_ops_lib>` itself,
+# which is what pulls the static-initializer registration objects in. Do not add a second
+# whole-archive around it -- that is what aborted at startup in the spike. If you link the archive
+# by path instead, or your toolchain drops INTERFACE_LINK_OPTIONS, you must whole-archive it
+# yourself or every op reports "not found".
 set(PTD_WRITER_LIBS
     extension_flat_tensor_serialize
     extension_module_static

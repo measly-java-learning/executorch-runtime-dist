@@ -110,10 +110,15 @@ assert_contains "$f" "flat_tensor_header.h" "flat_tensor_header.h installed"
 assert_contains "$f" "flat_tensor_data_map.h" "flat_tensor_data_map.h installed"
 assert_contains "$(cat "$tmp/et/extension/named_data_map/CMakeLists.txt")" "merged_data_map.h" "merged_data_map.h installed"
 
-# The binary-mode fix. MSVC text mode rewrites every 0x0A, producing a .ptd the runtime rejects.
+# The binary-mode and failure-reporting fix. MSVC text mode rewrites every 0x0A, producing a .ptd
+# the runtime rejects; a failed open or write must not return Ok.
 s="$(cat "$tmp/et/extension/flat_tensor/serialize/serialize.cpp")"
 assert_contains "$s" "file.open(path, std::ios::binary);" "save_ptd(path) opens in binary mode"
 assert_eq "$(grep -c 'file.open(path);' "$tmp/et/extension/flat_tensor/serialize/serialize.cpp")" "0" "text-mode open is gone"
+assert_contains "$s" "!file.is_open()" "save_ptd(path) checks the open"
+assert_contains "$s" "Error::AccessFailed" "a failed open returns AccessFailed"
+assert_contains "$s" "if (!out)" "the stream overload checks the write state"
+assert_contains "$s" "Error::Internal" "a failed write returns Internal"
 
 # The Linux path must be untouched. The patch is a no-op there by construction, and this is the
 # assertion that keeps it that way: a future edit that drops an #ifdef would break Linux silently.

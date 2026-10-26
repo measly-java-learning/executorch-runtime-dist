@@ -28,9 +28,14 @@ target_link_libraries(my_target PRIVATE
 ```
 
 `portable_ops_lib` is the registration archive for the kernels an exported model names (for the
-fixture here, `aten::addmm.out` and `aten::permute_copy.out`). Link it **normally**. Do **not**
-whole-archive it on top of `executorch`: that registers the kernels twice and aborts at startup.
-Add the delegate archive a delegated `.pte` needs (for example `xnnpack_backend`) the same way.
+fixture here, `aten::addmm.out` and `aten::permute_copy.out`). Link it **by target name**: the
+imported target in `ExecuTorchTargets.cmake` carries its own
+`INTERFACE_LINK_OPTIONS "... --whole-archive $<TARGET_FILE:portable_ops_lib> ..."`, which is what
+pulls the static-initializer registration objects out of the archive. Do not add a second
+whole-archive around it — double whole-archiving registers the kernels twice and aborts at startup.
+If you link the archive by path instead, or your toolchain drops `INTERFACE_LINK_OPTIONS`, you must
+whole-archive it yourself or every operator reports "not found". Add the delegate archive a
+delegated `.pte` needs (for example `xnnpack_backend`) the same way.
 
 The installed headers are:
 
@@ -101,11 +106,17 @@ e = save_ptd(out, tensors, 128);
   big-endian host.
 - **Open the stream with `std::ios::binary`.** The stream overload cannot choose that for you.
 
-### The path overload does not check that the file opened
+### Both overloads report failures
 
-Upstream's path overload calls `ofstream::open()` without checking it. Measured in the gate
-(linux-x86_64): `save_ptd("<dir that does not exist>/x.ptd", tensors, 128)` returns `Error::Ok` and
-writes **no file**. Create the target directory and/or check it yourself before calling:
+The vendored patch makes both overloads honest, so a checkpoint is never silently lost:
+
+- the path overload returns `Error::AccessFailed` when the file cannot be opened (missing parent
+  directory, read-only directory, permissions);
+- the stream overload returns `Error::Internal` when any write fails (full disk, broken pipe); the
+  path overload propagates it.
+
+Always check the returned `Error`. Creating the target directory is still the caller's job — it
+just fails loudly now instead of returning `Ok` with no file:
 
 ```cpp
 std::error_code ec;
@@ -113,16 +124,18 @@ std::filesystem::create_directories(std::filesystem::path(path).parent_path(), e
 if (ec) { /* handle before saving */ }
 ```
 
-That check is out of scope for the vendored patch; we fix only the corruption described next.
+Without the patch, upstream returns `Error::Ok` for both cases. That is one of the reasons the
+patch is applied to the tarballs; drop it only when upstream lands equivalent checks.
 
-## Windows: the binary-mode patch
+## Windows: the binary-mode and failure-reporting patch
 
 Upstream's path overload called `file.open(path)` with no `std::ios::binary`. MSVC's text mode
 rewrites every `0x0A` byte as `0x0D 0x0A`, so a valid 376-byte `.ptd` became 385 bytes and the
 runtime rejected it (`schema version … is newer` or `named_data is nullptr, malformed PTD`). This
-repo vendors the one-line fix in `patches/et-flat-tensor-serialize-binary.patch`, so both overloads
-write correct bytes on every platform. The stream overload was never affected. The patch is
-destined for upstream and will be dropped when upstream lands a fix.
+repo vendors the fix in `patches/et-flat-tensor-serialize-binary.patch`, so both overloads write
+correct bytes on every platform. The same patch adds the open and write checks described above. The
+stream overload never had the text-mode problem. The patch is destined for upstream and will be
+dropped when upstream lands an equivalent fix.
 
 ## `ET_EXPERIMENTAL`
 

@@ -27,6 +27,7 @@ for f in linear.pte linear.ptd linear_x2.ptd in.bin out_base.bin out_x2.bin; do
 done
 
 SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
 echo "== Building the .ptd writer consumer against $PREFIX =="
 gen=()
 if command -v ninja >/dev/null 2>&1; then gen=(-G Ninja); fi

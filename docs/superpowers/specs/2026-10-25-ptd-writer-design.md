@@ -120,8 +120,9 @@ separate patch, `patches/et-flat-tensor-serialize-binary.patch`, because it's a 
 destined for upstream while the target patch is packaging. They have different lifetimes, and the
 fix patch gets dropped the day upstream lands one. No upstream issue exists (checked 2026-10-25,
 open and closed); if one is filed later, cite it in the patch header and in
-`patch-et-sources.sh`'s concern list. The unchecked file-open in the same
-function is out of scope; mention it in the doc.
+`patch-et-sources.sh`'s concern list. The same patch fixes the silent-success paths around it: the
+path overload returns `Error::AccessFailed` when the file cannot be opened, and the stream overload
+returns `Error::Internal` when a write fails, so a lost checkpoint is never reported as `Ok`.
 
 ### 3. Flags
 

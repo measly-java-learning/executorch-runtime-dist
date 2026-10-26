@@ -38,6 +38,7 @@ CRT="$(crt_for_platform "$PLATFORM")" || { echo "FAIL: no CRT for platform '$PLA
 echo ">> prefix platform: $PLATFORM (CRT=$CRT)"
 
 SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
 echo "== Building the .ptd writer consumer against $PREFIX =="
 cmake -B "$SCRATCH/build" -S "$HERE/ptd_writer" -G Ninja \
   -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl \

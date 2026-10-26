@@ -53,4 +53,6 @@ done
 # Windows already passes both in _ET_WINDOWS_COMMON; dedup must leave exactly one of each.
 assert_eq "$(printf '%s\n' $(effective_cmake_flags windows-x86_64 logging) | grep -c -- '-DEXECUTORCH_BUILD_EXTENSION_FLAT_TENSOR=ON')" \
   "1" "flat tensor flag appears once on windows after dedup"
+assert_eq "$(printf '%s\n' $(effective_cmake_flags windows-x86_64 logging) | grep -c -- '-DEXECUTORCH_BUILD_EXTENSION_NAMED_DATA_MAP=ON')" \
+  "1" "named data map flag appears once on windows after dedup"
 exit "$ASSERT_FAILS"

@@ -62,7 +62,8 @@ fi
 assert_contains "$code" "std::ios::binary" "roundtrip opens the stream in binary mode"
 
 # The review-focus checks must exist by name, so a rewrite cannot quietly drop one.
-for name in cross_writer_content overwrite_truncates missing_key_fails alignment_128 reload_merged; do
+for name in cross_writer_content overwrite_truncates missing_key_fails alignment_128 reload_merged \
+            write_failure_reported unopenable_path; do
   assert_contains "$src" "\"$name\"" "roundtrip check $name present"
 done
 assert_contains "$src" "dir with space" "roundtrip writes into a directory with a space"
@@ -76,9 +77,10 @@ assert_contains "$sweep" "save_ptd(path, tensors, 128)" "dtype sweep saves at al
 # The consumer links the exported target by name and must include an installed prefix.
 assert_contains "$cmake_src" "extension_flat_tensor_serialize" "consumer links the exported writer target"
 assert_contains "$cmake_src" "find_package(ExecuTorch REQUIRED CONFIG)" "consumer uses an installed prefix"
-# The consumer must link the portable-op REGISTRATION archive normally (without it the fixture's
-# aten::addmm.out is "not found" at load), but must not whole-archive it -- the spike aborted with
-# duplicate kernel registration when portable_ops_lib was whole-archived on top of executorch.
+# The consumer must link the portable-op REGISTRATION archive by target name (without it the
+# fixture's aten::addmm.out is "not found" at load). ET's own exported target already carries the
+# whole-archive INTERFACE_LINK_OPTIONS that pulls the registration objects in, so adding another
+# whole-archive here is a double whole-archive -- the spike's duplicate-registration abort.
 assert_contains "$cmake_src" "portable_ops_lib" "consumer links the portable ops registration archive"
 if printf '%s\n' "$cmake_src" | grep -v '^[[:space:]]*#' \
     | grep -qE 'whole-archive|WHOLEARCHIVE|-force_load|WHOLE_ARCHIVE'; then
@@ -87,6 +89,17 @@ if printf '%s\n' "$cmake_src" | grep -v '^[[:space:]]*#' \
 else
   printf 'ok: consumer does not whole-archive the ops registration archive\n'
 fi
+
+# Both gates create a CMake build tree and written .ptd files; leaving them in /tmp on every run
+# is a slow leak. Pin the cleanup.
+for g in "$gate" "$windows_gate"; do
+  if grep -qE "trap .*rm -rf.*SCRATCH" "$g"; then
+    printf 'ok: %s cleans its scratch dir\n' "$(basename "$g")"
+  else
+    printf 'FAIL: %s has no scratch-dir trap\n' "$(basename "$g")" >&2
+    ASSERT_FAILS=$((ASSERT_FAILS+1))
+  fi
+done
 
 # The Windows sibling must read the CRT from BUILDINFO rather than hardcoding /MD or /MT.
 assert_contains "$(cat "$windows_gate")" "crt_for_platform" "windows gate reads the CRT from BUILDINFO"
