@@ -60,6 +60,8 @@ def build_case():
     pte = to_edge_transform_and_lower(ep).to_executorch()
     ops = pte.executorch_program.execution_plan[0].operators
     assert any(op.name == "etnp::lstm" and op.overload == "out" for op in ops), ops
+    # Registering autograd must not leak into an inference export.
+    assert not any(op.name.startswith("etnp::lstm_backward") for op in ops), ops
 
     return (pte.buffer, _flat(x, h0, c0),
             _flat(eager_out.detach()), dict(DIMS))

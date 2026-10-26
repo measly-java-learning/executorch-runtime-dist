@@ -73,3 +73,112 @@ def _lstm_fake(input, h0, c0, w_ih, w_hh, b_ih, b_hh):
     T, B, _ = input.shape
     H = h0.shape[1]
     return (input.new_empty((T, B, H)), h0.new_empty((B, H)), c0.new_empty((B, H)))
+
+
+# --- backward op (same bundle, additive) ------------------------------------
+# The backward is its own opaque op so a joint export (forward+backward) stays
+# constant in T, symmetric with the forward. Its eager implementation recomputes
+# the forward through _lstm_ref and differentiates that; no hand-written BPTT.
+_backward_schema = next((e for e in _schema["extra_ops"]
+                         if e["op"] == "lstm_backward"), None)
+assert _backward_schema is not None, \
+    "extra.yaml must declare extra_ops: lstm_backward (the AOT face depends on it)"
+_lib.define(_backward_schema["functional"])
+_lib.define(_backward_schema["out"])
+
+
+def _lstm_backward_ref(grad_output, grad_hn, grad_cn,
+                       input, h0, c0, w_ih, w_hh, b_ih, b_hh):
+    """Eager reference backward: replay _lstm_ref on detached leaves and let
+    autograd differentiate it. Returns all seven gradients in schema order.
+    A None grad_hn/grad_cn means zero; an absent bias yields a zero [4H] grad
+    (the op can never return None, the autograd wrapper discards it)."""
+    tensors = [input.detach(), h0.detach(), c0.detach(),
+               w_ih.detach(), w_hh.detach()]
+    has_b_ih, has_b_hh = b_ih is not None, b_hh is not None
+    if has_b_ih:
+        tensors.append(b_ih.detach())
+    if has_b_hh:
+        tensors.append(b_hh.detach())
+    with torch.enable_grad():
+        for t in tensors:
+            t.requires_grad_(True)
+        d_input, d_h0, d_c0, d_w_ih, d_w_hh = tensors[:5]
+        db_ih = tensors[5] if has_b_ih else None
+        db_hh = tensors[5 + int(has_b_ih)] if has_b_hh else None
+
+        out, hn, cn = _lstm_ref(d_input, d_h0, d_c0, d_w_ih, d_w_hh, db_ih, db_hh)
+        g_hn = torch.zeros_like(hn) if grad_hn is None else grad_hn.detach()
+        g_cn = torch.zeros_like(cn) if grad_cn is None else grad_cn.detach()
+        grads = torch.autograd.grad(
+            (out, hn, cn), tensors,
+            grad_outputs=(grad_output.detach(), g_hn, g_cn),
+            allow_unused=True)
+        grads = [torch.zeros_like(t) if g is None else g
+                 for g, t in zip(grads, tensors)]
+    H = h0.shape[1]
+    zero_bias = w_ih.new_zeros((4 * H,))
+    grad_b_ih = grads[5] if has_b_ih else zero_bias
+    grad_b_hh = grads[5 + int(has_b_ih)] if has_b_hh else zero_bias
+    return (grads[0], grads[1], grads[2], grads[3], grads[4],
+            grad_b_ih, grad_b_hh)
+
+
+@impl(_lib, "lstm_backward", "CompositeExplicitAutograd")
+def _lstm_backward_impl(grad_output, grad_hn, grad_cn, input, h0, c0,
+                        w_ih, w_hh, b_ih, b_hh):
+    return _lstm_backward_ref(grad_output, grad_hn, grad_cn,
+                              input, h0, c0, w_ih, w_hh, b_ih, b_hh)
+
+
+@impl(_lib, "lstm_backward.out", "CompositeExplicitAutograd")
+def _lstm_backward_out_impl(grad_output, grad_hn, grad_cn, input, h0, c0,
+                            w_ih, w_hh, b_ih, b_hh, *,
+                            grad_input, grad_h0, grad_c0,
+                            grad_w_ih, grad_w_hh, grad_b_ih, grad_b_hh):
+    outs = _lstm_backward_ref(grad_output, grad_hn, grad_cn,
+                              input, h0, c0, w_ih, w_hh, b_ih, b_hh)
+    dst = (grad_input, grad_h0, grad_c0, grad_w_ih, grad_w_hh,
+           grad_b_ih, grad_b_hh)
+    for d, s in zip(dst, outs):
+        d.copy_(s)
+    return dst
+
+
+@register_fake("etnp::lstm_backward")
+def _lstm_backward_fake(grad_output, grad_hn, grad_cn, input, h0, c0,
+                        w_ih, w_hh, b_ih, b_hh):
+    H = h0.shape[1]
+    shape = (4 * H,)
+    # Two distinct tensors: returning the same object twice makes export's
+    # tracing emit one node for both bias gradients (duplicate graph outputs).
+    return (input.new_empty(input.shape), h0.new_empty(h0.shape),
+            c0.new_empty(c0.shape), w_ih.new_empty(w_ih.shape),
+            w_hh.new_empty(w_hh.shape), grad_output.new_empty(shape),
+            grad_output.new_empty(shape))
+
+
+def _lstm_setup_context(ctx, inputs, output):
+    input, h0, c0, w_ih, w_hh, b_ih, b_hh = inputs
+    ctx.save_for_backward(input, h0, c0, w_ih, w_hh, b_ih, b_hh)
+    # Only used when an unused output's grad arrives as None (torch normally
+    # materialises zeros, but do not depend on that).
+    ctx.output_shape = output[0].shape
+
+
+def _lstm_backward(ctx, grad_output, grad_hn, grad_cn):
+    input, h0, c0, w_ih, w_hh, b_ih, b_hh = ctx.saved_tensors
+    if grad_output is None:
+        grad_output = torch.zeros(ctx.output_shape, dtype=input.dtype,
+                                  device=input.device)
+    grads = torch.ops.etnp.lstm_backward(
+        grad_output, grad_hn, grad_cn, input, h0, c0, w_ih, w_hh, b_ih, b_hh)
+    # Absent biases get a None gradient on the torch side (the op still fills
+    # both bias outputs; ExecuTorch out-variants cannot return None).
+    return (grads[0], grads[1], grads[2], grads[3], grads[4],
+            grads[5] if b_ih is not None else None,
+            grads[6] if b_hh is not None else None)
+
+
+torch.library.register_autograd("etnp::lstm", _lstm_backward,
+                                setup_context=_lstm_setup_context)
