@@ -117,9 +117,9 @@ def _lstm_backward_ref(grad_output, grad_hn, grad_cn,
         grads = [torch.zeros_like(t) if g is None else g
                  for g, t in zip(grads, tensors)]
     H = h0.shape[1]
-    zero_bias = w_ih.new_zeros((4 * H,))
-    grad_b_ih = grads[5] if has_b_ih else zero_bias
-    grad_b_hh = grads[5 + int(has_b_ih)] if has_b_hh else zero_bias
+    grad_b_ih = grads[5] if has_b_ih else w_ih.new_zeros((4 * H,))
+    grad_b_hh = (grads[5 + int(has_b_ih)] if has_b_hh
+                 else w_ih.new_zeros((4 * H,)))
     return (grads[0], grads[1], grads[2], grads[3], grads[4],
             grad_b_ih, grad_b_hh)
 

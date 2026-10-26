@@ -53,13 +53,26 @@ def within_tol(got, ref, rtol: float = 1e-4, atol: float = 1e-4) -> bool:
     return got.shape == ref.shape and bool(np.allclose(got, ref, rtol=rtol, atol=atol))
 
 
+TRAIN_MEMBERS = ("train.pte", "train.ptd", "train_in.bin", "train_out.bin",
+                 "train_shape")
+
+
 def train_check(fixtures_dir: pathlib.Path, prefix: pathlib.Path,
                 tmp: pathlib.Path) -> str:
     """'ok' when the training fixture runs and matches, 'skip' when the fixture
-    predates lstm_backward. Exits 1 on a real mismatch."""
+    predates lstm_backward (all training members absent). A PARTIAL set is a
+    hard error naming the missing members: silently skipping it would hide a
+    broken package. Exits 1 on a real mismatch."""
     fixtures_dir = pathlib.Path(fixtures_dir)
-    if not (fixtures_dir / "train.pte").exists():
+    present = [m for m in TRAIN_MEMBERS if (fixtures_dir / m).exists()]
+    if not present:
         return "skip"
+    missing = [m for m in TRAIN_MEMBERS if m not in present]
+    if missing:
+        sys.stderr.write(
+            f"consumer smoke FAIL training: partial training fixture set in "
+            f"{fixtures_dir}; missing {', '.join(missing)}\n")
+        sys.exit(1)
     dims = parse_train_shape(fixtures_dir / "train_shape")
     runner = build_runner(HERE, prefix, tmp / "rbuild_train",
                           target="lstm_train_runner")

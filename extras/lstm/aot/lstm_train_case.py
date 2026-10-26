@@ -55,12 +55,16 @@ def _flat(*ts) -> bytes:
     return b"".join(struct.pack(f"{t.numel()}f", *t.flatten().tolist()) for t in ts)
 
 
-def build_train_case(T: int = None):
+def build_train_case(T: int = None, steps: int = 1, lr: float = 0.05):
     """(pte_bytes, ptd_bytes, in_bytes, golden_bytes, dims, meta).
 
     in_bytes = x[T,B,I] ++ target[B,O].
-    golden_bytes = loss ++ every parameter gradient, in the joint graph's
-    gradient-output order (meta["grad_order"] names each one, by FQN).
+    golden_bytes = per step: loss ++ every parameter gradient, in the joint
+    graph's gradient-output order (meta["grad_order"] names each one, by FQN).
+    With steps > 1 the remaining steps apply the same dense in-place SGD update
+    the C++ runner performs between executes, and their loss+gradients are
+    appended — this is what pins the training pattern against the forward
+    op's packed-weight cache.
     """
     from executorch.exir import ExecutorchBackendConfig, to_edge
     from torch.export.experimental import _export_forward_backward
@@ -74,14 +78,19 @@ def build_train_case(T: int = None):
     x = torch.randn(T, B, I)
     target = torch.randn(B, O)
 
-    # Eager golden: one backward pass over the very same graph the export traces.
-    loss = net(x, target)
-    loss.backward()
-    param_grads = {n: p.grad.detach().clone() for n, p in net.named_parameters()}
-    assert all(g is not None for g in param_grads.values()), sorted(
-        n for n, g in param_grads.items() if g is None)
+    losses, step_grads = [], []
 
-    ep = torch.export.export(net, (x, target))
+    def eager_step():
+        net.zero_grad(set_to_none=True)
+        loss = net(x, target)
+        loss.backward()
+        losses.append(loss.detach())
+        step_grads.append({n: p.grad.detach().clone()
+                           for n, p in net.named_parameters()})
+
+    eager_step()
+
+    ep = torch.export.export(net, (x, target))   # initial weights
     joint = _export_forward_backward(ep)
     edge = to_edge(joint)
     emit = edge.to_executorch(
@@ -96,7 +105,15 @@ def build_train_case(T: int = None):
     specs = emit.exported_program().graph_signature.output_specs
     grad_order = [s.target for s in specs
                   if s.kind == OutputKind.GRADIENT_TO_PARAMETER]
+    param_grads = step_grads[0]
     assert set(grad_order) == set(param_grads), (grad_order, sorted(param_grads))
+
+    # The runner's dense in-place SGD, simulated in torch for the golden.
+    for _ in range(steps - 1):
+        with torch.no_grad():
+            for n, p in net.named_parameters():
+                p -= lr * step_grads[-1][n]
+        eager_step()
 
     # Reading .buffer triggers serialization, which populates the manager's
     # tensor-data map; write_tensor_data_to_file is the public accessor for it.
@@ -107,8 +124,13 @@ def build_train_case(T: int = None):
         assert len(ptd_files) == 1, [p.name for p in ptd_files]
         ptd = ptd_files[0].read_bytes()
     assert ptd, "external weights .ptd is empty"
-    golden = _flat(torch.tensor([loss.detach()]),
-                   *[param_grads[n] for n in grad_order])
-    meta = {"grad_order": grad_order, "operator_count": len(plan.operators)}
+
+    parts = []
+    for s in range(steps):
+        parts.append(losses[s])
+        parts.extend(step_grads[s][n] for n in grad_order)
+    golden = _flat(*parts)
+    meta = {"grad_order": grad_order, "operator_count": len(plan.operators),
+            "steps": steps, "lr": lr}
     return (pte, ptd, _flat(x, target), golden,
             dict(DIMS, T=T), meta)

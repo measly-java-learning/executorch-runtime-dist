@@ -23,9 +23,11 @@ def run_runner(runner: pathlib.Path, model: pathlib.Path, inbin: pathlib.Path,
 
 
 def run_train_runner(runner: pathlib.Path, pte: pathlib.Path, ptd: pathlib.Path,
-                     inbin: pathlib.Path, outbin: pathlib.Path, dims: dict) -> None:
+                     inbin: pathlib.Path, outbin: pathlib.Path, dims: dict,
+                     steps: int = 1, lr: float = 0.0) -> None:
     env = {**os.environ,
            "TRAIN_T": str(dims["T"]), "TRAIN_B": str(dims["B"]),
-           "TRAIN_I": str(dims["I"]), "TRAIN_O": str(dims["O"])}
+           "TRAIN_I": str(dims["I"]), "TRAIN_O": str(dims["O"]),
+           "TRAIN_STEPS": str(steps), "TRAIN_LR": repr(float(lr))}
     subprocess.run([str(runner), str(pte), str(ptd), str(inbin), str(outbin)],
                    check=True, env=env)

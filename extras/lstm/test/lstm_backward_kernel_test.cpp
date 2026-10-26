@@ -40,18 +40,6 @@ static int compare(const char* case_name, const char* out_name,
   return 0;
 }
 
-static int filled_not_nan(const char* case_name, const char* out_name,
-                          const float* got, int64_t n) {
-  for (int64_t i = 0; i < n; ++i) {
-    if (std::isnan(got[i])) {
-      std::fprintf(stderr, "FAIL: case=%s out=%s idx=%lld is NaN\n", case_name,
-                   out_name, static_cast<long long>(i));
-      return 1;
-    }
-  }
-  return 0;
-}
-
 int main() {
   executorch::runtime::runtime_init();
   static constexpr char kOp[] = "etnp::lstm_backward.out";
@@ -72,15 +60,22 @@ int main() {
     const v::Case& cs = v::cases[c];
     const int T = static_cast<int>(cs.T), B = static_cast<int>(cs.B),
         I = static_cast<int>(cs.I), H = static_cast<int>(cs.H);
-    const int n_in = T * B * I, n_bh = B * H, n_b = 4 * H;
+    const int NB = 4 * H;   // shape-list copy only
+    // Element counts are int64_t: the products must not be computed in int and
+    // widened afterwards (CodeQL cpp/integer-multiplication-cast-to-long).
+    const int64_t n_in = cs.T * cs.B * cs.I;
+    const int64_t n_bh = cs.B * cs.H;
+    const int64_t n_b = 4 * cs.H;
+    const int64_t n_wih = n_b * cs.I;
+    const int64_t n_whh = n_b * cs.H;
 
     auto cpy = [](const float* p, int64_t n) {
       return std::vector<float>(p, p + n);
     };
     auto input = cpy(cs.input, n_in);
     auto h0 = cpy(cs.h0, n_bh), c0 = cpy(cs.c0, n_bh);
-    auto w_ih = cpy(cs.w_ih, n_b * I), w_hh = cpy(cs.w_hh, n_b * H);
-    auto grad_output = cpy(cs.grad_output, T * B * H);
+    auto w_ih = cpy(cs.w_ih, n_wih), w_hh = cpy(cs.w_hh, n_whh);
+    auto grad_output = cpy(cs.grad_output, cs.T * cs.B * cs.H);
     std::vector<float> b_ih, b_hh, grad_hn, grad_cn;
     if (cs.has_bias) {
       b_ih = cpy(cs.b_ih, n_b);
@@ -92,33 +87,34 @@ int main() {
     }
     // Absent optionals still need a tensor pointer (content/shape unused: the
     // stack slot is passed as None).
-    std::vector<float> dummy_bh(n_bh, 0.0f), dummy_b(n_b, 0.0f);
+    std::vector<float> dummy_bh(static_cast<size_t>(n_bh), 0.0f),
+        dummy_b(static_cast<size_t>(n_b), 0.0f);
 
     std::vector<float> grad_input(n_in, nan), grad_h0(n_bh, nan),
-        grad_c0(n_bh, nan), grad_w_ih(n_b * I, nan), grad_w_hh(n_b * H, nan),
+        grad_c0(n_bh, nan), grad_w_ih(n_wih, nan), grad_w_hh(n_whh, nan),
         grad_b_ih(n_b, nan), grad_b_hh(n_b, nan);
 
     auto t_in = make_tensor_ptr({T, B, I}, input.data());
     auto t_h0 = make_tensor_ptr({B, H}, h0.data());
     auto t_c0 = make_tensor_ptr({B, H}, c0.data());
-    auto t_wih = make_tensor_ptr({n_b, I}, w_ih.data());
-    auto t_whh = make_tensor_ptr({n_b, H}, w_hh.data());
+    auto t_wih = make_tensor_ptr({NB, I}, w_ih.data());
+    auto t_whh = make_tensor_ptr({NB, H}, w_hh.data());
     auto t_go = make_tensor_ptr({T, B, H}, grad_output.data());
     auto t_ghn = make_tensor_ptr(
         {B, H}, grad_hn.empty() ? dummy_bh.data() : grad_hn.data());
     auto t_gcn = make_tensor_ptr(
         {B, H}, grad_cn.empty() ? dummy_bh.data() : grad_cn.data());
     auto t_bih = make_tensor_ptr(
-        {n_b}, b_ih.empty() ? dummy_b.data() : b_ih.data());
+        {NB}, b_ih.empty() ? dummy_b.data() : b_ih.data());
     auto t_bhh = make_tensor_ptr(
-        {n_b}, b_hh.empty() ? dummy_b.data() : b_hh.data());
+        {NB}, b_hh.empty() ? dummy_b.data() : b_hh.data());
     auto t_gin = make_tensor_ptr({T, B, I}, grad_input.data());
     auto t_gh0 = make_tensor_ptr({B, H}, grad_h0.data());
     auto t_gc0 = make_tensor_ptr({B, H}, grad_c0.data());
-    auto t_gwih = make_tensor_ptr({n_b, I}, grad_w_ih.data());
-    auto t_gwhh = make_tensor_ptr({n_b, H}, grad_w_hh.data());
-    auto t_gbih = make_tensor_ptr({n_b}, grad_b_ih.data());
-    auto t_gbhh = make_tensor_ptr({n_b}, grad_b_hh.data());
+    auto t_gwih = make_tensor_ptr({NB, I}, grad_w_ih.data());
+    auto t_gwhh = make_tensor_ptr({NB, H}, grad_w_hh.data());
+    auto t_gbih = make_tensor_ptr({NB}, grad_b_ih.data());
+    auto t_gbhh = make_tensor_ptr({NB}, grad_b_hh.data());
 
     EValue ev[] = {
         EValue(*t_go),
@@ -140,25 +136,28 @@ int main() {
         static_cast<uint32_t>(temp_buf.size()), temp_buf.data());
     KernelRuntimeContext ctx(/*event_tracer=*/nullptr, &temp_alloc);
     fn(ctx, Span<EValue*>(args, 17));
+    if (ctx.failure_state() != executorch::runtime::Error::Ok) {
+      std::fprintf(stderr,
+                   "FAIL: case=%s kernel rejected the call (error %d)\n",
+                   cs.name, static_cast<int>(ctx.failure_state()));
+      ++failures;
+      continue;
+    }
 
     failures |= compare(cs.name, "grad_input", grad_input.data(),
                         cs.grad_input, n_in);
     failures |= compare(cs.name, "grad_h0", grad_h0.data(), cs.grad_h0, n_bh);
     failures |= compare(cs.name, "grad_c0", grad_c0.data(), cs.grad_c0, n_bh);
     failures |= compare(cs.name, "grad_w_ih", grad_w_ih.data(), cs.grad_w_ih,
-                        n_b * I);
+                        n_wih);
     failures |= compare(cs.name, "grad_w_hh", grad_w_hh.data(), cs.grad_w_hh,
-                        n_b * H);
-    if (cs.has_bias) {
-      failures |= compare(cs.name, "grad_b_ih", grad_b_ih.data(), cs.grad_b_ih,
-                          n_b);
-      failures |= compare(cs.name, "grad_b_hh", grad_b_hh.data(), cs.grad_b_hh,
-                          n_b);
-    } else {
-      // Absent bias => the op still has to fill these (always-finite outputs).
-      failures |= filled_not_nan(cs.name, "grad_b_ih", grad_b_ih.data(), n_b);
-      failures |= filled_not_nan(cs.name, "grad_b_hh", grad_b_hh.data(), n_b);
-    }
+                        n_whh);
+    // Every case compares, including absent biases: the op returns zeros there,
+    // matching the AOT reference (not merely "some finite number").
+    failures |= compare(cs.name, "grad_b_ih", grad_b_ih.data(), cs.grad_b_ih,
+                        n_b);
+    failures |= compare(cs.name, "grad_b_hh", grad_b_hh.data(), cs.grad_b_hh,
+                        n_b);
   }
 
   if (failures == 0) {

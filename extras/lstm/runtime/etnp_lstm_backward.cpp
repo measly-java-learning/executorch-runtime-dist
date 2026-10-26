@@ -100,6 +100,17 @@ lstm_backward_out(
                             b_hh->dim() == 1 && b_hh->size(0) == 4 * H,
                     InvalidArgument, ret);
   }
+  // The kernel writes every output as float; a non-fp32 output buffer would
+  // abort inside mutable_data_ptr<float>() (or write at the wrong stride).
+  ET_KERNEL_CHECK(ctx,
+                  grad_input.scalar_type() == ScalarType::Float &&
+                      grad_h0.scalar_type() == ScalarType::Float &&
+                      grad_c0.scalar_type() == ScalarType::Float &&
+                      grad_w_ih.scalar_type() == ScalarType::Float &&
+                      grad_w_hh.scalar_type() == ScalarType::Float &&
+                      grad_b_ih.scalar_type() == ScalarType::Float &&
+                      grad_b_hh.scalar_type() == ScalarType::Float,
+                  InvalidArgument, ret);
 
   const SizesType gi_sz[3] = {static_cast<SizesType>(T),
                               static_cast<SizesType>(B),
@@ -136,9 +147,10 @@ lstm_backward_out(
   const size_t BH = static_cast<size_t>(B) * static_cast<size_t>(H);
   const size_t TBH = static_cast<size_t>(T) * BH;
   const size_t col = 4 * static_cast<size_t>(H);
-  // Scratch: h_prev[T], c_prev[T], i,f,g,o (post-activation) [T], c_t[T],
-  // then dh [B,H], dc [B,H], dgate [B,4H].
-  const size_t scratch_floats = 7 * TBH + 2 * BH + static_cast<size_t>(B) * col;
+  // Scratch: h_prev[T], c_prev[T], i,f,g,o (post-activation) [T], tanh(c_t)[T],
+  // then dh [B,H], dc [B,H], dgate [B,4H], db [4H].
+  const size_t scratch_floats =
+      7 * TBH + 2 * BH + static_cast<size_t>(B) * col + col;
   auto scratch_r = ctx.allocate_temp(scratch_floats * sizeof(float));
   ET_KERNEL_CHECK(ctx, scratch_r.ok(), MemoryAllocationFailed, ret);
   float* scratch = static_cast<float*>(scratch_r.get());
@@ -148,10 +160,11 @@ lstm_backward_out(
   float* gate_f = gate_i + TBH;
   float* gate_g = gate_f + TBH;
   float* gate_o = gate_g + TBH;
-  float* cell_t = gate_o + TBH;
-  float* dh = cell_t + TBH;
+  float* tanh_c = gate_o + TBH;            // tanh(c_t), reused by the sweep
+  float* dh = tanh_c + TBH;
   float* dc = dh + BH;
   float* dgate = dc + BH;
+  float* db = dgate + static_cast<size_t>(B) * col;
 
   const float* in = input.const_data_ptr<float>();
   const float* wi = w_ih.const_data_ptr<float>();
@@ -171,7 +184,7 @@ lstm_backward_out(
     float* f_t = gate_f + static_cast<size_t>(t) * BH;
     float* g_t = gate_g + static_cast<size_t>(t) * BH;
     float* o_t = gate_o + static_cast<size_t>(t) * BH;
-    float* c_t = cell_t + static_cast<size_t>(t) * BH;
+    float* tc_t = tanh_c + static_cast<size_t>(t) * BH;
     float* h_next = (t + 1 < T) ? h_prev + static_cast<size_t>(t + 1) * BH
                                 : nullptr;
     float* c_next = (t + 1 < T) ? c_prev + static_cast<size_t>(t + 1) * BH
@@ -212,13 +225,14 @@ lstm_backward_out(
         const float gv = std::tanh(sg);
         const float ov = sigmoidf(so);
         const float cv = fv * cb[j] + iv * gv;
+        const float tc = std::tanh(cv);
         i_t[ob + j] = iv;
         f_t[ob + j] = fv;
         g_t[ob + j] = gv;
         o_t[ob + j] = ov;
-        c_t[ob + j] = cv;
+        tc_t[ob + j] = tc;
         if (h_next) {
-          h_next[ob + j] = ov * std::tanh(cv);
+          h_next[ob + j] = ov * tc;
           c_next[ob + j] = cv;
         }
       }
@@ -228,8 +242,8 @@ lstm_backward_out(
   // ---- reverse sweep --------------------------------------------------------
   float* gwih = grad_w_ih.mutable_data_ptr<float>();
   float* gwhh = grad_w_hh.mutable_data_ptr<float>();
-  float* gb = grad_b_ih.mutable_data_ptr<float>();
   float* gin = grad_input.mutable_data_ptr<float>();
+  float* gb = db;   // bias sum; written out only for the biases that exist
   std::memset(gwih, 0, col * I * sizeof(float));
   std::memset(gwhh, 0, col * H * sizeof(float));
   std::memset(gb, 0, col * sizeof(float));
@@ -253,7 +267,7 @@ lstm_backward_out(
     const float* f_t = gate_f + static_cast<size_t>(t) * BH;
     const float* g_t = gate_g + static_cast<size_t>(t) * BH;
     const float* o_t = gate_o + static_cast<size_t>(t) * BH;
-    const float* c_t = cell_t + static_cast<size_t>(t) * BH;
+    const float* tc_t = tanh_c + static_cast<size_t>(t) * BH;
     const float* go_t = go + static_cast<size_t>(t) * BH;
     float* gin_t = gin + static_cast<size_t>(t) * B * I;
 
@@ -265,9 +279,9 @@ lstm_backward_out(
       for (int64_t j = 0; j < H; ++j) {
         const size_t p = ob + j;
         const float iv = i_t[p], fv = f_t[p], gv = g_t[p], ov = o_t[p];
-        const float tanh_c = std::tanh(c_t[p]);
-        const float d_o = dh[p] * tanh_c * ov * (1.0f - ov);
-        dc[p] += dh[p] * ov * (1.0f - tanh_c * tanh_c);
+        const float tc = tc_t[p];
+        const float d_o = dh[p] * tc * ov * (1.0f - ov);
+        dc[p] += dh[p] * ov * (1.0f - tc * tc);
         const float d_i = dc[p] * gv * iv * (1.0f - iv);
         const float d_f = dc[p] * cp[p] * fv * (1.0f - fv);
         const float d_g = dc[p] * iv * (1.0f - gv * gv);
@@ -325,9 +339,22 @@ lstm_backward_out(
 
   std::memcpy(grad_h0.mutable_data_ptr<float>(), dh, BH * sizeof(float));
   std::memcpy(grad_c0.mutable_data_ptr<float>(), dc, BH * sizeof(float));
-  // b_ih and b_hh enter the pre-activation the same way; the gradient is the
-  // same sum for both (the caller discards it for an absent bias).
-  std::memcpy(grad_b_hh.mutable_data_ptr<float>(), gb, col * sizeof(float));
+  // b_ih and b_hh enter the pre-activation identically, so a *present* bias gets
+  // the same sum. An absent bias gets zeros, matching the AOT reference (the
+  // autograd wrapper discards it either way, but a direct .pte reader sees the
+  // same numbers eager torch would).
+  float* gbih_out = grad_b_ih.mutable_data_ptr<float>();
+  if (b_ih.has_value()) {
+    std::memcpy(gbih_out, gb, col * sizeof(float));
+  } else {
+    std::memset(gbih_out, 0, col * sizeof(float));
+  }
+  float* gbhh_out = grad_b_hh.mutable_data_ptr<float>();
+  if (b_hh.has_value()) {
+    std::memcpy(gbhh_out, gb, col * sizeof(float));
+  } else {
+    std::memset(gbhh_out, 0, col * sizeof(float));
+  }
   return ret;
 }
 

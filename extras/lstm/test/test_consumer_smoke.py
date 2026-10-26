@@ -2,6 +2,7 @@ import pathlib
 import sys
 
 import numpy as np
+import pytest
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]   # extras/lstm/test/ -> repo root
 if str(_REPO_ROOT) not in sys.path:
@@ -26,6 +27,19 @@ def test_train_check_skips_without_fixture(tmp_path):
     # prefix path here does not exist, so a build attempt would raise).
     got = consumer_smoke.train_check(tmp_path, tmp_path / "no-prefix", tmp_path)
     assert got == "skip"
+
+
+def test_train_check_partial_fixture_fails_by_name(tmp_path, capsys):
+    # A published package with only some training members is broken, not old:
+    # fail with the missing names instead of a bare FileNotFoundError (or a skip).
+    (tmp_path / "train.pte").write_bytes(b"PTE")
+    with pytest.raises(SystemExit) as exc:
+        consumer_smoke.train_check(tmp_path, tmp_path / "no-prefix", tmp_path)
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "partial training fixture set" in err
+    for m in ("train.ptd", "train_in.bin", "train_out.bin", "train_shape"):
+        assert m in err
 
 
 def test_within_tol():
