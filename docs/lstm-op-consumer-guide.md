@@ -79,9 +79,19 @@ optimizer runs outside; this op supplies the gradients).
 - **What is verified end to end:** the loss and every **parameter** gradient
   (`grad_w_ih`, `grad_w_hh`, `grad_b_ih`, `grad_b_hh`, and both `Linear` layers —
   the latter proves `grad_input`) match torch eager through the `.pte`/`.ptd` round
-  trip. `grad_h0`/`grad_c0` are computed and covered by float64 gradcheck and the
-  C++ kernel unit test, but no shipped sample carries state across batches yet, so
-  they are not exercised through a `.pte`.
+  trip. A second round-trip test runs **two** executes in one process with a dense
+  in-place SGD update between them. `grad_h0`/`grad_c0` are computed and covered by
+  float64 gradcheck and the C++ kernel unit test, but no shipped sample carries
+  state across batches yet, so they are not exercised through a `.pte`.
+- **Mutable-weight cache caveat (forward op).** The forward kernel caches its
+  XNNPACK-packed projections keyed by the weight pointer, and decides whether to
+  repack from a fingerprint that samples only part of each weight/bias. In-place
+  training updates keep the pointer. A dense update changes a sampled element and
+  triggers a repack — that is what the two-step round trip pins — but an update
+  that leaves every sampled element unchanged (frozen/masked gate rows, a sparse
+  update) can reuse stale packing, and the backward op's recompute would then
+  disagree with the loss. Tracked in
+  [#66](https://github.com/measly-java-learning/executorch-runtime-dist/issues/66).
 - **Unoptimized on purpose.** The kernel is scalar C++, single-threaded, with no
   XNNPACK/Highway/threadpool: one forward recompute plus one reverse sweep, linear
   in T, sized for hundreds-to-thousands of parameters. It is a separate code path

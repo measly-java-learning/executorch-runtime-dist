@@ -33,7 +33,9 @@ Decision logic lives in `scripts/classify-gate.sh` (unit-tested in `test/classif
   the backward op landed, tier2 also runs `test_lstm_backward_aot.py` (float64 gradcheck,
   `nn.LSTM` agreement, inference-export invariance, joint-export proof) and the live
   **training round trip**: the joint `.pte` with external weights reproduces the loss and
-  every parameter gradient of torch eager.
+  every parameter gradient of torch eager — both for a single step and for two executes
+  with a dense in-place weight update between them (which pins the forward op's
+  packed-weight repack path; see #66 for the narrow case that is not pinned).
 - **full:** a faithful dry-run of the release build; green means the release tag will build.
 
 ## Reproduce locally
