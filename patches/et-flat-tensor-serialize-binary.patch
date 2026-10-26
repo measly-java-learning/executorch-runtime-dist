@@ -1,0 +1,59 @@
+# .ptd WRITER — make save_ptd report failures, and write binary on every platform.
+#
+# Every defect here is silent-success shaped:
+#
+#   1. WINDOWS CORRUPTION. save_ptd(const std::string&, ...) calls std::ofstream::open(path) with no
+#      std::ios::binary. Under MSVC's default text mode every 0x0A byte is written as 0x0D 0x0A, so
+#      a .ptd that is valid on POSIX (376 bytes in the spike) becomes 385 bytes and the runtime
+#      rejects it ("schema version 1048576 is newer..." or "named_data is nullptr, malformed PTD"),
+#      depending on the CRT. std::ios::binary is a no-op on POSIX, and the std::ostream& overload
+#      was already immune.
+#   2. NO OPEN CHECK. The path overload never checks is_open(), so a missing/read-only directory
+#      returns Error::Ok and leaves no checkpoint. A training loop finds out at resume time.
+#      Return Error::AccessFailed instead.
+#   3. NO WRITE CHECK. The stream overload returns Error::Ok unconditionally, so a full disk or a
+#      broken pipe also reports success. Flush before checking (bytes can still be buffered), and
+#      have the path overload re-check after close(): a small .ptd fits in the ofstream's buffer, so
+#      the real write(2) can happen inside close(). Both return Error::Internal on failure.
+#
+# No upstream issue or PR exists as of 2026-10-25 (checked open and closed; upstream main still has
+# the text-mode open and neither check). This is a behaviour fix, separate from the packaging patch
+# because it has a different lifetime: DROP THIS PATCH the day upstream adopts it or files one. See
+# docs/superpowers/specs/2026-10-25-ptd-writer-design.md.
+diff --git a/extension/flat_tensor/serialize/serialize.cpp b/extension/flat_tensor/serialize/serialize.cpp
+index ff9d568..7a4a5f3 100644
+--- a/extension/flat_tensor/serialize/serialize.cpp
++++ b/extension/flat_tensor/serialize/serialize.cpp
+@@ -47,9 +47,17 @@ runtime::Error save_ptd(
+     const size_t tensor_alignment) {
+   // Create File
+   std::ofstream file;
+-  file.open(path);
++  file.open(path, std::ios::binary);
++  if (!file.is_open()) {
++    return runtime::Error::AccessFailed;
++  }
+   runtime::Error e = save_ptd(file, tensor_map, tensor_alignment);
+   file.close();
++  // A small .ptd fits in the stream's buffer, so the real write(2) can happen inside close(). Do
++  // not report Ok for a checkpoint that was never flushed to disk.
++  if (e == runtime::Error::Ok && file.fail()) {
++    return runtime::Error::Internal;
++  }
+   return e;
+ }
+ 
+@@ -198,6 +206,13 @@ runtime::Error save_ptd(
+     }
+     i--;
+   }
++  // Pending bytes may not have reached the OS yet, so a write error that only appears at flush
++  // time is invisible unless we flush first. A failed write (disk full, broken pipe, permissions)
++  // must not be reported as a saved checkpoint.
++  out.flush();
++  if (!out) {
++    return runtime::Error::Internal;
++  }
+   return runtime::Error::Ok;
+ }
+ 

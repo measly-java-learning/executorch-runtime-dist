@@ -14,10 +14,14 @@
 # process-wide figure, which is only meaningful under Global sharing. Upstream's default is ON but
 # the comment above it says the opposite, so the value is one edit from flipping and taking the
 # meaning of a published consumer contract with it.
+# The flat-tensor and named-data-map extensions are pinned too: the .ptd reader/writer live behind
+# them (extension_flat_tensor_serialize is exported from the flat-tensor subdirectory), and the Linux
+# preset happens to enable both today, so inheriting them would let a preset edit silently drop the
+# writer while --print-flags and BUILDINFO still claimed what was built.
 # Source me.
 # Requires openvino.sh to be sourced (for ov_enabled_for_platform).
 common_cmake_flags() { # <platform>
-  local flags='-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXECUTORCH_BUILD_XNNPACK=ON -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON -DEXECUTORCH_XNNPACK_SHARED_WORKSPACE=ON'
+  local flags='-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DEXECUTORCH_BUILD_XNNPACK=ON -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON -DEXECUTORCH_XNNPACK_SHARED_WORKSPACE=ON -DEXECUTORCH_BUILD_EXTENSION_FLAT_TENSOR=ON -DEXECUTORCH_BUILD_EXTENSION_NAMED_DATA_MAP=ON'
   if ov_enabled_for_platform "${1:-}"; then
     flags="$flags -DEXECUTORCH_BUILD_OPENVINO=ON"
   fi

@@ -17,6 +17,20 @@
 #      devtools/etdump/CMakeLists.txt, guarded on EXECUTORCH_BUILD_DEVTOOLS so bare/logging stay
 #      unaffected. See docs/devtools-header-install-handover.md.
 #
+#   4. .ptd WRITER — upstream builds serialize.cpp into no CMake library (only the train_xor
+#      example compiles it), so a find_package(ExecuTorch) consumer has no save_ptd to link, and
+#      the flat-tensor reader headers are not installed at all. The patch exports
+#      extension_flat_tensor_serialize through ExecuTorchTargets and installs serialize.h,
+#      flat_tensor_header.h, flat_tensor_data_map.h and merged_data_map.h. See
+#      docs/superpowers/specs/2026-10-25-ptd-writer-design.md.
+#
+#   5. .ptd WRITER, WINDOWS BINARY MODE + FAILURE REPORTING — save_ptd(path, ...) opens its ofstream
+#      in text mode (MSVC doubles every 0x0A and writes a .ptd the runtime rejects), never checks
+#      is_open(), and the stream overload never checks the write state. One patch, because all
+#      three are the same silent-success bug: binary mode, Error::AccessFailed on a failed open,
+#      Error::Internal on a failed write. Destined for upstream; drop it the day upstream lands it.
+#      No upstream issue exists as of 2026-10-25.
+#
 # Idempotent by contract: build-runtime.sh re-runs against a persisted build tree and a checkout
 # that may already be patched. A patch that is already applied is success; a patch that does NOT
 # apply is a HARD ERROR, never a skip. A silently unapplied patch ships a runtime whose consumer
@@ -55,8 +69,10 @@ apply_patch() {
   return 1
 }
 
-echo ">> patching ET sources (workspace-size accounting, OpenVINO/Windows, devtools headers)"
+echo ">> patching ET sources (workspace-size accounting, OpenVINO/Windows, devtools headers, .ptd writer)"
 apply_patch "$XNN_DIR" "$ROOT/patches/xnnpack-workspace-size-accessor.patch"
 apply_patch "$ET_SRC"  "$ROOT/patches/et-xnnpack-workspace-size.patch"
 apply_patch "$ET_SRC"  "$ROOT/patches/et-openvino-windows.patch"
 apply_patch "$ET_SRC"  "$ROOT/patches/et-devtools-headers.patch"
+apply_patch "$ET_SRC"  "$ROOT/patches/et-flat-tensor-serialize.patch"
+apply_patch "$ET_SRC"  "$ROOT/patches/et-flat-tensor-serialize-binary.patch"

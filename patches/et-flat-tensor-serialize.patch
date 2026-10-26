@@ -1,0 +1,67 @@
+diff --git a/extension/flat_tensor/serialize/CMakeLists.txt b/extension/flat_tensor/serialize/CMakeLists.txt
+index 1909bd4..cc08000 100644
+--- a/extension/flat_tensor/serialize/CMakeLists.txt
++++ b/extension/flat_tensor/serialize/CMakeLists.txt
+@@ -67,3 +67,44 @@ generate_flat_tensor_schema("${scalar_type_schema_srcs}" "scalar_type_schema")
+ set(flat_tensor_schema_srcs flat_tensor.fbs)
+ generate_flat_tensor_schema("${flat_tensor_schema_srcs}" "flat_tensor_schema")
+ add_dependencies(flat_tensor_schema scalar_type_schema)
++
++# .ptd WRITER. Upstream compiles serialize.cpp into no CMake library (only the train_xor example
++# lists it in TRAIN_XOR_SRCS), so nothing a find_package(ExecuTorch) consumer links defines
++# save_ptd. Export it as an ordinary ExecuTorch extension target. flat_tensor_schema supplies the
++# generated schema headers, the flatbuffers include and FLATBUFFERS_MAX_ALIGNMENT; it is
++# BUILD_INTERFACE-only because it lives in no export set, and CMake would otherwise carry the
++# private link into the exported archive as $<LINK_ONLY:flat_tensor_schema> and reject it.
++add_library(extension_flat_tensor_serialize ${EXECUTORCH_ROOT}/extension/flat_tensor/serialize/serialize.cpp)
++target_link_libraries(
++  extension_flat_tensor_serialize
++  PUBLIC extension_flat_tensor
++  PRIVATE $<BUILD_INTERFACE:flat_tensor_schema>
++)
++target_include_directories(
++  extension_flat_tensor_serialize PUBLIC ${_common_include_directories}
++)
++target_compile_options(
++  extension_flat_tensor_serialize PUBLIC ${_common_compile_options}
++)
++
++# Install libraries
++install(
++  TARGETS extension_flat_tensor_serialize
++  EXPORT ExecuTorchTargets
++  DESTINATION ${CMAKE_INSTALL_LIBDIR}
++  INCLUDES
++  DESTINATION ${_common_include_directories}
++)
++
++# Headers a .ptd consumer needs. serialize.h is the writer API; flat_tensor_header.h is the file
++# format accessor (segment offsets, base offset) that pairs with it; flat_tensor_data_map.h is one
++# level up and declares the reader the writer's output is loaded through. Installed under
++# include/executorch/... at their source-relative paths, where the #includes already expect them.
++install(
++  FILES serialize.h flat_tensor_header.h
++  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/executorch/extension/flat_tensor/serialize
++)
++install(
++  FILES ${CMAKE_CURRENT_SOURCE_DIR}/../flat_tensor_data_map.h
++  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/executorch/extension/flat_tensor
++)
+diff --git a/extension/named_data_map/CMakeLists.txt b/extension/named_data_map/CMakeLists.txt
+index a4ad208..d8901ae 100644
+--- a/extension/named_data_map/CMakeLists.txt
++++ b/extension/named_data_map/CMakeLists.txt
+@@ -40,6 +40,13 @@ install(
+   DESTINATION ${_common_include_directories}
+ )
+ 
++# .ptd WRITER. MergedDataMap backs the Module(pte, {ptd, ...}) constructor, so a consumer that
++# reads more than one external-data file needs this header installed next to the library.
++install(
++  FILES merged_data_map.h
++  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/executorch/extension/named_data_map
++)
++
+ # Add tests if testing is enabled
+ if(BUILD_TESTING)
+   add_subdirectory(test)
