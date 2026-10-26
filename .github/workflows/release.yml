@@ -314,6 +314,12 @@ jobs:
   #
   # `pin` needs these jobs, so a failing gate blocks the release even though attestation already
   # ran in `build`.
+  #
+  # Tradeoff worth knowing: job-level `needs` waits for the WHOLE `build` matrix, and a failure in
+  # any leg skips every gate leg, including those whose prefix built fine. Only ptd-fixtures
+  # (linux-x86_64/logging) is a genuine cross-leg dependency. GitHub needs edges are job-scoped, so
+  # the alternative is a separate fixture job that pays the ~15 min AOT install on its own; keeping
+  # the coarse edge is the cheaper, simpler trade.
   ptd-gate:
     needs: [setup, build]
     runs-on: ${{ matrix.combo.runs_on }}
@@ -386,6 +392,8 @@ jobs:
           [ -f "dist/$name" ] || { echo "::error::expected dist/$name"; ls -l dist; exit 1; }
           mkdir -p prefix
           tar -xzf "dist/$name" -C prefix --strip-components=1
+          [ -f prefix/lib/cmake/ExecuTorch/executorch-config.cmake ] \
+            || { echo "::error::unpacked prefix is not an ET install"; exit 1; }
       - name: .ptd writer round trip
         shell: pwsh
         run: |

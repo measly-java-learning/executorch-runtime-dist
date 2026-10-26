@@ -146,7 +146,9 @@ int main(int argc, char** argv) {
           "FAIL: %s rejected: layout error %d\n",
           c.key.c_str(),
           static_cast<int>(layout.error()));
-      return 1;
+      // Keep going: one rejected dtype must not hide the status of every later one.
+      ++failures;
+      continue;
     }
     auto data = map->get_data(c.key);
     if (!data.ok()) {
@@ -154,7 +156,8 @@ int main(int argc, char** argv) {
           "FAIL: %s rejected: data error %d\n",
           c.key.c_str(),
           static_cast<int>(data.error()));
-      return 1;
+      ++failures;
+      continue;
     }
 
     std::vector<int32_t> got_sizes(layout->sizes().begin(), layout->sizes().end());

@@ -104,6 +104,10 @@ def main() -> int:
             fails.append(f"{job} unpacks a glob that can match several tarballs")
         if "tarball_name" not in code:
             fails.append(f"{job} must select the runtime tarball by the naming SSOT")
+        # A mis-rooted or wrong tarball must fail here with a clear ::error, not later as a
+        # find_package failure inside the gate build.
+        if "executorch-config.cmake" not in code:
+            fails.append(f"{job} must assert the unpacked prefix is an ET install")
 
     # The fixture mint must sit on the leg that has torch/executorch installed, and the artifact
     # name the gates download must match what the build leg uploads.

@@ -63,7 +63,7 @@ assert_contains "$code" "std::ios::binary" "roundtrip opens the stream in binary
 
 # The review-focus checks must exist by name, so a rewrite cannot quietly drop one.
 for name in cross_writer_content overwrite_truncates missing_key_fails alignment_128 reload_merged \
-            write_failure_reported unopenable_path; do
+            write_failure_reported unopenable_path expected_keys; do
   assert_contains "$src" "\"$name\"" "roundtrip check $name present"
 done
 assert_contains "$src" "dir with space" "roundtrip writes into a directory with a space"

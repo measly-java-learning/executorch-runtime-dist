@@ -112,8 +112,9 @@ The vendored patch makes both overloads honest, so a checkpoint is never silentl
 
 - the path overload returns `Error::AccessFailed` when the file cannot be opened (missing parent
   directory, read-only directory, permissions);
-- the stream overload returns `Error::Internal` when any write fails (full disk, broken pipe); the
-  path overload propagates it.
+- the stream overload returns `Error::Internal` when any write fails (full disk, broken pipe); it
+  flushes before checking, and the path overload re-checks the stream after `close()`, so an error
+  that only surfaces at flush/close time is still reported.
 
 Always check the returned `Error`. Creating the target directory is still the caller's job — it
 just fails loudly now instead of returning `Ok` with no file:

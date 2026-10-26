@@ -122,7 +122,8 @@ fix patch gets dropped the day upstream lands one. No upstream issue exists (che
 open and closed); if one is filed later, cite it in the patch header and in
 `patch-et-sources.sh`'s concern list. The same patch fixes the silent-success paths around it: the
 path overload returns `Error::AccessFailed` when the file cannot be opened, and the stream overload
-returns `Error::Internal` when a write fails, so a lost checkpoint is never reported as `Ok`.
+returns `Error::Internal` when a write fails — flushing first, and with the path overload re-checking
+after `close()`, since a small file's writes can only reach the OS there.
 
 ### 3. Flags
 

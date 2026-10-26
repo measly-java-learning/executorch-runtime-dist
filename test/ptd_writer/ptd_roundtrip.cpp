@@ -31,6 +31,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -160,14 +161,23 @@ bool match(const std::vector<float>& got, const std::vector<float>& want) {
 }
 
 // Runs the model on the fixture input and returns the outputs, or empty on any error.
-std::vector<float> run(Module& module) {
+std::vector<float> run(Module& module, const std::vector<float>& input_values) {
   auto input = executorch::extension::make_tensor_ptr(
-      {1, 3}, std::vector<float>{1.0f, 1.0f, 1.0f});
+      {1, static_cast<int32_t>(input_values.size())}, input_values);
   auto result = module.forward(input);
   if (!result.ok() || result.get().empty()) {
     return {};
   }
-  const auto& tensor = result.get()[0].toTensor();
+  // toTensor()/const_data_ptr<float>() ET_CHECK-abort on the wrong type. Report a FAIL line
+  // instead of SIGABRT if the fixture or exporter changes shape.
+  const auto& value = result.get()[0];
+  if (!value.isTensor()) {
+    return {};
+  }
+  const auto& tensor = value.toTensor();
+  if (tensor.scalar_type() != ScalarType::Float) {
+    return {};
+  }
   const float* data = tensor.const_data_ptr<float>();
   return std::vector<float>(data, data + tensor.numel());
 }
@@ -218,6 +228,9 @@ int main(int argc, char** argv) {
   const std::string pte = fixtures + "/linear.pte";
   const std::string exporter_ptd = fixtures + "/linear.ptd";
   const std::string reference_ptd = fixtures + "/linear_x2.ptd";
+  // Use the same input the emitter wrote the goldens for. Hardcoding it here would let the two
+  // drift silently.
+  const std::vector<float> input_values = floats_from_file(fixtures + "/in.bin");
 
   std::error_code ec;
   fs::create_directories(out_dir, ec);
@@ -229,7 +242,9 @@ int main(int argc, char** argv) {
   // 1. Baseline: the exporter's .ptd is readable and reproduces the eager golden.
   {
     Module module(pte, exporter_ptd);
-    check(match(run(module), floats_from_file(fixtures + "/out_base.bin")), "baseline");
+    check(
+        match(run(module, input_values), floats_from_file(fixtures + "/out_base.bin")),
+        "baseline");
   }
 
   // 2. Read the exporter's .ptd, double every tensor, and write it back through both overloads.
@@ -237,6 +252,22 @@ int main(int argc, char** argv) {
   if (!load_blobs(exporter_ptd, doubled)) {
     check(false, "write_both_overloads", "could not read " + exporter_ptd);
     return 1;
+  }
+  // The exporter must externalise the constants under the names the .pte references. If a future
+  // exporter inlines them, this file would be empty or missing keys and the fixture would prove
+  // nothing; the per-key comparisons below also assume these keys exist.
+  {
+    std::set<std::string> keys;
+    for (const auto& [key, blob] : doubled) {
+      keys.insert(key);
+    }
+    const std::set<std::string> expected{"lin.weight", "lin.bias"};
+    if (!check(
+            keys == expected,
+            "expected_keys",
+            "exporter .ptd keys are " + std::to_string(keys.size()))) {
+      return 1;
+    }
   }
   for (auto& [key, blob] : doubled) {
     if (blob.type != ScalarType::Float) {
@@ -286,11 +317,11 @@ int main(int argc, char** argv) {
   // 3. Both Module constructors reload the written file to the doubled output.
   {
     Module module(pte, written_path);
-    check(match(run(module), floats_from_file(fixtures + "/out_x2.bin")), "reload_single");
+    check(match(run(module, input_values), floats_from_file(fixtures + "/out_x2.bin")), "reload_single");
   }
   {
     Module module(pte, std::vector<std::string>{written_path});
-    check(match(run(module), floats_from_file(fixtures + "/out_x2.bin")), "reload_merged");
+    check(match(run(module, input_values), floats_from_file(fixtures + "/out_x2.bin")), "reload_merged");
   }
 
   // 4. Cross-writer content: the Python-written reference for the same doubled weights. Compare
@@ -344,7 +375,7 @@ int main(int argc, char** argv) {
     const size_t final_size = fs::file_size(path, ec);
 
     Module module(pte, path);
-    bool reloads = match(run(module), floats_from_file(fixtures + "/out_x2.bin"));
+    bool reloads = match(run(module, input_values), floats_from_file(fixtures + "/out_x2.bin"));
     check(
         first == Error::Ok && second == Error::Ok && larger_size > final_size &&
             final_size == read_file(written_stream).size() && reloads,
@@ -363,7 +394,7 @@ int main(int argc, char** argv) {
 
     Module module(pte, path);
     auto input = executorch::extension::make_tensor_ptr(
-        {1, 3}, std::vector<float>{1.0f, 1.0f, 1.0f});
+        {1, static_cast<int32_t>(input_values.size())}, input_values);
     auto result = module.forward(input);
     check(
         saved == Error::Ok && !result.ok(),

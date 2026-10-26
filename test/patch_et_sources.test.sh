@@ -117,6 +117,8 @@ assert_contains "$s" "file.open(path, std::ios::binary);" "save_ptd(path) opens 
 assert_eq "$(grep -c 'file.open(path);' "$tmp/et/extension/flat_tensor/serialize/serialize.cpp")" "0" "text-mode open is gone"
 assert_contains "$s" "!file.is_open()" "save_ptd(path) checks the open"
 assert_contains "$s" "Error::AccessFailed" "a failed open returns AccessFailed"
+assert_contains "$s" "file.fail()" "the path overload re-checks after close()"
+assert_contains "$s" "out.flush();" "the stream overload flushes before checking"
 assert_contains "$s" "if (!out)" "the stream overload checks the write state"
 assert_contains "$s" "Error::Internal" "a failed write returns Internal"
 

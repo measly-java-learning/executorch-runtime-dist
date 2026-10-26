@@ -72,13 +72,6 @@ def _export(model, example):
     return pte.getvalue(), ptd
 
 
-def _named_data_keys(ptd: bytes) -> set[str]:
-    from executorch.exir._serialize._cord import Cord
-    from executorch.extension.flat_tensor.serialize.serialize import FlatTensorSerializer
-
-    return set(FlatTensorSerializer().deserialize(Cord(ptd)).named_data)
-
-
 def main(outdir: pathlib.Path) -> None:
     import torch
 
@@ -100,17 +93,14 @@ def main(outdir: pathlib.Path) -> None:
     pte, ptd = _export(base, example)
     _, ptd_x2 = _export(doubled, example)
 
-    # Externalisation is the whole point of linear.ptd. If the exporter inlined the constants,
-    # the .ptd would be empty or missing these keys and the gate would compare nothing.
-    keys = _named_data_keys(ptd)
-    keys_x2 = _named_data_keys(ptd_x2)
-    if not {"lin.weight", "lin.bias"} <= keys:
+    # Externalisation and key identity are asserted on the C++ side (ptd_roundtrip's
+    # `expected_keys` and `cross_writer_content`), through the installed public reader. Listing the
+    # keys here would mean importing ET's private `Cord` module just to deserialize, which breaks
+    # fixture minting on any pin bump that renames it. What this script can cheaply guarantee is
+    # that both exports actually produced an external-data file.
+    if not pte or not ptd or not ptd_x2:
         raise SystemExit(
-            f"emit-ptd-fixtures: .ptd is missing the externalised constants: {sorted(keys)}"
-        )
-    if keys != keys_x2:
-        raise SystemExit(
-            f"emit-ptd-fixtures: exports disagree on keys: {sorted(keys)} vs {sorted(keys_x2)}"
+            f"emit-ptd-fixtures: empty output (pte={len(pte)}, ptd={len(ptd)}, x2={len(ptd_x2)})"
         )
 
     outdir.mkdir(parents=True, exist_ok=True)
@@ -130,7 +120,7 @@ def main(outdir: pathlib.Path) -> None:
 
     print(
         f"emit-ptd-fixtures: wrote {len(pte)} byte .pte and {len(ptd)}/{len(ptd_x2)} byte .ptd "
-        f"files to {outdir}; keys {sorted(keys)}"
+        f"files to {outdir}"
     )
 
 
