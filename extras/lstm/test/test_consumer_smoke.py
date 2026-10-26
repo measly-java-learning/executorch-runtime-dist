@@ -14,6 +14,20 @@ def test_parse_shape_roundtrip(tmp_path):
     assert consumer_smoke.parse_shape(tmp_path / "shape") == {"T": 5, "B": 2, "I": 4, "H": 3}
 
 
+def test_parse_train_shape(tmp_path):
+    (tmp_path / "train_shape").write_text(
+        "TRAIN_T=8\nTRAIN_B=2\nTRAIN_I=4\nTRAIN_H=16\nTRAIN_O=1\nTRAIN_NOUT=18\n")
+    assert consumer_smoke.parse_train_shape(tmp_path / "train_shape") == {
+        "T": 8, "B": 2, "I": 4, "H": 16, "O": 1}
+
+
+def test_train_check_skips_without_fixture(tmp_path):
+    # Empty fixtures dir: the check must SKIP without attempting a build (the
+    # prefix path here does not exist, so a build attempt would raise).
+    got = consumer_smoke.train_check(tmp_path, tmp_path / "no-prefix", tmp_path)
+    assert got == "skip"
+
+
 def test_within_tol():
     a = np.array([1.0, 2.0, 3.0], dtype=np.float32)
     assert consumer_smoke.within_tol(a, a + 1e-6)
