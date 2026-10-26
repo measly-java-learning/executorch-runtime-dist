@@ -2,7 +2,10 @@
 
 Each subdirectory is one op bundle (LSTM is extra #1): `runtime/` (torch-free C++
 kernel + registrar), `aot/` (torch export definition), `test/` (mandatory tests),
-and `extra.yaml` (the single source of truth for the op name + schema).
+and `extra.yaml` (the single source of truth for the op names + schemas).
+A bundle may declare more than one op: `lstm` ships the inference forward
+(`etnp::lstm` / `etnp::lstm.out`) and its training backward
+(`etnp::lstm_backward` / `etnp::lstm_backward.out`).
 
 ## Building the runtime archive
 `build-runtime.sh` builds `extras/` against the installed ExecuTorch prefix after

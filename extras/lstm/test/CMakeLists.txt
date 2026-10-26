@@ -13,3 +13,12 @@ target_link_libraries(lstm_runner PRIVATE
   executorch optimized_native_cpu_ops_lib xnnpack_backend
   extension_module_static extension_data_loader extension_tensor)
 etnp_extras_whole_archive(lstm_runner)   # shipped helper wraps etnp_ops_lstm
+
+# Training runner: same consumer contract, plus the flat-tensor (.ptd) data loader
+# that carries the external mutable weights.
+add_executable(lstm_train_runner lstm_train_runner.cpp)
+target_link_libraries(lstm_train_runner PRIVATE
+  executorch optimized_native_cpu_ops_lib xnnpack_backend
+  extension_module_static extension_data_loader extension_tensor
+  extension_flat_tensor)
+etnp_extras_whole_archive(lstm_train_runner)

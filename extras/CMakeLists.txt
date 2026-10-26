@@ -51,10 +51,12 @@ foreach(_d IN LISTS _op_dirs)
     if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/${_d}/test")
       message(FATAL_ERROR "extra '${_d}' has no test/ dir — every extra must ship a test")
     endif()
-    # TODO(op#2): reset ETNP_EXTRAS_EXPECT_TUS to "" before this add_subdirectory so a
-    # future op that forgets its PARENT_SCOPE set can't inherit the prior op's TUs; and
-    # generalize the test wiring below (currently the lstm-specific `if(TARGET
-    # etnp_ops_lstm)` block) + the "test/ dir exists" check into per-op handling.
+    # Reset per op so a bundle that forgets its PARENT_SCOPE set cannot inherit the
+    # previous bundle's registrar TUs (the nm-guard would then pass for the wrong
+    # reason). TODO(op#2): generalize the test wiring below (currently the
+    # lstm-specific `if(TARGET etnp_ops_lstm)` block) + the "test/ dir exists"
+    # check into per-op handling.
+    set(ETNP_EXTRAS_EXPECT_TUS "")
     add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/${_d}/runtime" "${CMAKE_BINARY_DIR}/${_d}")
     list(APPEND ETNP_EXTRAS_LIBS "etnp_ops_${_d}")
     list(APPEND ETNP_EXTRAS_ALL_EXPECT_TUS ${ETNP_EXTRAS_EXPECT_TUS})
@@ -83,6 +85,17 @@ if(TARGET etnp_ops_lstm)
   add_executable(lstm_kernel_test lstm/test/lstm_kernel_test.cpp)
   target_link_libraries(lstm_kernel_test PRIVATE
     ${_ET_LINK} "$<LINK_LIBRARY:WHOLE_ARCHIVE,etnp_ops_lstm>")
+  add_executable(lstm_backward_kernel_test lstm/test/lstm_backward_kernel_test.cpp)
+  target_link_libraries(lstm_backward_kernel_test PRIVATE
+    ${_ET_LINK} "$<LINK_LIBRARY:WHOLE_ARCHIVE,etnp_ops_lstm>")
+  # Actually RUN them as part of the build: a kernel test that is only compiled is
+  # decoration. Guarded because a cross build cannot execute its output.
+  if(NOT CMAKE_CROSSCOMPILING)
+    add_custom_command(TARGET lstm_kernel_test POST_BUILD
+      COMMAND $<TARGET_FILE:lstm_kernel_test>)
+    add_custom_command(TARGET lstm_backward_kernel_test POST_BUILD
+      COMMAND $<TARGET_FILE:lstm_backward_kernel_test>)
+  endif()
 endif()
 
 # --- static registration guard (every build, incl. cross-compiled targets) ---

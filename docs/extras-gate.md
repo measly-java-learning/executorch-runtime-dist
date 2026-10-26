@@ -23,8 +23,19 @@ Decision logic lives in `scripts/classify-gate.sh` (unit-tested in `test/classif
   the static-registration/whole-archive guard passed.
 - **tier1 `consumer smoke MISMATCH`:** either a real kernel regression **or** an
   *intentional* numeric change. Never loosen the tolerance — **re-bless** (below).
+- **tier1 training check:** `consumer_smoke.py` also runs the training member of the
+  fixture set (joint `.pte` + external `.ptd` → loss and parameter gradients). A
+  PUBLISHED fixture that predates `lstm_backward` has no `train.pte`; the check then
+  prints `consumer smoke SKIP training: ...` and exits 0 — an explicit skip, never a
+  silent pass and never a failure.
 - **tier2:** additionally proves AOT↔runtime agreement (the "exports fine / op-not-found
-  at runtime" class). Only tier2/full re-derive the `.pte` from your AOT source.
+  at runtime" class). Only tier2/full re-derive the `.pte` from your AOT source. Since
+  the backward op landed, tier2 also runs `test_lstm_backward_aot.py` (float64 gradcheck,
+  `nn.LSTM` agreement, inference-export invariance, joint-export proof) and the live
+  **training round trip**: the joint `.pte` with external weights reproduces the loss and
+  every parameter gradient of torch eager — both for a single step and for two executes
+  with a dense in-place weight update between them (which pins the forward op's
+  packed-weight repack path; see #66 for the narrow case that is not pinned).
 - **full:** a faithful dry-run of the release build; green means the release tag will build.
 
 ## Reproduce locally
@@ -42,11 +53,15 @@ For the full build / live round-trip, mount an ExecuTorch checkout and run
 design/handover docs).
 
 ## Re-blessing fixtures (intentional numeric or AOT change)
-The published `.pte`/golden come from `extras/lstm/aot/lstm_case.py` via
-`extras/lstm/aot/emit_fixtures.py`. To change them:
-1. Update `lstm_case.py` (and the kernel/AOT as needed).
+The published `.pte`/golden come from `extras/lstm/aot/lstm_case.py` (forward) and
+`extras/lstm/aot/lstm_train_case.py` (training), both emitted by
+`extras/lstm/aot/emit_fixtures.py`. The training members (`train.pte`, `train.ptd`,
+`train_in.bin`, `train_out.bin`, `train_shape`) are additive; the forward members stay
+byte-identical unless the forward changes. To change them:
+1. Update the case module(s) (and the kernel/AOT as needed).
 2. In an env with torch + executorch installed against the pinned ET, run the **live**
-   round-trip to confirm agreement: `ETNP_PREFIX=<prefix> pytest extras/lstm/test/test_lstm_roundtrip.py`.
+   round-trip to confirm agreement: `ETNP_PREFIX=<prefix> pytest extras/lstm/test/test_lstm_roundtrip.py`
+   (this now covers the forward AND the training graph).
 3. Cut a release — the release build re-mints and publishes
    `etnp-lstm-fixtures-<etver>.tar.gz` from the same source. The next PR's tier1 then
    compares against the new golden.

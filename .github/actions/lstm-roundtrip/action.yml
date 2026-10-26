@@ -41,4 +41,5 @@ runs:
         et_aot_install_build_deps
         (cd "${{ inputs.executorch-src }}" && ./install_executorch.sh)
         pip install -r requirements/roundtrip.txt
-        ETNP_PREFIX="$prefix" python -m pytest extras/lstm/test/test_lstm_roundtrip.py -v
+        ETNP_PREFIX="$prefix" python -m pytest extras/lstm/test/test_lstm_roundtrip.py \
+          extras/lstm/test/test_lstm_backward_aot.py -v
