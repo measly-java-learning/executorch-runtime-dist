@@ -110,6 +110,19 @@ def test_no_bias_grads_are_none():
     assert grads[5] is None and grads[6] is None, grads
 
 
+def test_kernel_vectors_match_generator():
+    """The committed header is a generated artifact: regenerating must reproduce it."""
+    import subprocess
+    gen = _REPO_ROOT / "extras/lstm/aot/emit_backward_kernel_vectors.py"
+    out = subprocess.run([sys.executable, str(gen)], check=True,
+                         capture_output=True).stdout
+    committed = (_REPO_ROOT / "extras/lstm/test/lstm_backward_vectors.h").read_bytes()
+    assert out == committed, (
+        "lstm_backward_vectors.h is stale; re-run: python "
+        "extras/lstm/aot/emit_backward_kernel_vectors.py > "
+        "extras/lstm/test/lstm_backward_vectors.h")
+
+
 def test_inference_export_unchanged():
     pytest.importorskip("executorch")
     # build_case asserts etnp::lstm.out is present and no lstm_backward op
