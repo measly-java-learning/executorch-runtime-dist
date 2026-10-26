@@ -39,6 +39,55 @@ benchmarked (T,H)** (1.66×–9.78× across H∈{32,64,128}, T∈{16,64,256}), a
 shapes the naive path cannot complete (T=256,H=128 never finishes a 120s budget).
 The custom op is the default choice for the supported LSTM shape.
 
+## Training (`etnp::lstm_backward.out`)
+The same bundle also ships the backward op, so a model using `etnp::lstm` can be
+exported as a **joint forward+backward graph** and trained inside ExecuTorch (the
+optimizer runs outside; this op supplies the gradients).
+
+- **Name (frozen):** `etnp::lstm_backward.out` (functional `etnp::lstm_backward`).
+- **Schema:** the forward's inputs plus the incoming output gradients, returning seven
+  tensors — always seven, because ExecuTorch out-variants cannot return `None`:
+
+      lstm_backward(Tensor grad_output, Tensor? grad_hn, Tensor? grad_cn,
+                    Tensor input, Tensor h0, Tensor c0, Tensor w_ih, Tensor w_hh,
+                    Tensor? b_ih, Tensor? b_hh)
+        -> (grad_input, grad_h0, grad_c0, grad_w_ih, grad_w_hh,
+            grad_b_ih, grad_b_hh)
+
+  `grad_hn`/`grad_cn` are optional: `None` means zero (the common case where the
+  loss uses only `output`). An absent bias still gets a `[4H]` gradient tensor; the
+  autograd wrapper discards it so the torch side sees `None`.
+- **Export recipe** (proven in `extras/lstm/test/test_lstm_backward_aot.py` and the
+  live round-trip):
+
+      import extras.lstm.aot.etnp_lstm_op   # registers etnp::lstm AND its autograd
+      from torch.export.experimental import _export_forward_backward
+      from executorch.exir import ExecutorchBackendConfig, to_edge
+
+      ep = torch.export.export(model, example_inputs)   # forward returns the loss
+      joint = _export_forward_backward(ep)
+      et = to_edge(joint).to_executorch(
+          config=ExecutorchBackendConfig(external_mutable_weights=True))
+      et.save("train.pte")                     # .pte (serializes on first access)
+      et.write_tensor_data_to_file("<outdir>")  # external weights: one .ptd
+
+  Import `etnp_lstm_op` **before** exporting — the autograd formula is registered by
+  importing it, and without it `_export_forward_backward` cannot differentiate the
+  op. Load the pair with `executorch::extension::Module(pte, ptd)`; the program's
+  `__et_training_parameters_index_forward` method gives the boundary between the
+  loss+gradients outputs and the parameter outputs.
+- **What is verified end to end:** the loss and every **parameter** gradient
+  (`grad_w_ih`, `grad_w_hh`, `grad_b_ih`, `grad_b_hh`, and both `Linear` layers —
+  the latter proves `grad_input`) match torch eager through the `.pte`/`.ptd` round
+  trip. `grad_h0`/`grad_c0` are computed and covered by float64 gradcheck and the
+  C++ kernel unit test, but no shipped sample carries state across batches yet, so
+  they are not exercised through a `.pte`.
+- **Unoptimized on purpose.** The kernel is scalar C++, single-threaded, with no
+  XNNPACK/Highway/threadpool: one forward recompute plus one reverse sweep, linear
+  in T, sized for hundreds-to-thousands of parameters. It is a separate code path
+  and does not change forward speed or behaviour. Optimize if/when training users
+  need it.
+
 ## Cross-platform note
 The live round-trip test gates every *executable* CI target (today linux-x86_64 and
 linux-aarch64, both native runners). When macOS/Windows/arm64 targets gain runners,
