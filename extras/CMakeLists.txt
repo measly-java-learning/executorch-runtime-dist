@@ -85,6 +85,17 @@ if(TARGET etnp_ops_lstm)
   add_executable(lstm_kernel_test lstm/test/lstm_kernel_test.cpp)
   target_link_libraries(lstm_kernel_test PRIVATE
     ${_ET_LINK} "$<LINK_LIBRARY:WHOLE_ARCHIVE,etnp_ops_lstm>")
+  add_executable(lstm_backward_kernel_test lstm/test/lstm_backward_kernel_test.cpp)
+  target_link_libraries(lstm_backward_kernel_test PRIVATE
+    ${_ET_LINK} "$<LINK_LIBRARY:WHOLE_ARCHIVE,etnp_ops_lstm>")
+  # Actually RUN them as part of the build: a kernel test that is only compiled is
+  # decoration. Guarded because a cross build cannot execute its output.
+  if(NOT CMAKE_CROSSCOMPILING)
+    add_custom_command(TARGET lstm_kernel_test POST_BUILD
+      COMMAND $<TARGET_FILE:lstm_kernel_test>)
+    add_custom_command(TARGET lstm_backward_kernel_test POST_BUILD
+      COMMAND $<TARGET_FILE:lstm_backward_kernel_test>)
+  endif()
 endif()
 
 # --- static registration guard (every build, incl. cross-compiled targets) ---

@@ -27,6 +27,7 @@ add_custom_command(
 # #includes it) compiles — correct under Ninja parallel builds too.
 add_library(etnp_ops_lstm STATIC
   "${CMAKE_CURRENT_LIST_DIR}/etnp_lstm.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/etnp_lstm_backward.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/lstm_cell.cc"
   "${_gen_header}")
 set_property(TARGET etnp_ops_lstm PROPERTY POSITION_INDEPENDENT_CODE ON)
@@ -56,9 +57,12 @@ FetchContent_Declare(highway
 FetchContent_MakeAvailable(highway)
 target_link_libraries(etnp_ops_lstm PRIVATE hwy)
 
-# Registrar TU the nm-guard must find post whole-archive link. etnp_lstm.cpp
-# registers (register_kernel); lstm_cell.cc is an aux SIMD source (no registrar).
-set(ETNP_EXTRAS_EXPECT_TUS "_GLOBAL__sub_I_etnp_lstm.cpp" PARENT_SCOPE)
+# Registrar TUs the nm-guard must find post whole-archive link. etnp_lstm.cpp and
+# etnp_lstm_backward.cpp each register a kernel; lstm_cell.cc is an aux SIMD source
+# (no registrar).
+set(ETNP_EXTRAS_EXPECT_TUS
+  "_GLOBAL__sub_I_etnp_lstm.cpp"
+  "_GLOBAL__sub_I_etnp_lstm_backward.cpp" PARENT_SCOPE)
 
 # Install the archive + a public header carrying the op-name constants.
 install(TARGETS etnp_ops_lstm ARCHIVE DESTINATION lib)
