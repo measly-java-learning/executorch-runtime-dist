@@ -1,0 +1,5 @@
+# The hermetic unit suite (test/run.sh). The structural workflow checks under test/lib/*.py parse
+# YAML; that is the suite's only Python dependency. ubuntu-latest happens to ship python3-yaml
+# system-wide, but macOS runners and developer Macs (Homebrew Python, PEP 668) do not, so CI
+# installs this lock explicitly on every leg rather than relying on a runner image accident.
+pyyaml

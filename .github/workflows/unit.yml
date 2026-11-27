@@ -18,8 +18,21 @@ permissions:
 
 jobs:
   unit:
-    runs-on: ubuntu-latest      # no container: bash + coreutils + git + python or python3 is the whole dep set
+    # Both userlands: GNU (Linux, the build containers) and BSD (macOS, the macos-arm64 build host
+    # and developer Macs). The scripts under test run on both, and a GNU-only idiom (sed -i, nproc,
+    # wc -l padding) passes on Linux and breaks the other. macos-latest's /bin/bash is 3.2, which
+    # also gives require_bash4's failure path a real test (test/lib_portable.test.sh).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}   # no container: bash >= 4 + coreutils + git + python3 is the whole dep set
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install unit-suite deps (PyYAML, from the lock)
+        run: python -m pip install -r requirements/unit.txt
       - name: Run the hermetic unit suite
         run: bash test/run.sh

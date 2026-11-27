@@ -10,6 +10,7 @@
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/assert.sh"
+. "$here/../scripts/lib/portable.sh"
 script="$here/../scripts/patch-et-windows-byproducts.sh"
 
 tmp="$(mktemp -d)"
@@ -45,7 +46,7 @@ assert_eq "$?" "0" "second run is byte-identical to the first (true idempotency)
 # on a persisted checkout) must still get flatcc_ep fixed, without double-suffixing flatbuffers_ep.
 mk_tree "$tmp/partial"
 ptp="$tmp/partial/third-party/CMakeLists.txt"
-sed -i 's#BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc$#BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc.exe#' "$ptp"
+sed_inplace 's#BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc$#BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc.exe#' "$ptp"
 bash "$script" "$tmp/partial" >/dev/null 2>&1
 assert_eq "$?" "0" "partially-patched tree still succeeds"
 assert_contains "$(cat "$ptp")" 'BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatcc.exe' \
@@ -56,7 +57,7 @@ assert_eq "$(grep -c 'bin/flatc\.exe\.exe' "$ptp" || true)" "0" \
 # Drift: the flatcc_ep BUILD_BYPRODUCTS anchor is gone entirely -> hard error, not a silent no-op.
 mk_tree "$tmp/driftA"
 dtpA="$tmp/driftA/third-party/CMakeLists.txt"
-sed -i '/BUILD_BYPRODUCTS <INSTALL_DIR>\/bin\/flatcc$/d' "$dtpA"
+sed_inplace '/BUILD_BYPRODUCTS <INSTALL_DIR>\/bin\/flatcc$/d' "$dtpA"
 out="$(bash "$script" "$tmp/driftA" 2>&1)"
 assert_eq "$?" "1" "missing flatcc_ep BUILD_BYPRODUCTS anchor is a hard error"
 assert_contains "$out" "pin probably moved" "drift failure explains itself"
@@ -64,7 +65,7 @@ assert_contains "$out" "pin probably moved" "drift failure explains itself"
 # Drift: the -DFLATCC_INSTALL=ON anchor is gone -> hard error.
 mk_tree "$tmp/driftB"
 dtpB="$tmp/driftB/third-party/CMakeLists.txt"
-sed -i '/-DFLATCC_INSTALL=ON$/d' "$dtpB"
+sed_inplace '/-DFLATCC_INSTALL=ON$/d' "$dtpB"
 out="$(bash "$script" "$tmp/driftB" 2>&1)"
 assert_eq "$?" "1" "missing FLATCC_INSTALL=ON anchor is a hard error"
 

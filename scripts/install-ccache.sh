@@ -10,6 +10,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck source=lib/ccache.sh
 . "$ROOT/scripts/lib/ccache.sh"
+. "$ROOT/scripts/lib/portable.sh"
 
 prefix="${CCACHE_PREFIX_DIR:-/usr/local/bin}"
 target="$prefix/ccache"
@@ -28,7 +29,7 @@ else
   curl -fsSL -o "$work/$CCACHE_ARCHIVE" "$CCACHE_URL"
 fi
 
-actual="$(sha256sum "$work/$CCACHE_ARCHIVE" | cut -d' ' -f1)"
+actual="$(sha256_file "$work/$CCACHE_ARCHIVE" | cut -d' ' -f1)"
 if [ "$actual" != "$CCACHE_SHA256" ]; then
   echo "install-ccache.sh: SHA-256 MISMATCH for $CCACHE_ARCHIVE" >&2
   echo "  expected $CCACHE_SHA256" >&2

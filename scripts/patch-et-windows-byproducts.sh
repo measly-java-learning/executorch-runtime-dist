@@ -30,11 +30,12 @@
 set -euo pipefail
 ET_SRC="${1:?usage: patch-et-windows-byproducts.sh <et-src>}"
 [ -d "$ET_SRC" ] || { echo "patch-et-windows-byproducts.sh: no such tree: $ET_SRC" >&2; exit 1; }
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/portable.sh"
 TP="$ET_SRC/third-party/CMakeLists.txt"
 [ -f "$TP" ] || { echo "patch-et-windows-byproducts.sh: missing $TP" >&2; exit 1; }
 
 echo ">> patching flatc(c)_ep BUILD_BYPRODUCTS for WIN32 (.exe) -- upstream flatc/flatcc byproduct bug"
-sed -i -E 's#(BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatcc?)$#\1.exe#' "$TP"
+sed_inplace -E 's#(BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatcc?)$#\1.exe#' "$TP"
 grep -qE 'BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatc\.exe$' "$TP" || {
   echo "patch-et-windows-byproducts.sh: flatbuffers_ep BUILD_BYPRODUCTS anchor not found in $TP" >&2
   echo "  -- the ET pin probably moved; regenerate this script's pattern against the new pin." >&2
@@ -46,7 +47,10 @@ grep -qE 'BUILD_BYPRODUCTS <INSTALL_DIR>/bin/flatcc\.exe$' "$TP" || {
 
 echo ">> patching flatcc_ep CMAKE_ARGS to force -DCMAKE_BUILD_TYPE=Release"
 if ! grep -qF -- '-DCMAKE_BUILD_TYPE=Release' "$TP"; then
-  sed -i 's#\(^    -DFLATCC_INSTALL=ON\)$#\1\n    -DCMAKE_BUILD_TYPE=Release#' "$TP"
+  # POSIX newline-in-replacement (backslash + literal newline): BSD sed would insert GNU's `\n` as a
+  # plain 'n'.
+  sed_inplace 's#\(^    -DFLATCC_INSTALL=ON\)$#\1\
+    -DCMAKE_BUILD_TYPE=Release#' "$TP"
 fi
 grep -qF -- '-DCMAKE_BUILD_TYPE=Release' "$TP" || {
   echo "patch-et-windows-byproducts.sh: -DFLATCC_INSTALL=ON anchor not found in $TP" >&2

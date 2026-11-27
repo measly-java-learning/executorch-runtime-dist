@@ -28,7 +28,7 @@ tb="$tmp/out/etnp-lstm-fixtures-1.3.1.tar.gz"
 ( cd "$tmp/out" && sha256sum -c "etnp-lstm-fixtures-1.3.1.tar.gz.sha256" >/dev/null ) \
   || { echo "sha256 does not verify"; fail=1; }
 # flat layout: files at tar root, no leading directory
-names="$(tar -tzf "$tb" | sort | tr '\n' ' ')"
+names="$(tar -tzf "$tb" | LC_ALL=C sort | tr '\n' ' ')"
 want="in.bin lstm.pte out.bin shape train.ptd train.pte train_in.bin train_out.bin train_shape "
 [ "$names" = "$want" ] || { echo "bad tar members: $names"; fail=1; }
 # a missing training member is a hard failure, not a silently forward-only fixture set
