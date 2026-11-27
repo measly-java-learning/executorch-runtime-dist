@@ -16,7 +16,7 @@ assert_eq "$(ov_sha_name linux-x86_64)"     "openvino-runtime-2025.4.1-linux-x86
 
 # The lib member list is the contract the bundle test and vendor script share.
 libs="$(ov_lib_members linux-x86_64)"
-assert_eq "$(printf '%s\n' "$libs" | wc -l)" "7" "seven runtime libs"
+assert_eq "$(printf '%s\n' "$libs" | wc -l | tr -d " ")" "7" "seven runtime libs"
 for m in "libopenvino_c.so.2541" "libopenvino.so.2541" "libopenvino_intel_cpu_plugin.so" \
          "libopenvino_ir_frontend.so.2541" \
          "libtbb.so.12" "libtbbbind_2_5.so.3" "libhwloc.so.15"; do
@@ -35,7 +35,7 @@ else
 fi
 
 lics="$(ov_license_members linux-x86_64)"
-assert_eq "$(printf '%s\n' "$lics" | wc -l)" "5" "five license files"
+assert_eq "$(printf '%s\n' "$lics" | wc -l | tr -d " ")" "5" "five license files"
 for m in "LICENSE" "runtime-third-party-programs.txt" "onetbb_third-party-programs.txt" \
          "onednn_third-party-programs.txt" "hwloc-COPYING"; do
   assert_contains "$lics" "$m" "license member: $m"
@@ -76,8 +76,8 @@ ov_tarball_name    >/dev/null 2>&1; assert_eq "$?" "2" "ov_tarball_name requires
 # tbbbind_2_5.dll. A member list that is right for one platform and silently reused for the other
 # is how a bundle ends up missing the IR frontend -- the failure openvino_smoke.sh stage 2 exists
 # to catch, and which enumerates CPU perfectly right up until it cannot import a model.
-assert_eq "$(ov_lib_members linux-x86_64 | wc -l)"   "7" "linux bundle has 7 libs"
-assert_eq "$(ov_lib_members windows-x86_64 | wc -l)" "6" "windows bundle has 6 libs (no hwloc)"
+assert_eq "$(ov_lib_members linux-x86_64 | wc -l | tr -d " ")"   "7" "linux bundle has 7 libs"
+assert_eq "$(ov_lib_members windows-x86_64 | wc -l | tr -d " ")" "6" "windows bundle has 6 libs (no hwloc)"
 assert_contains "$(ov_lib_members windows-x86_64)" "openvino_ir_frontend.dll" \
   "windows keeps the IR frontend"
 assert_contains "$(ov_lib_members windows-x86_64)" "tbbbind_2_5.dll" \
@@ -91,8 +91,8 @@ case "$(ov_lib_members windows-x86_64)" in
   *) printf 'ok: windows members are DLLs\n' ;;
 esac
 
-assert_eq "$(ov_license_members linux-x86_64 | wc -l)"   "5" "linux ships 5 licence files"
-assert_eq "$(ov_license_members windows-x86_64 | wc -l)" "4" "windows ships 4 (no hwloc-COPYING)"
+assert_eq "$(ov_license_members linux-x86_64 | wc -l | tr -d " ")"   "5" "linux ships 5 licence files"
+assert_eq "$(ov_license_members windows-x86_64 | wc -l | tr -d " ")" "4" "windows ships 4 (no hwloc-COPYING)"
 
 # Both CRT platforms share one bundle: the bundle is the OpenVINO runtime, not our artifact, and
 # the wheel's DLLs are /MD regardless of how a consumer links. Verified safe -- every OpenVINO
@@ -138,7 +138,7 @@ ov_bundle_platform ""            >/dev/null 2>&1; assert_eq "$?" "2" "empty plat
 # bundle twice.
 assert_eq "$(ov_bundle_platforms | sort | tr '\n' ' ')" "linux-x86_64 windows-x86_64 " \
   "exactly two bundles are built per release"
-assert_eq "$(ov_bundle_platforms | sort -u | wc -l)" "$(ov_bundle_platforms | wc -l)" \
+assert_eq "$(ov_bundle_platforms | sort -u | wc -l | tr -d " ")" "$(ov_bundle_platforms | wc -l | tr -d " ")" \
   "ov_bundle_platforms has no duplicates"
 
 # The aliases are the platforms that do NOT get their own asset. Bundles + aliases must together

@@ -18,6 +18,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/openvino.sh"
 . "$HERE/lib/python.sh"
+. "$HERE/lib/portable.sh"
 
 # Resolve the interpreter once. et_python_bin is shared with the hermetic test that drives this
 # script, so the two cannot disagree about which interpreter exists.
@@ -49,7 +50,7 @@ if [ -z "$WHEEL" ]; then
     --python-version "${OV_WHEEL_PYTAG#cp}" --platform "$(ov_wheel_platform_tag "$PLATFORM")" \
     -d "$WORK/dl" >&2
   WHEEL="$(ls "$WORK"/dl/openvino-*.whl)"
-  actual="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+  actual="$(sha256_file "$WHEEL" | cut -d' ' -f1)"
   expected="$(ov_wheel_sha256 "$PLATFORM")"
   [ "$actual" = "$expected" ] || {
     echo "vendor-openvino.sh: wheel sha256 mismatch for $PLATFORM" >&2
@@ -128,7 +129,7 @@ EOF
   echo "platform=$PLATFORM"
   if ov_uses_hwloc "$PLATFORM"; then echo "hwloc_version=$OV_HWLOC_VERSION"; fi
   echo "source_wheel=$(basename "$WHEEL")"
-  echo "source_wheel_sha256=$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+  echo "source_wheel_sha256=$(sha256_file "$WHEEL" | cut -d' ' -f1)"
   echo "build_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$BUNDLE/BUILDINFO"
 

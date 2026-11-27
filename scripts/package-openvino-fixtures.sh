@@ -6,6 +6,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/openvino.sh"
+. "$HERE/lib/portable.sh"
 
 DIR=""; ETVER=""; OUTDIR="."
 while [ $# -gt 0 ]; do
@@ -25,5 +26,5 @@ done
 mkdir -p "$OUTDIR"; OUTDIR="$(cd "$OUTDIR" && pwd)"
 TARBALL="$OUTDIR/$(ov_fixtures_name "$ETVER")"
 tar -C "$DIR" -czf "$TARBALL" openvino_tiny.pte in.bin out.bin shape
-( cd "$OUTDIR" && sha256sum "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
+( cd "$OUTDIR" && sha256_file "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
 printf '%s\n' "$TARBALL"

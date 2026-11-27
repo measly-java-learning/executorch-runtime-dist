@@ -13,6 +13,7 @@
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/assert.sh"
+. "$here/../scripts/lib/portable.sh"
 root="$(cd "$here/.." && pwd)"
 . "$root/scripts/lib/openvino.sh"
 
@@ -27,7 +28,7 @@ fi
 # 2. That check must be able to FAIL, or step 1 is decorative.
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 cp "$root/requirements/openvino-aot.in" "$tmp/backup"
-sed -i 's/^openvino==.*/openvino==0.0.0/' "$root/requirements/openvino-aot.in"
+sed_inplace 's/^openvino==.*/openvino==0.0.0/' "$root/requirements/openvino-aot.in"
 if "$root/scripts/gen-requirements.sh" --check >/dev/null 2>&1; then
   echo "FAIL: --check passed on a tampered .in file" >&2
   ASSERT_FAILS=$((ASSERT_FAILS+1))

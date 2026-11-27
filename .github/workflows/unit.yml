@@ -18,8 +18,30 @@ permissions:
 
 jobs:
   unit:
-    runs-on: ubuntu-latest      # no container: bash + coreutils + git + python or python3 is the whole dep set
+    # Both userlands: GNU (Linux, the build containers) and BSD (macOS, the macos-arm64 build host
+    # and developer Macs). The scripts under test run on both, and a GNU-only idiom (sed -i, nproc,
+    # wc -l padding) passes on Linux and breaks the other. macos-latest's /bin/bash is 3.2, which
+    # also gives require_bash4's failure path a real test (test/lib_portable.test.sh).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}   # no container: bash >= 4 + coreutils + git + python3 is the whole dep set
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install bash >= 4 (macOS)
+        # The runner image's only bash is /bin/bash 3.2, and the scripts require 4+ (require_bash4).
+        # Homebrew's bin dir precedes /bin on the runner PATH, so the `bash test/run.sh` below, and
+        # every `bash <file>` it runs, resolves to this one, while /bin/bash stays 3.2 for
+        # test/lib_portable.test.sh's failure-path check.
+        if: runner.os == 'macOS'
+        run: |
+          brew install bash
+          bash -c 'echo "bash on PATH: $BASH_VERSION"; [ "${BASH_VERSINFO[0]}" -ge 4 ]'
+      - name: Install unit-suite deps (PyYAML, from the lock)
+        run: python -m pip install -r requirements/unit.txt
       - name: Run the hermetic unit suite
         run: bash test/run.sh

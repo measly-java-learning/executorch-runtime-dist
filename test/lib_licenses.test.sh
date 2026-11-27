@@ -56,7 +56,7 @@ assert_eq "$(has "$n/extension_llm_tokenizers_build_temp.linux-x86_64-cpython-31
 
 # Names are path-derived, so two deps' LICENSE files cannot overwrite each other. Still 7: the
 # pruned bench/btl notice above must not be among them.
-assert_eq "$(ls "$n" | wc -l)" "7" "every notice landed under a distinct name, bench excluded"
+assert_eq "$(ls "$n" | wc -l | tr -d " ")" "7" "every notice landed under a distinct name, bench excluded"
 
 # A root a future ET tag drops is skipped, not fatal.
 src2="$(mktemp -d)"; pfx2="$(mktemp -d)"

@@ -20,7 +20,7 @@ assert_eq "$(basename "$tb")" "$(ov_fixtures_name 1.3.1)" "tarball uses the C10 
   || { printf 'FAIL: sha256 sidecar missing\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)); }
 
 # Flat layout (files at tar root), matching etnp-lstm-fixtures.
-members="$(tar -tzf "$tb" | sort | tr '\n' ' ')"
+members="$(tar -tzf "$tb" | LC_ALL=C sort | tr '\n' ' ')"
 assert_eq "$members" "in.bin openvino_tiny.pte out.bin shape " "flat member list"
 
 # A missing member must abort rather than ship an incomplete fixture set.

@@ -7,6 +7,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/naming.sh"
+. "$HERE/lib/portable.sh"
 
 DIR=""; ETVER=""; OUTDIR="."
 while [ $# -gt 0 ]; do
@@ -27,5 +28,5 @@ done
 mkdir -p "$OUTDIR"; OUTDIR="$(cd "$OUTDIR" && pwd)"
 TARBALL="$OUTDIR/$(fixtures_name "$ETVER")"
 tar -C "$DIR" -czf "$TARBALL" $FIXTURE_MEMBERS
-( cd "$OUTDIR" && sha256sum "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
+( cd "$OUTDIR" && sha256_file "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
 printf '%s\n' "$TARBALL"

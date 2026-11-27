@@ -23,8 +23,10 @@ Every release builds three variants **on Linux**; Windows ships `logging` only:
 # Run the full shell unit-test suite (test/*.test.sh: naming, variants, packaging, gate
 # classification, version derivation, pin generation, buildinfo, perms, OpenVINO, workspace size).
 # These are hermetic — no build, no container, no ET checkout — and run in ~2s. CI runs this on
-# every PR (.github/workflows/unit.yml), so it must be green from a clean checkout: a check that
-# needs a built prefix does NOT belong in the glob (see test/extras_members.sh).
+# every PR (.github/workflows/unit.yml) on BOTH ubuntu-latest and macos-latest, so it must be green
+# from a clean checkout on GNU and BSD userland: a check that needs a built prefix does NOT belong in
+# the glob (see test/extras_members.sh). Its only dependency is PyYAML (requirements/unit.txt); on
+# macOS, install it into a venv, since Homebrew Python refuses pip installs.
 bash test/run.sh
 
 # Run one unit test
@@ -130,6 +132,8 @@ never drift. When changing anything they define, change it here, not at a call s
   composes + dedupes the full set. The build, `--print-flags`, and `BUILDINFO` provenance (C5) all
   go through it, so they cannot diverge.
 - `naming.sh` — asset/tarball/sha/fixtures naming (contract C1).
+- `portable.sh` — GNU/BSD userland helpers: `sed_inplace` (never bare `sed -i`), `ncpu` (never
+  `nproc`), `sha256_file` (never bare `sha256sum`), and `require_bash4` (macOS `/bin/bash` is 3.2).
 
 ### OpenVINO (`linux-x86_64` + both Windows platforms)
 

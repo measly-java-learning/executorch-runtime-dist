@@ -14,6 +14,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/scripts/lib/cmakeflags.sh"
 . "$HERE/scripts/lib/configure-base.sh"
 . "$HERE/scripts/lib/licenses.sh"
+. "$HERE/scripts/lib/portable.sh"
+require_bash4
 
 # As we run as root inside a container, set this flag to avoid log spam
 export PIP_ROOT_USER_ACTION=ignore
@@ -125,7 +127,7 @@ build_extras() {
     -DCMAKE_PREFIX_PATH="$PREFIX" \
     -DCMAKE_INSTALL_PREFIX="$PREFIX"
   # Building the link probe runs the POST_BUILD nm-guard (registrar survived).
-  cmake --build "$extras_build" -j"$(nproc)"
+  cmake --build "$extras_build" -j"$(ncpu)"
   cmake --install "$extras_build" --prefix "$PREFIX"
   EXTRAS_BUILD="$extras_build"   # exported for the full-build Highway-license step
 }
@@ -233,8 +235,7 @@ cmake -B "$ET_BUILD" -S "$ET_SRC" -G Ninja \
   $PYTHON_PIN
 
 echo ">> building"
-if [ "$IS_WINDOWS" -eq 1 ]; then JOBS="${NUMBER_OF_PROCESSORS:-4}"; else JOBS="$(nproc)"; fi
-cmake --build "$ET_BUILD" -j"$JOBS"
+cmake --build "$ET_BUILD" -j"$(ncpu)"
 
 echo ">> installing to $PREFIX"
 mkdir -p "$PREFIX"
@@ -253,7 +254,7 @@ leaked="$(grep -rl "$PREFIX" "$PREFIX/lib/cmake" 2>/dev/null || true)"
 if [ -n "$leaked" ]; then
   echo ">> WARNING: absolute build-prefix leaked into cmake configs; rewriting to \${PACKAGE_PREFIX_DIR}"
   printf '%s\n' "$leaked" | while read -r f; do
-    sed -i "s#$PREFIX#\${PACKAGE_PREFIX_DIR}#g" "$f"
+    sed_inplace "s#$PREFIX#\${PACKAGE_PREFIX_DIR}#g" "$f"
   done
 fi
 
@@ -271,7 +272,7 @@ if [ "$IS_WINDOWS" -eq 0 ]; then
   if [ -n "$syslib" ]; then
     echo ">> WARNING: absolute system-lib paths leaked into cmake configs; rewriting to bare link names"
     printf '%s\n' "$syslib" | while read -r f; do
-      sed -i -E 's#/usr/lib64/lib([a-z0-9_]+)\.(so|a)#\1#g' "$f"
+      sed_inplace -E 's#/usr/lib64/lib([a-z0-9_]+)\.(so|a)#\1#g' "$f"
     done
   fi
 fi
