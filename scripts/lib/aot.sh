@@ -42,7 +42,8 @@ et_aot_python_devel_pkg() {
   python3 -c 'import sys; print("python%d.%d-devel" % sys.version_info[:2])'
 }
 
-# The shared libpython FindPython's Development.Embed needs, on macOS. Nothing to install there:
+# Checks that the shared libpython FindPython's Development.Embed needs is present on macOS.
+# Nothing gets installed:
 # the interpreters this repo runs on macOS (actions/setup-python, Homebrew, python.org) are FRAMEWORK
 # builds, which ship libpython<mm>.dylib in LIBDIR even though Py_ENABLE_SHARED reports 0 (the shared
 # library is the framework's Python binary). So this is an assertion: print the path, or fail naming
