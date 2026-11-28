@@ -9,6 +9,7 @@ require_bash4
 . "$HERE/lib/cmakeflags.sh"
 . "$HERE/lib/openvino.sh"
 . "$HERE/lib/configure-base.sh"
+. "$HERE/lib/torch.sh"
 
 PREFIX=""; ETVER=""; VARIANT=""; PLATFORM=""; PACKAGE_TAG=""; OUTDIR="."; TOOLCHAIN=""
 while [ $# -gt 0 ]; do
@@ -82,7 +83,8 @@ fi
 
 CMAKE_FLAGS="$(effective_cmake_flags "$PLATFORM" "$VARIANT")"
 EVENT_TRACER="$(event_tracer_for_variant "$VARIANT")"
-ET_VERSION="$ETVER" ET_COMMIT="$ET_COMMIT" TORCH_VERSION="2.14.0+cpu" \
+TORCH_INSTALLED="$(torch_version_for_platform "$PLATFORM")"   # validates PLATFORM too (rc 2 -> set -e)
+ET_VERSION="$ETVER" ET_COMMIT="$ET_COMMIT" TORCH_VERSION="$TORCH_INSTALLED" \
   VARIANT="$VARIANT" PLATFORM="$PLATFORM" CMAKE_FLAGS="$CMAKE_FLAGS" \
   TOOLCHAIN="$TOOLCHAIN" PACKAGE_TAG="$PACKAGE_TAG" \
   USDT="$USDT_STATE" \

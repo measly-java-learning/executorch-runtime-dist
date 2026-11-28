@@ -32,6 +32,24 @@ bash "$BR" --variant logging >/dev/null 2>&1;             assert_eq "$?" "2" "mi
 bash "$BR" --variant logging --prefix /tmp/nope-prefix >/dev/null 2>&1; assert_eq "$?" "2" "missing et-src exits 2"
 SKIP_ET_BUILD=1 bash "$BR" --variant logging --prefix /tmp/nope-prefix >/dev/null 2>&1; assert_eq "$?" "1" "SKIP_ET_BUILD without a valid install exits 1"
 
+# A --platform for another OS is refused before any work (no patching, no pip), on both real-build
+# entry points. --print-flags stays host-independent: that is how flags get inspected.
+tmpd="$(mktemp -d)"
+. "$here/../scripts/lib/portable.sh"
+case "$(host_os)" in macos) other=linux-x86_64 ;; *) other=macos-arm64 ;; esac
+msg="$(bash "$BR" --variant logging --prefix "$tmpd/p" --et-src "$tmpd" --platform "$other" 2>&1)"; rc=$?
+assert_eq "$rc" "2" "real build of another OS's platform ($other) exits 2"
+assert_contains "$msg" "but this host is" "mismatch message explains itself"
+[ ! -e "$tmpd/p" ] && [ -z "$(ls "$tmpd")" ]; assert_eq "$?" "0" "mismatch refused before touching prefix or et-src"
+mkdir -p "$tmpd/x/lib/cmake/ExecuTorch"; : > "$tmpd/x/lib/cmake/ExecuTorch/executorch-config.cmake"
+bash "$BR" --extras-only --variant logging --prefix "$tmpd/x" --platform "$other" >/dev/null 2>&1
+assert_eq "$?" "2" "--extras-only for another OS's platform exits 2"
+bash "$BR" --print-flags --variant logging --platform "$other" >/dev/null 2>&1
+assert_eq "$?" "0" "--print-flags for another OS's platform still works"
+assert_contains "$(bash "$BR" --print-flags --variant logging --platform macos-arm64)" \
+  "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0" "print-flags: macos-arm64 shows the deployment target"
+rm -rf "$tmpd"
+
 # Every pip call must go through `python -m pip`, never the bare console script. On Windows pip
 # refuses to upgrade itself through pip.exe (the running executable is locked), which failed both
 # build-windows jobs of the v1.3.1-9 release the day upstream published a pip newer than the

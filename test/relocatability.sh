@@ -2,7 +2,10 @@
 # Relocatability + PIC acceptance gate (the go/no-go). Proves a built et-install is BOTH
 # relocatable (no absolute build-prefix baked into lib/cmake) AND position-independent (its static
 # libs link into a SHARED library — an executable would not catch a PIC regression, a .so does).
-# Runs inside manylinux_2_28. Usage: relocatability.sh <et-install-prefix>
+# Runs inside manylinux_2_28 for linux-*, and natively on macOS for macos-* (it links a .dylib there;
+# all arm64 macOS code is PIC, so on that host the gate mainly proves relocatability and that a
+# shared library links with no undefined symbols). Windows has its own: relocatability-windows.sh.
+# Usage: relocatability.sh <et-install-prefix>
 set -euo pipefail
 SRC="${1:?usage: relocatability.sh <et-install-prefix>}"
 HERE="$(cd "$(dirname "$0")" && pwd)"

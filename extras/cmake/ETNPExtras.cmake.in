@@ -30,15 +30,20 @@ set_target_properties(etnp_ops_lstm PROPERTIES
 set(ETNP_EXTRAS_WHOLE_ARCHIVE_LIBS @ETNP_EXTRAS_INSTALL_LIBS@)
 
 # Apply the correct per-OS whole-archive wrapping to <target>'s link.
+#
+# Every branch links the TARGET (${_lib}), never only its archive path, so the target's
+# INTERFACE_LINK_LIBRARIES (etnp_hwy, above) reach the consumer's link. A raw
+# "-Wl,-force_load,<IMPORTED_LOCATION>" drops them: an earlier APPLE branch did exactly that, so
+# every macOS consumer link failed with undefined hwy::GetChosenTarget()/hwy::SupportedTargets()
+# (found by the first macOS LSTM round-trip, spike/2026-11-27-macos-arm64-spike.md finding 4).
+# $<LINK_LIBRARY:WHOLE_ARCHIVE> needs CMake >= 3.24 and lowers to --whole-archive on GNU ld and to
+# -force_load on Apple ld, so Linux and macOS share one branch.
 function(etnp_extras_whole_archive target)
   foreach(_lib IN LISTS ETNP_EXTRAS_WHOLE_ARCHIVE_LIBS)
-    if(APPLE)
-      target_link_libraries(${target} PRIVATE
-        "-Wl,-force_load,$<TARGET_PROPERTY:${_lib},IMPORTED_LOCATION>")
-    elseif(MSVC)
+    if(MSVC)
       target_link_libraries(${target} PRIVATE ${_lib}
         "/WHOLEARCHIVE:$<TARGET_PROPERTY:${_lib},IMPORTED_LOCATION>")
-    else()  # GNU ld / Linux
+    else()  # GNU ld (Linux) and Apple ld (macOS)
       target_link_libraries(${target} PRIVATE
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,${_lib}>")
     endif()

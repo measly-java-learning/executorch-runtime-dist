@@ -26,7 +26,10 @@ runs:
   steps:
     - shell: bash
       run: |
-        export PATH=/opt/python/cp312-cp312/bin:$PATH
+        # manylinux keeps its CPythons under /opt/python (not on PATH by default). On macOS the job's
+        # setup-python + venv interpreter is already first on PATH and /opt/python does not exist,
+        # so the prepend applies only where the directory is real.
+        if [ -d /opt/python/cp312-cp312/bin ]; then export PATH=/opt/python/cp312-cp312/bin:$PATH; fi
         # Re-root a workspace-relative prefix onto the REAL in-container workspace ($PWD =
         # /__w/...). The build installed to `$PWD/out` in this same job, so $PWD is the
         # authoritative root — unlike the github.workspace expression, which is the host path.
@@ -34,7 +37,8 @@ runs:
         case "$prefix" in /*) ;; *) prefix="$PWD/$prefix" ;; esac
         [ -d "$prefix" ] || { echo "::error::ETNP_PREFIX '$prefix' not found (cwd=$PWD); pass a workspace-relative prefix (e.g. out), not a host absolute path"; exit 1; }
         # AOT export needs the executorch python package from the SAME pinned ET source.
-        # et_aot_install_build_deps is the SSOT for what that build needs from the container (see
+        # et_aot_install_build_deps is the SSOT for what that build needs from the host: a dnf
+        # install inside manylinux, an assertion on macOS (see
         # scripts/lib/aot.sh); the gate's full-aot step calls the same function, so the two
         # installs cannot drift. Sourced from $PWD, the workspace root where this repo is checked out.
         . ./scripts/lib/aot.sh

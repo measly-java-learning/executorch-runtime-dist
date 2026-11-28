@@ -16,11 +16,36 @@ root="$(cd "$here/.." && pwd)"
 mm="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 assert_eq "$(et_aot_python_devel_pkg)" "python${mm}-devel" "devel package tracks the live interpreter"
 
-# et_aot_install_build_deps itself is NOT run here: it needs dnf, root, and an el8 userspace, none
-# of which belong in a hermetic suite that must pass from a clean checkout on any machine. Its
+# The LINUX branch of et_aot_install_build_deps is NOT run here: it needs dnf, root, and an el8
+# userspace, none of which belong in a hermetic suite that must pass from a clean checkout on any
+# machine. (The macOS branch only checks, so it runs below on a Mac.) Its
 # behaviour was verified inside the pinned container; what this file guards is that both call sites
 # go through it and that nothing re-spells its contents elsewhere.
 assert_eq "$(type -t et_aot_install_build_deps)" "function" "et_aot_install_build_deps is defined"
+
+# macOS branch: an assertion, not an install. Driven with stub interpreters reporting a LIBDIR, so
+# both outcomes are covered on any host.
+stubdir="$(mktemp -d)"
+mkdir -p "$stubdir/fw/lib"; : > "$stubdir/fw/lib/libpython3.12.dylib"
+printf '#!/bin/sh\necho "%s/fw/lib/libpython3.12.dylib"\n' "$stubdir" > "$stubdir/py_ok"
+printf '#!/bin/sh\necho "%s/nope/libpython3.12.dylib"\n' "$stubdir" > "$stubdir/py_static"
+printf '#!/bin/sh\nexit 1\n' > "$stubdir/py_broken"
+chmod +x "$stubdir"/py_*
+assert_eq "$(et_aot_macos_libpython "$stubdir/py_ok")" "$stubdir/fw/lib/libpython3.12.dylib" "macOS: framework libpython found"
+et_aot_macos_libpython "$stubdir/py_static" >/dev/null 2>&1; assert_eq "$?" "1" "macOS: no shared libpython -> fail"
+msg="$(et_aot_macos_libpython "$stubdir/py_static" 2>&1)"
+assert_contains "$msg" "framework Python" "macOS: failure names the fix"
+et_aot_macos_libpython "$stubdir/py_broken" >/dev/null 2>&1; assert_eq "$?" "1" "macOS: interpreter that cannot answer -> fail"
+rm -rf "$stubdir"
+# The macOS branch never reaches dnf; the Linux branch is the only one that installs.
+body="$(sed -n '/^et_aot_install_build_deps()/,/^}/p' "$root/scripts/lib/aot.sh")"
+darwin_arm="$(printf '%s\n' "$body" | sed -n '/Darwin)/,/;;/p')"
+case "$darwin_arm" in *dnf*) assert_eq "dnf in Darwin arm" "absent" "macOS branch does not call dnf" ;;
+  *) printf 'ok: macOS branch does not call dnf\n' ;; esac
+# On a real Mac, the live interpreter passes (the venv/framework python this suite runs under).
+if [ "$(uname -s)" = Darwin ]; then
+  et_aot_install_build_deps >/dev/null 2>&1; assert_eq "$?" "0" "macOS: live et_aot_install_build_deps passes"
+fi
 
 # Every call site that RUNS install_executorch.sh must go through the SSOT. Match the invocation
 # (`./install_executorch.sh`), not a bare mention — checkout-executorch/action.yml names the script
