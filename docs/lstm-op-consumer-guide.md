@@ -31,9 +31,7 @@ The helper needs CMake ≥ 3.24 (`$<LINK_LIBRARY:WHOLE_ARCHIVE>`). It links the
 comes in through the target's interface automatically. **If you hand-roll the link
 instead, don't link the archive by path alone** (for example
 `-Wl,-force_load,<prefix>/lib/libetnp_ops_lstm.a`): that drops Highway, and the link
-fails with undefined `hwy::GetChosenTarget()` / `hwy::SupportedTargets()`. Releases
-before macOS support shipped an `APPLE` branch in the helper that did exactly this.
-It was never exercised until the first macOS round-trip, and it has been removed.
+fails with undefined `hwy::GetChosenTarget()` / `hwy::SupportedTargets()`.
 
 **ET's own archives still need whole-archiving too.** `ETNPExtras` covers only the
 first-party extras (`etnp_ops_lstm`). ExecuTorch's `xnnpack_backend`,

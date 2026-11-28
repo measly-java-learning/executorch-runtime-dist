@@ -6,9 +6,8 @@
 # with a higher minos than the consumer's target produces only a linker WARNING ("was built for newer
 # macOS version than being linked"), and the binary can then crash on older systems when it calls an
 # API that does not exist there. The risk, as with Windows CRTs, is a dependency that ignores the
-# top-level setting. The first macOS build proved it is real: the extras phase, a separate CMake
-# project, defaulted to the host SDK and shipped libetnp_ops_lstm.a and libhwy.a at minos 26.0 inside
-# a 14.0 tarball (spike/2026-11-27-macos-arm64-spike.md finding 1).
+# top-level setting. The extras phase is the concrete case: it is a separate CMake project, and
+# without explicit target flags AppleClang builds it at the host SDK's minos.
 #
 # The check is POSITIVE, per archive MEMBER: each object must CARRY an LC_BUILD_VERSION for macOS
 # with minos <= the target. An object with no LC_BUILD_VERSION (only the legacy

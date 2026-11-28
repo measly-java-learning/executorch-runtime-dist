@@ -36,10 +36,8 @@
 # CoreML and torchao when CMAKE_SYSTEM_NAME is Darwin. A flat list fails closed: a feature upstream
 # later adds for Darwin stays off until someone decides to ship it. The list is _ET_LINUX_PARITY_FEATURES
 # (what the Linux preset enables) plus the Apple target settings, plus explicit OFFs for the Darwin-only
-# features ET would otherwise pick up. Spike-verified on Apple clang 21: the OPTIMIZED/QUANTIZED/LLM
-# kernels compile at C++17 unchanged, so unlike MSVC there is no Linux/macOS feature gap. See
-# docs/superpowers/specs/2026-11-27-macos-arm64-artifacts-design.md §2 and
-# spike/2026-11-27-macos-arm64-spike.md.
+# features ET would otherwise pick up. Apple clang compiles the OPTIMIZED/QUANTIZED/LLM kernels at
+# C++17 unchanged, so unlike MSVC there is no Linux/macOS feature gap.
 # Source me.
 
 # Platform -> MSVC runtime library. THE single mapping: et_configure_base builds its flag from it,
@@ -87,7 +85,7 @@ macos_arch() { # <platform>
 
 # The Apple target flags. Shared by the ET configure base and the extras phase: extras/ is its own
 # CMake project, so it inherits nothing from ET's configure. Without these, AppleClang defaults
-# minos to the HOST SDK (the spike's libetnp_ops_lstm.a and libhwy.a came out minos 26.0).
+# minos to the HOST SDK.
 _macos_target_flags() { # <platform>
   local _min _arch
   _min="$(macos_deployment_target "$1")" || return 2

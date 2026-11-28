@@ -74,7 +74,7 @@ case "$mac" in *EVENT_TRACER*)    printf 'FAIL: macos base must not touch the ev
 case "$mac" in *MSVC*|*=cl\ *)    printf 'FAIL: macos base must not carry Windows flags\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;; esac
 et_configure_base macos-x86_64 >/dev/null 2>&1; assert_eq "$?" "2" "unknown macos platform returns 2 (no silent arm64 build)"
 
-# --- extras_cmake_flags: the extras phase gets the SAME Apple target as the ET build (spike finding 1).
+# --- extras_cmake_flags: the extras phase gets the SAME Apple target as the ET build.
 assert_eq "$(extras_cmake_flags macos-arm64)" \
   "-DCMAKE_OSX_DEPLOYMENT_TARGET=$(macos_deployment_target macos-arm64) -DCMAKE_OSX_ARCHITECTURES=$(macos_arch macos-arm64)" \
   "macos extras get the SSOT deployment target and arch"

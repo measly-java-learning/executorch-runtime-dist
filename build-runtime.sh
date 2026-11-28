@@ -140,8 +140,8 @@ build_extras() {
   local extras_build="$(dirname "$_etb")/etnp-extras-$VARIANT"
   # extras/ is its own CMake project and inherits nothing from ET's configure, so it gets this
   # platform's target flags explicitly (extras_cmake_flags: the Apple deployment target and arch on
-  # macOS, nothing elsewhere). Without them AppleClang defaults minos to the HOST SDK; the spike's
-  # libetnp_ops_lstm.a and libhwy.a came out minos 26.0 inside a 14.0 tarball.
+  # macOS, nothing elsewhere). Without them AppleClang defaults minos to the HOST SDK, and
+  # the extras would ship at a newer minos than the rest of the tarball.
   local _xflags
   _xflags="$(extras_cmake_flags "$PLATFORM")" || exit 2
   # shellcheck disable=SC2086  # deliberate word-splitting of the flag string
@@ -326,7 +326,7 @@ if [ "$IS_LINUX" -eq 1 ]; then
 fi
 
 # Absolute Apple SDK/toolchain paths would break every consumer whose Xcode/CLT install differs.
-# Hard fail, not a rewrite: none exist at this pin (spike-verified), so a hit is a new upstream
+# Hard fail, not a rewrite: none exist at this pin, so a hit is a new upstream
 # behavior that needs a deliberate fix. The patterns are Apple-specific, so this runs on every host.
 echo ">> scanning cmake configs for absolute SDK/toolchain paths"
 _tcleak="$(toolchain_path_leaks "$PREFIX/lib/cmake")"
@@ -375,8 +375,8 @@ if [ "$IS_WINDOWS" -eq 0 ]; then
 fi
 
 # Every shipped object must target this platform's minimum macOS and arch. Runs here, after the
-# extras phase, because that phase is exactly where a missed target flag showed up (minos 26.0 in
-# the spike). CI runs it again on the packaged prefix.
+# extras phase, because that phase is a separate CMake project and the likeliest place for a missed
+# target flag. CI runs it again on the packaged prefix.
 if [ "$IS_MACOS" -eq 1 ]; then
   echo ">> verifying deployment target of every shipped object"
   "$HERE/scripts/check-macos-minos.sh" "$PREFIX" "$(macos_deployment_target "$PLATFORM")" "$(macos_arch "$PLATFORM")"

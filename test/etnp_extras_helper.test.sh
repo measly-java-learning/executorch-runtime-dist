@@ -2,7 +2,7 @@
 # Structural guard on the SHIPPED consumer helper (extras/cmake/ETNPExtras.cmake.in). The failure it
 # prevents: a whole-archive branch that links an archive by PATH (-force_load,<IMPORTED_LOCATION>)
 # instead of linking the TARGET. That silently drops the target's INTERFACE_LINK_LIBRARIES
-# (etnp_hwy), which is how every macOS consumer link failed on hwy::* until the spike found it.
+# (etnp_hwy), and every consumer link then fails on undefined hwy::* symbols.
 # Hermetic on purpose (text checks, no cmake run): the behavioral proof is the LSTM round-trip,
 # which links lstm_runner through this helper on each platform's release leg.
 set -u

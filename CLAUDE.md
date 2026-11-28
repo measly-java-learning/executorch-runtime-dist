@@ -221,10 +221,18 @@ downstream" and `docs/handover-to-engine.md`.
   a thin `<name>.test.sh` invoker, which `test/run.sh`'s `*.test.sh` glob still needs.
   (`test/extras_gate_full_split.test.sh` predates this rule and violates it — fix it when
   next touched, don't copy it.)
+- **Comments state what is, not what was.** No "previously", "used to", "an earlier X did Y",
+  "found by the spike", or task/stage labels in shipped code, tests or consumer docs. Keep the
+  *why* (the failure a line prevents), drop the story of how it was discovered; git log is the
+  history. Specs, plans and `spike/` notes are history documents and are exempt.
 - The recipe is idempotent: re-runs must not fail on already-patched sources or existing
   build trees.
 - Design docs and plans live in `docs/superpowers/{specs,plans,notes}/`; op-specific docs
   in `docs/`. `spike/` holds throwaway spike artifacts and logs — not part of the product.
+  Both are temporary and will be pruned, so **nothing permanent links to them**: code
+  comments, tests, patches, workflows and `docs/*.md` must not cite `docs/superpowers/` or
+  `spike/`. If a comment needs a rationale too long to inline, it goes in a real doc under
+  `docs/` and the comment links that.
 - **Branching**: work happens on a branch (`feature/*`, `fix/*`, `docs/*`, `chore/*`) and
   lands on `main` through a PR. Direct commits to `main` are limited to the most trivial
   of fixes.

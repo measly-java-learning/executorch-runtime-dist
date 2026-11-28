@@ -42,7 +42,7 @@ run
 assert_eq "$rc" "0" "all members macOS minos <= 14.0, arm64 only -> pass"
 assert_contains "$out" "objects: 3" "counts every member"
 
-# --- the spike's real defect: extras at the host SDK's minos ---
+# --- extras built at the host SDK's minos ---
 newprefix
 { member x etnp_lstm.cpp.o 1 26.0; member x lstm_cell.cc.o 1 14.0; } | lib libetnp_ops_lstm.a arm64
 run
