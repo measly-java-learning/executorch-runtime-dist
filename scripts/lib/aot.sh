@@ -42,13 +42,13 @@ et_aot_python_devel_pkg() {
   python3 -c 'import sys; print("python%d.%d-devel" % sys.version_info[:2])'
 }
 
-# Checks that the shared libpython FindPython's Development.Embed needs is present on macOS.
-# Nothing gets installed:
-# the interpreters this repo runs on macOS (actions/setup-python, Homebrew, python.org) are FRAMEWORK
-# builds, which ship libpython<mm>.dylib in LIBDIR even though Py_ENABLE_SHARED reports 0 (the shared
-# library is the framework's Python binary). So this is an assertion: print the path, or fail naming
-# the interpreter, rather than surface later as the Python::Python configure error described above.
-# <python> defaults to python3; the test passes a stub.
+# macOS counterpart of the devel-package install: asserts that <python> has the shared libpython
+# that FindPython's Development.Embed needs, and prints its path. It installs nothing. Every
+# interpreter this repo uses on macOS (actions/setup-python, Homebrew, python.org) is a FRAMEWORK
+# build, which ships libpython<mm>.dylib in LIBDIR even though Py_ENABLE_SHARED reports 0; the dylib
+# is the framework's Python binary. If it is missing, this fails here and names the interpreter,
+# instead of failing later with the Python::Python configure error described at the top of this
+# file. <python> defaults to python3; the test passes a stub.
 et_aot_macos_libpython() { # [python]
   local py="${1:-python3}" lib
   lib="$("$py" -c 'import os, sysconfig as s
