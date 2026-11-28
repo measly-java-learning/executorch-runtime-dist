@@ -45,3 +45,15 @@ sha256_file() { # <file>
     shasum -a 256 "$1"
   fi
 }
+
+# The OS this script is running on: linux | macos | windows (Git-Bash/MSYS/Cygwin). Compared with
+# the --platform's OS by platform_matches_host (lib/configure-base.sh), so a build never configures
+# one OS's flags on another. Unknown hosts fail rather than guess.
+host_os() {
+  case "$(uname -s)" in
+    Linux)  printf 'linux' ;;
+    Darwin) printf 'macos' ;;
+    MINGW*|MSYS*|CYGWIN*) printf 'windows' ;;
+    *) echo "host_os: unsupported host '$(uname -s)'" >&2; return 1 ;;
+  esac
+}

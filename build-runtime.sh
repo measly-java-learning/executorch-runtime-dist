@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # build-runtime.sh — ExecuTorch runtime recipe entrypoint.
-# MUST run INSIDE manylinux_2_28 (quay.io/pypa/manylinux_2_28_x86_64). The caller owns BOTH boundaries:
-#   1. the container (this script never pulls/spawns one), and
+# Runs natively on the host of the platform it builds; there is no cross-compilation, and a
+# --platform for another OS is refused (platform_matches_host):
+#   linux-*    INSIDE the manylinux_2_28 container pinned in .build-image
+#   windows-*  under Git-Bash with the MSVC dev shell active (build-runtime.ps1 sets that up)
+#   macos-*    on Apple silicon with Apple clang, in a Python venv (no container: Docker cannot
+#              produce Mach-O). The default --platform is linux-x86_64, so pass it explicitly there.
+# The caller owns BOTH boundaries:
+#   1. the build environment (this script never pulls/spawns a container), and
 #   2. the ExecuTorch source — provided as a checked-out tree (with submodules) via --et-src.
 #      The recipe never clones. CI supplies it via actions/checkout; local dev mounts a checkout.
 # Produces a relocatable, position-independent et-install tree at --prefix.
@@ -15,19 +21,24 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/scripts/lib/configure-base.sh"
 . "$HERE/scripts/lib/licenses.sh"
 . "$HERE/scripts/lib/portable.sh"
+. "$HERE/scripts/lib/torch.sh"
+. "$HERE/scripts/lib/python.sh"
+. "$HERE/scripts/lib/relocate.sh"
 require_bash4
 
-# As we run as root inside a container, set this flag to avoid log spam
+# On Linux we run as root inside a container; this flag avoids pip's log spam about it
 export PIP_ROOT_USER_ACTION=ignore
 DEFAULT_ET_TAG="v1.5.1"
-TORCH_SPEC="torch==2.14.0+cpu"
 
 usage() {
   cat <<'EOF'
 Usage: build-runtime.sh --variant <bare|logging|devtools> --prefix <install-dir> --et-src <et-checkout>
-                        [--et-tag <label>] [--build-dir <dir>]
+                        [--platform <platform>] [--et-tag <label>] [--build-dir <dir>]
+       build-runtime.sh --extras-only --variant <variant> --prefix <et-prefix> [--platform <platform>]
        build-runtime.sh --print-flags --variant <variant> [--platform <platform>]  # dry: print effective cmake flags, no build
-Runs inside manylinux_2_28. --et-src is a checked-out ExecuTorch tree (with submodules); the recipe does not clone.
+--platform (default linux-x86_64) must target this host's OS: linux-* inside manylinux_2_28, windows-* under
+the MSVC dev shell, macos-arm64 on a Mac inside a Python venv. --print-flags works for any platform from any host.
+--et-src is a checked-out ExecuTorch tree (with submodules); the recipe does not clone.
 --et-tag is the version label (default v1.5.1). --build-dir is the CMake build tree (default:
 <dirname of --prefix>/et-build-<variant>); it persists for inspection and incremental rebuilds — put it
 on a mounted volume to inspect artifacts out of the container. Set SKIP_ET_BUILD=1 to reuse an existing --prefix install.
@@ -77,7 +88,9 @@ trap cleanup EXIT
 # already parsed --print-flags etc.; keep the fail-fast at the top.
 VARIANT_FLAGS="$(variant_flags "$VARIANT")"   # returns 2 on unknown -> set -e aborts with code 2
 CONFIGURE_BASE="$(et_configure_base "$PLATFORM")"   # returns 2 on unknown platform -> set -e aborts
-case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; *) IS_WINDOWS=0 ;; esac
+HOST_OS="$(host_os)"   # linux | macos | windows; an unsupported host aborts here (set -e)
+IS_WINDOWS=0; IS_MACOS=0; IS_LINUX=0
+case "$HOST_OS" in windows) IS_WINDOWS=1 ;; macos) IS_MACOS=1 ;; linux) IS_LINUX=1 ;; esac
 # On Windows the pwsh caller passes $PWD with backslashes (C:\...\out), but cmake writes forward-slash
 # paths into lib/cmake/*.cmake. The relocatability leak-scan below (grep -rl "$PREFIX") would then
 # search for a backslash string the forward-slash file content never contains -> a real prefix leak
@@ -105,9 +118,13 @@ build_extras() {
   # unconditionally as provisioning; the CMake option ETNP_ENABLE_USDT stays the
   # single source of truth for emission. || echo: never abort a deliberate
   # -DETNP_ENABLE_USDT=OFF build on a box without the package (set -e).
-  echo ">> ensuring USDT probe header (systemtap-sdt-devel)"
-  dnf install -y systemtap-sdt-devel \
-    || echo ">> WARNING: systemtap-sdt-devel install failed; USDT build will FATAL if enabled"
+  # Linux only: the probes are SystemTap ELF notes, and extras/CMakeLists.txt disables USDT on every
+  # other OS. (Windows never reaches build_extras; macOS has no dnf.)
+  if [ "$IS_LINUX" -eq 1 ]; then
+    echo ">> ensuring USDT probe header (systemtap-sdt-devel)"
+    dnf install -y systemtap-sdt-devel \
+      || echo ">> WARNING: systemtap-sdt-devel install failed; USDT build will FATAL if enabled"
+  fi
   # The extras cmake generates etnp_lstm_schema.h from extra.yaml via
   # generate_schema_header.py (import yaml). build_extras owns this dep, so every
   # --extras-only caller is covered — the tier1/tier2 gate jobs run --extras-only
@@ -121,9 +138,17 @@ build_extras() {
   # keeps the full-build path behaviorally identical (Task 2 review decision).
   local _etb="${BUILD_DIR:-$(dirname "$PREFIX")/et-build-$VARIANT}"
   local extras_build="$(dirname "$_etb")/etnp-extras-$VARIANT"
+  # extras/ is its own CMake project and inherits nothing from ET's configure, so it gets this
+  # platform's target flags explicitly (extras_cmake_flags: the Apple deployment target and arch on
+  # macOS, nothing elsewhere). Without them AppleClang defaults minos to the HOST SDK, and
+  # the extras would ship at a newer minos than the rest of the tarball.
+  local _xflags
+  _xflags="$(extras_cmake_flags "$PLATFORM")" || exit 2
+  # shellcheck disable=SC2086  # deliberate word-splitting of the flag string
   cmake -B "$extras_build" -S "$HERE/extras" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    $_xflags \
     -DCMAKE_PREFIX_PATH="$PREFIX" \
     -DCMAKE_INSTALL_PREFIX="$PREFIX"
   # Building the link probe runs the POST_BUILD nm-guard (registrar survived).
@@ -161,8 +186,14 @@ install_highway_license() {
 if [ "${EXTRAS_ONLY:-0}" -eq 1 ]; then
   test -f "$CONFIG" \
     || { echo "--extras-only but $CONFIG is missing; provide a built/extracted ET prefix" >&2; exit 1; }
+  # The extras compile on this host with this platform's target flags (extras_cmake_flags), so a
+  # mismatch would silently build e.g. Linux-default extras into a macOS prefix.
+  platform_matches_host "$PLATFORM" "$HOST_OS" || exit 2
   build_extras
   install_highway_license
+  if [ "$IS_MACOS" -eq 1 ]; then
+    "$HERE/scripts/check-macos-minos.sh" "$PREFIX" "$(macos_deployment_target "$PLATFORM")" "$(macos_arch "$PLATFORM")"
+  fi
   echo ">> --extras-only done: $PREFIX"
   exit 0
 fi
@@ -179,6 +210,17 @@ fi
 
 [ -n "$ET_SRC" ] || { echo "--et-src required" >&2; exit 2; }
 [ -d "$ET_SRC" ] || { echo "--et-src '$ET_SRC' is not a directory" >&2; exit 2; }
+# Checked here, not at the top: --print-flags must keep working for any platform from any host, and
+# SKIP_ET_BUILD only validates an existing prefix. Everything below configures and compiles.
+platform_matches_host "$PLATFORM" "$HOST_OS" || exit 2
+# No container on macOS (or a dev Linux box), so the interpreter may be a PEP 668 system Python
+# (Homebrew, Debian) that refuses pip installs. Fail now with the fix, not ten steps into the build.
+_py="$(et_python_bin)" || exit 2
+if ! et_python_pip_installable "$_py"; then
+  echo "'$_py' ($(command -v "$_py")) is an externally managed (PEP 668) Python; pip cannot install the build deps into it." >&2
+  echo "  Activate a venv first, e.g.: python3.12 -m venv ~/.venvs/etnp && . ~/.venvs/etnp/bin/activate" >&2
+  exit 2
+fi
 
 # ---- real build ----
 # Consistent, caller-controllable build tree (default sits next to --prefix, so a mounted --prefix puts
@@ -206,11 +248,17 @@ echo ">> installing python deps"
 # Harmless on Linux, where the same call works either way.
 python -m pip install -U pip setuptools wheel pyyaml
 python -m pip install ninja
-python -m pip install "$TORCH_SPEC" --index-url https://download.pytorch.org/whl/cpu
+python -m pip install "torch==$(torch_version_for_platform "$PLATFORM")" --index-url "$TORCH_INDEX_URL"
 
 echo ">> Toolchain versions"
 cmake --version
-if [ "$IS_WINDOWS" -eq 1 ]; then cl 2>&1 | head -1 || true; else gcc --version; g++ --version; fi
+if [ "$IS_WINDOWS" -eq 1 ]; then cl 2>&1 | head -1 || true
+elif [ "$IS_MACOS" -eq 1 ]; then
+  clang --version
+  # The SDK is part of the toolchain identity on macOS: it decides which symbols exist, independent
+  # of the deployment target. Logged here; the CI job records it in package.sh --toolchain.
+  echo "SDK: $(xcrun --show-sdk-path) ($(xcrun --show-sdk-version))"
+else gcc --version; g++ --version; fi
 ninja --version
 python -V
 
@@ -266,7 +314,7 @@ fi
 # though the lib is present. Rewrite each to its bare link name so the consumer's own linker
 # resolves it via -l<name>. Anchored on /usr/lib64/ so project archives under
 # ${PACKAGE_PREFIX_DIR}/lib are never touched. (|| true: grep exits 1 on no match under set -e.)
-if [ "$IS_WINDOWS" -eq 0 ]; then
+if [ "$IS_LINUX" -eq 1 ]; then
   echo ">> normalizing absolute system-library paths to -l<name> (portability across host libdirs)"
   syslib="$(grep -rlE '/usr/lib64/lib[a-z0-9_]+\.(so|a)' "$PREFIX/lib/cmake" 2>/dev/null || true)"
   if [ -n "$syslib" ]; then
@@ -276,6 +324,18 @@ if [ "$IS_WINDOWS" -eq 0 ]; then
     done
   fi
 fi
+
+# Absolute Apple SDK/toolchain paths would break every consumer whose Xcode/CLT install differs.
+# Hard fail, not a rewrite: none exist at this pin, so a hit is a new upstream
+# behavior that needs a deliberate fix. The patterns are Apple-specific, so this runs on every host.
+echo ">> scanning cmake configs for absolute SDK/toolchain paths"
+_tcleak="$(toolchain_path_leaks "$PREFIX/lib/cmake")"
+if [ -n "$_tcleak" ]; then
+  echo ">> ERROR: absolute SDK/toolchain paths leaked into $PREFIX/lib/cmake:" >&2
+  printf '   %s\n' "$_tcleak" >&2
+  exit 1
+fi
+echo "   ok: none"
 
 # Prove the workspace-size patches survived compilation, not merely that files were edited. The
 # accessor and the option key are a published consumer contract; a future ET bump that drops a
@@ -312,6 +372,14 @@ if [ "$IS_WINDOWS" -eq 0 ]; then
     exit 1
   fi
   echo "   ok: workspace-size symbols present"
+fi
+
+# Every shipped object must target this platform's minimum macOS and arch. Runs here, after the
+# extras phase, because that phase is a separate CMake project and the likeliest place for a missed
+# target flag. CI runs it again on the packaged prefix.
+if [ "$IS_MACOS" -eq 1 ]; then
+  echo ">> verifying deployment target of every shipped object"
+  "$HERE/scripts/check-macos-minos.sh" "$PREFIX" "$(macos_deployment_target "$PLATFORM")" "$(macos_arch "$PLATFORM")"
 fi
 
 echo ">> license passthrough"

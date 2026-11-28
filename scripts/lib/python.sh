@@ -20,3 +20,22 @@ et_python_bin() {
   echo "et_python_bin: neither 'python' nor 'python3' is on PATH" >&2
   return 1
 }
+
+# Can <python> pip-install into itself? Not if it is PEP 668 "externally managed" (Homebrew Python
+# on macOS, Debian/Ubuntu system Python) and is not running in a venv: pip refuses with
+# "externally-managed-environment" partway through the build. The manylinux CPythons and
+# actions/setup-python interpreters are not externally managed, so they pass with or without a
+# venv. That is the precise property, unlike "is this a venv", which would wrongly reject them.
+# Returns 0 if installable, 1 if not.
+# The interpreter reports two facts ("<managed> <venv>", each 0/1); the decision stays in shell, so
+# the test can drive it with a stub interpreter.
+et_python_pip_installable() { # <python>
+  local _facts
+  _facts="$("$1" -c 'import os, sys, sysconfig
+m = os.path.exists(os.path.join(sysconfig.get_path("stdlib"), "EXTERNALLY-MANAGED"))
+print(int(m), int(sys.prefix != sys.base_prefix))')" || return 1
+  case "$_facts" in
+    "1 0") return 1 ;;
+    *) return 0 ;;
+  esac
+}

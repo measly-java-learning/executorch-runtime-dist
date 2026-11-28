@@ -87,6 +87,24 @@ assert_contains "$bil" "toolchain=manylinux_2_28 gcc-toolset-14" "default toolch
 assert_contains "$bil" "cmake_flags=--preset linux"              "linux preset recorded in provenance"
 assert_contains "$bil" "openvino_version=" "openvino provenance recorded in BUILDINFO"
 
+# --- provenance: torch_version comes from lib/torch.sh, per platform. Linux and Windows install the
+# +cpu wheel; macOS installs the plain-version wheel, and BUILDINFO said +cpu there before torch.sh.
+. "$here/../scripts/lib/torch.sh"
+assert_contains "$bil" "torch_version=$(torch_version_for_platform linux-x86_64)
+" "linux BUILDINFO records the +cpu torch it installed"
+assert_contains "$bi"  "torch_version=$(torch_version_for_platform windows-x86_64)
+" "windows BUILDINFO records the +cpu torch it installed"
+outm="$(mktemp -d)"
+tbm="$(bash "$here/../scripts/package.sh" --prefix "$pw" --etver 1.3.1 --variant logging \
+  --platform macos-arm64 --package-tag v1.3.1-1 --outdir "$outm" --toolchain apple-clang)"
+bim="$(tar -xzOf "$tbm" executorch-runtime-1.3.1-logging-macos-arm64/BUILDINFO)"
+assert_contains "$bim" "torch_version=${TORCH_RELEASE}
+" "macos BUILDINFO records the plain-version torch (no +cpu)"
+assert_contains "$bim" "cmake_flags=-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0" \
+  "macos flat configure base recorded (not a preset)"
+assert_contains "$bim" "openvino_version=n/a" "macos records no OpenVINO"
+case "$bim" in *"cmake_flags="*"--preset"*) printf 'FAIL: macos provenance must not record a preset\n' >&2; exit 1 ;; esac
+
 
 # A linux-x86_64 prefix WITHOUT the delegate must be refused outright rather than packaged with a
 # BUILDINFO that claims openvino_version. This is the guard against the flag silently no-opping

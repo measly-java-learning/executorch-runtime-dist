@@ -42,10 +42,39 @@ et_aot_python_devel_pkg() {
   python3 -c 'import sys; print("python%d.%d-devel" % sys.version_info[:2])'
 }
 
-# Install the AOT build dependencies into the current container. Idempotent (dnf install -y on an
-# already-present package is a no-op), so it is safe at every call site.
+# macOS counterpart of the devel-package install: asserts that <python> has the shared libpython
+# that FindPython's Development.Embed needs, and prints its path. It installs nothing. Every
+# interpreter this repo uses on macOS (actions/setup-python, Homebrew, python.org) is a FRAMEWORK
+# build, which ships libpython<mm>.dylib in LIBDIR even though Py_ENABLE_SHARED reports 0; the dylib
+# is the framework's Python binary. If it is missing, this fails here and names the interpreter,
+# instead of failing later with the Python::Python configure error described at the top of this
+# file. <python> defaults to python3; the test passes a stub.
+et_aot_macos_libpython() { # [python]
+  local py="${1:-python3}" lib
+  lib="$("$py" -c 'import os, sysconfig as s
+print(os.path.join(s.get_config_var("LIBDIR"), "libpython%s.dylib" % s.get_config_var("py_version_short")))')" \
+    || { echo "   FAIL: could not query $py for its LIBDIR" >&2; return 1; }
+  [ -e "$lib" ] || {
+    echo "   FAIL: $py has no shared libpython at $lib (not a framework/shared build?)." >&2
+    echo "   Use a framework Python: actions/setup-python, Homebrew python@3.12, or python.org." >&2
+    return 1; }
+  printf '%s' "$lib"
+}
+
+# Install (Linux) or verify (macOS) the AOT build dependencies. Idempotent on both: dnf install -y on
+# an already-present package is a no-op, and the macOS branch only checks. Safe at every call site.
 et_aot_install_build_deps() {
   local pkg mm lib
+  case "$(uname -s)" in
+    Darwin)
+      echo ">> checking AOT build deps: shared libpython for FindPython Development.Embed (macOS: no install)"
+      lib="$(et_aot_macos_libpython)" || return 1
+      echo "   ok: $lib"
+      return 0 ;;
+    Linux) ;;
+    *) echo "   FAIL: et_aot_install_build_deps supports Linux (manylinux) and macOS only" >&2; return 1 ;;
+  esac
+  # Linux: inside the manylinux container (see WHY THIS EXISTS above).
   pkg="$(et_aot_python_devel_pkg)" || return 1
   mm="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" || return 1
   echo ">> installing AOT build deps: $pkg (shared libpython for FindPython Development.Embed)"

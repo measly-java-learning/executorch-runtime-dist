@@ -12,7 +12,13 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # when untraced. The header is __linux__-gated too; this option is the opt-out.
 # Default ON on Linux, forced OFF elsewhere so future non-Linux targets build.
 option(ETNP_ENABLE_USDT "Emit USDT tracepoints for the extras (Linux only)" ON)
-if(ETNP_ENABLE_USDT AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+# The marker word recorded in BUILDINFO usdt=: "on"/"off" mean USDT is supported and was
+# enabled/disabled (-DETNP_ENABLE_USDT=OFF on Linux); "n/a" means the platform has no USDT at all,
+# matching the Windows core-only build.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(ETNP_USDT_EFFECTIVE OFF)
+  set(ETNP_USDT_EXPECT_WORD "n/a")
+elseif(ETNP_ENABLE_USDT)
   set(ETNP_USDT_EFFECTIVE ON)
   set(ETNP_USDT_EXPECT_WORD "on")
 else()
@@ -114,10 +120,14 @@ add_custom_command(TARGET etnp_extras_link_probe POST_BUILD
 # USDT note guard: prove the probe notes survived the whole-archive link (or are
 # absent when disabled) and that the committed provider/probe/arity contract holds.
 # readelf is in binutils (as nm is for the registrar guard above).
-add_custom_command(TARGET etnp_extras_link_probe POST_BUILD
-  COMMAND bash "${CMAKE_CURRENT_LIST_DIR}/../scripts/check-usdt-notes.sh"
-          --expect ${ETNP_USDT_EXPECT_WORD} $<TARGET_FILE:etnp_extras_link_probe>
-  VERBATIM)
+# Linux only: the notes are ELF (readelf), and USDT does not exist elsewhere (marker "n/a"). On
+# macOS the binary is Mach-O and readelf is absent, so even --expect off cannot run there.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_custom_command(TARGET etnp_extras_link_probe POST_BUILD
+    COMMAND bash "${CMAKE_CURRENT_LIST_DIR}/../scripts/check-usdt-notes.sh"
+            --expect ${ETNP_USDT_EXPECT_WORD} $<TARGET_FILE:etnp_extras_link_probe>
+    VERBATIM)
+endif()
 
 # --- negative-control probe (Task 4 Step 5 only) ---
 # SAME ET deps as the real probe, but the extras archives are linked PLAIN (no
@@ -128,7 +138,9 @@ add_custom_command(TARGET etnp_extras_link_probe POST_BUILD
 # EXCLUDE_FROM_ALL: normal builds never build it; no POST_BUILD guard attached.
 add_executable(etnp_extras_neg_probe EXCLUDE_FROM_ALL link_probe.cpp)
 target_link_libraries(etnp_extras_neg_probe PRIVATE ${_ET_LINK} ${ETNP_EXTRAS_LIBS})
-target_link_options(etnp_extras_neg_probe PRIVATE -Wl,--gc-sections)
+# Dead-code stripping, spelled per linker: --gc-sections is GNU ld only; Apple ld's is -dead_strip.
+target_link_options(etnp_extras_neg_probe PRIVATE
+  "$<IF:$<PLATFORM_ID:Darwin>,LINKER:-dead_strip,LINKER:--gc-sections>")
 
 # Render ETNPExtras.cmake with the concrete whole-archive lib list and install it.
 string(REPLACE ";" " " ETNP_EXTRAS_INSTALL_LIBS "${ETNP_EXTRAS_LIBS}")

@@ -60,4 +60,14 @@ else
   printf 'ok: (skipped) no shasum on this host; fallback covered on macOS\n'
 fi
 
+# host_os: one of the three supported values on any CI or dev host, and the mapping is uname-driven.
+h="$(host_os)"
+case "$h" in linux|macos|windows) printf 'ok: host_os is a supported value (%s)\n' "$h" ;;
+  *) assert_eq "$h" "linux|macos|windows" "host_os is a supported value" ;; esac
+assert_eq "$(uname() { echo Darwin; }; host_os)"            "macos"   "host_os: Darwin -> macos"
+assert_eq "$(uname() { echo Linux; }; host_os)"             "linux"   "host_os: Linux -> linux"
+assert_eq "$(uname() { echo MINGW64_NT-10.0; }; host_os)"   "windows" "host_os: Git-Bash -> windows"
+(uname() { echo SunOS; }; host_os) >/dev/null 2>&1
+assert_eq "$?" "1" "host_os: unsupported host fails instead of guessing"
+
 [ "$ASSERT_FAILS" -eq 0 ]

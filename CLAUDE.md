@@ -114,6 +114,10 @@ upstream lands one. See `docs/ptd-writer-consumer.md`.
 - **Keep `patches/*.patch` and `test/fixtures/etpatch/` in lockstep when the ET pin moves.** The
   hermetic patch test patches the real anchor text, so a stale fixture makes the patch test pass
   while the real build fails — regenerate the patches and refresh the fixtures in the same commit.
+- **Also refresh two hand-kept lists when the ET pin moves:** `_ET_LINUX_PARITY_FEATURES` in
+  `scripts/lib/configure-base.sh` (diff ET's `linux.cmake` + `llm.cmake` presets at the new tag;
+  macOS follows it), and `TORCH_RELEASE` in `scripts/lib/torch.sh` (the one torch pin; check the CPU
+  index serves it for every platform).
 - **Idempotency is a contract:** a second run reports `already patched`; a moved anchor is a HARD
   error, never a silent skip.
 - **A dropped patch is caught twice:** the post-build `nm` guard in `build-runtime.sh` proves
@@ -124,14 +128,17 @@ upstream lands one. See `docs/ptd-writer-consumer.md`.
 
 `scripts/lib/*.sh` are sourced by both the build and the packaging/CI so the two can
 never drift. When changing anything they define, change it here, not at a call site:
-- `configure-base.sh` — platform → cmake configure base (`--preset linux` vs the flat Windows flag
-  list), **and** `crt_for_platform`, the one platform→CRT mapping consumed by the build, the
-  relocatability gate, and the CI CRT scan.
+- `configure-base.sh` — platform → cmake configure base (`--preset linux` vs the flat Windows and
+  macOS flag lists), **and** `crt_for_platform`, the one platform→CRT mapping consumed by the build,
+  the relocatability gate, and the CI CRT scan. Its macOS counterparts are `macos_deployment_target`
+  and `macos_arch` (configure base, extras phase via `extras_cmake_flags`, minos gate).
 - `variants.sh` — variant → cmake flag string (contract C3).
 - `cmakeflags.sh` — common variant-independent cmake flags, **and** `effective_cmake_flags`, which
   composes + dedupes the full set. The build, `--print-flags`, and `BUILDINFO` provenance (C5) all
   go through it, so they cannot diverge.
 - `naming.sh` — asset/tarball/sha/fixtures naming (contract C1).
+- `torch.sh` — the torch pin, and `torch_version_for_platform` (`+cpu` on Linux/Windows, plain on
+  macOS). It decides both what the build installs and what BUILDINFO records.
 - `portable.sh` — GNU/BSD userland helpers: `sed_inplace` (never bare `sed -i`), `ncpu` (never
   `nproc`), `sha256_file` (never bare `sha256sum`), and `require_bash4` (macOS `/bin/bash` is 3.2).
 
@@ -214,10 +221,18 @@ downstream" and `docs/handover-to-engine.md`.
   a thin `<name>.test.sh` invoker, which `test/run.sh`'s `*.test.sh` glob still needs.
   (`test/extras_gate_full_split.test.sh` predates this rule and violates it — fix it when
   next touched, don't copy it.)
+- **Comments state what is, not what was.** No "previously", "used to", "an earlier X did Y",
+  "found by the spike", or task/stage labels in shipped code, tests or consumer docs. Keep the
+  *why* (the failure a line prevents), drop the story of how it was discovered; git log is the
+  history. Specs, plans and `spike/` notes are history documents and are exempt.
 - The recipe is idempotent: re-runs must not fail on already-patched sources or existing
   build trees.
 - Design docs and plans live in `docs/superpowers/{specs,plans,notes}/`; op-specific docs
   in `docs/`. `spike/` holds throwaway spike artifacts and logs — not part of the product.
+  Both are temporary and will be pruned, so **nothing permanent links to them**: code
+  comments, tests, patches, workflows and `docs/*.md` must not cite `docs/superpowers/` or
+  `spike/`. If a comment needs a rationale too long to inline, it goes in a real doc under
+  `docs/` and the comment links that.
 - **Branching**: work happens on a branch (`feature/*`, `fix/*`, `docs/*`, `chore/*`) and
   lands on `main` through a PR. Direct commits to `main` are limited to the most trivial
   of fixes.

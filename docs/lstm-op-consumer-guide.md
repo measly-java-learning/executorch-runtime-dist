@@ -26,6 +26,13 @@ so you don't hand-roll the per-OS flags:
     target_link_libraries(my_consumer PRIVATE executorch ...)
     etnp_extras_whole_archive(my_consumer)   # applies --whole-archive / -force_load / /WHOLEARCHIVE:
 
+The helper needs CMake ≥ 3.24 (`$<LINK_LIBRARY:WHOLE_ARCHIVE>`). It links the
+`etnp_ops_lstm` *target*, so Highway (`libhwy.a`, the op's dynamic-dispatch runtime)
+comes in through the target's interface automatically. **If you hand-roll the link
+instead, don't link the archive by path alone** (for example
+`-Wl,-force_load,<prefix>/lib/libetnp_ops_lstm.a`): that drops Highway, and the link
+fails with undefined `hwy::GetChosenTarget()` / `hwy::SupportedTargets()`.
+
 **ET's own archives still need whole-archiving too.** `ETNPExtras` covers only the
 first-party extras (`etnp_ops_lstm`). ExecuTorch's `xnnpack_backend`,
 `portable_ops_lib`/`optimized_native_cpu_ops_lib`, etc. must likewise be
@@ -99,7 +106,7 @@ optimizer runs outside; this op supplies the gradients).
   need it.
 
 ## Cross-platform note
-The live round-trip test gates every *executable* CI target (today linux-x86_64 and
-linux-aarch64, both native runners). When macOS/Windows/arm64 targets gain runners,
-run the round-trip there too — the per-OS whole-archive path in the helper above is
-exactly what it validates.
+The live round-trip test gates every *executable* CI target: linux-x86_64,
+linux-aarch64 and macos-arm64, all on native runners. It is what validates the
+per-OS whole-archive path in the helper above. It caught the dropped-Highway bug on
+macOS's first run. Windows ships no extras (core-only), so it has no round-trip yet.

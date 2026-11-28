@@ -37,7 +37,7 @@ assert_eq "$(printf '%s\n' $(effective_cmake_flags windows-x86_64 logging) | gre
 # above that default says "Keeping this OFF by default" — prose and value disagree, so the default
 # is one upstream edit away from flipping. Pin it rather than inherit it. Platform-independent:
 # unlike OpenVINO this is not an x86-64-only concern.
-for p in linux-x86_64 linux-aarch64 windows-x86_64 windows-x86_64-static; do
+for p in linux-x86_64 linux-aarch64 windows-x86_64 windows-x86_64-static macos-arm64; do
   assert_contains "$(common_cmake_flags "$p")" "-DEXECUTORCH_XNNPACK_SHARED_WORKSPACE=ON" \
     "shared workspace pinned on $p"
 done
@@ -46,7 +46,7 @@ assert_contains "$(effective_cmake_flags linux-x86_64 logging)" \
 
 # The .ptd reader/writer depend on these. The Linux preset happens to turn them on; pin them so
 # --print-flags and BUILDINFO say so, and so a preset change cannot silently drop the writer.
-for p in linux-x86_64 linux-aarch64 windows-x86_64 windows-x86_64-static; do
+for p in linux-x86_64 linux-aarch64 windows-x86_64 windows-x86_64-static macos-arm64; do
   assert_contains "$(common_cmake_flags "$p")" "-DEXECUTORCH_BUILD_EXTENSION_FLAT_TENSOR=ON" "flat tensor pinned on $p"
   assert_contains "$(common_cmake_flags "$p")" "-DEXECUTORCH_BUILD_EXTENSION_NAMED_DATA_MAP=ON" "named data map pinned on $p"
 done
@@ -55,4 +55,20 @@ assert_eq "$(printf '%s\n' $(effective_cmake_flags windows-x86_64 logging) | gre
   "1" "flat tensor flag appears once on windows after dedup"
 assert_eq "$(printf '%s\n' $(effective_cmake_flags windows-x86_64 logging) | grep -c -- '-DEXECUTORCH_BUILD_EXTENSION_NAMED_DATA_MAP=ON')" \
   "1" "named data map flag appears once on windows after dedup"
+# macos-arm64: no OpenVINO (no bundle, no pin row; spec scope), variant flags layered on the flat base.
+case "$(common_cmake_flags macos-arm64)" in
+  *OPENVINO*) printf 'FAIL: openvino must not be enabled on macos-arm64\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
+  *) printf 'ok: openvino absent on macos-arm64\n' ;;
+esac
+assert_contains "$(effective_cmake_flags macos-arm64 bare)"     "-DEXECUTORCH_ENABLE_LOGGING=OFF"     "macos bare layers logging off"
+assert_contains "$(effective_cmake_flags macos-arm64 devtools)" "-DEXECUTORCH_ENABLE_EVENT_TRACER=ON" "macos devtools layers the event tracer"
+case "$(effective_cmake_flags macos-arm64 logging)" in
+  *EVENT_TRACER*) printf 'FAIL: macos logging must not carry the event tracer\n' >&2; ASSERT_FAILS=$((ASSERT_FAILS+1)) ;;
+  *) printf 'ok: macos logging carries no event tracer flag\n' ;;
+esac
+# The base already pins flat tensor / named data map; dedup must leave exactly one of each.
+assert_eq "$(printf '%s\n' $(effective_cmake_flags macos-arm64 logging) | grep -c -- '-DEXECUTORCH_BUILD_EXTENSION_FLAT_TENSOR=ON')" \
+  "1" "flat tensor flag appears once on macos after dedup"
+assert_eq "$(printf '%s\n' $(effective_cmake_flags macos-arm64 logging) | grep -c -- '-DEXECUTORCH_BUILD_XNNPACK=ON')" \
+  "1" "xnnpack flag appears once on macos after dedup"
 exit "$ASSERT_FAILS"
